@@ -904,6 +904,12 @@ struct RouterActiveRequest: Decodable, Identifiable, Equatable {
   let provider: String
   let model: String?
   let sessionName: String?
+  let sessionId: String?
+  let threadId: String?
+  let parentThreadId: String?
+  let agentName: String?
+  let agentNickname: String?
+  let isSubagent: Bool?
   let startedAt: Double
 }
 

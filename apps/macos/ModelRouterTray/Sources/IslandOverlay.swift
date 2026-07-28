@@ -3,6 +3,23 @@ import SwiftUI
 
 private let islandBezel = Color(red: 0.004, green: 0.005, blue: 0.007)
 
+private struct IslandActivitySession: Identifiable {
+  let id: String
+  let name: String
+  let requests: [RouterActiveRequest]
+
+  var agents: [RouterActiveRequest] {
+    var seen = Set<String>()
+    return requests.filter { request in
+      seen.insert(request.threadId ?? request.id).inserted
+    }
+  }
+
+  var latestStartedAt: Double {
+    requests.map(\.startedAt).max() ?? 0
+  }
+}
+
 @MainActor
 final class IslandDisplayModel: ObservableObject {
   enum State: Equatable {
@@ -158,6 +175,7 @@ private struct IslandOverlayView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @ObservedObject var store: RouterStore
   @ObservedObject var display: IslandDisplayModel
+  @State private var selectedSessionID: String?
 
   var body: some View {
     VStack(spacing: 0) {
@@ -190,9 +208,10 @@ private struct IslandOverlayView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .foregroundStyle(.white)
-    .onAppear { display.setActiveRequestCount(store.activeRequests.count) }
+    .onAppear { display.setActiveRequestCount(activeSessions.count) }
     .onChange(of: store.activeRequests.count) { count in
-      display.setActiveRequestCount(count)
+      display.setActiveRequestCount(activeSessions.count)
+      if count == 0 { selectedSessionID = nil }
     }
   }
 
@@ -225,11 +244,12 @@ private struct IslandOverlayView: View {
       BouncingSessionName(text: compactSessionName, fontSize: 10.5, weight: .medium)
         .frame(maxWidth: .infinity)
         .layoutPriority(1)
-      if hiddenActiveCount > 0 {
-        Text("+\(hiddenActiveCount)")
+      if !store.activeRequests.isEmpty {
+        Label("\(activeAgentCount)", systemImage: "person.2.fill")
           .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-          .foregroundStyle(.white.opacity(0.56))
+          .foregroundStyle(.white.opacity(0.72))
           .fixedSize()
+          .help("\(activeAgentCount) active \(activeAgentCount == 1 ? "agent" : "agents")")
       }
       if store.activeRequests.isEmpty {
         Text(compactUsageSummary)
@@ -238,9 +258,9 @@ private struct IslandOverlayView: View {
           .lineLimit(1)
           .minimumScaleFactor(0.75)
       }
-      if let weeklyUsedPercent {
+      if let weeklyRemainingPercent {
         VStack(alignment: .trailing, spacing: 0) {
-          Text("\(Int((100 - weeklyUsedPercent).rounded()))%")
+          Text("\(Int(weeklyRemainingPercent.rounded()))%")
             .font(.system(size: 10, weight: .semibold, design: .monospaced))
             .foregroundStyle(.white.opacity(0.9))
             .monospacedDigit()
@@ -302,7 +322,7 @@ private struct IslandOverlayView: View {
           Text(store.activityState.label)
             .font(.system(size: 12, weight: .semibold, design: .rounded))
             .foregroundStyle(store.activityState.tint)
-          Text("\(store.activeRequestCount) ACTIVE \(store.activeRequestCount == 1 ? "SESSION" : "SESSIONS")")
+          Text("\(activeSessions.count) \(activeSessions.count == 1 ? "SESSION" : "SESSIONS") • \(activeAgentCount) \(activeAgentCount == 1 ? "AGENT" : "AGENTS")")
             .font(.system(size: 8, weight: .semibold, design: .monospaced))
             .foregroundStyle(routerMuted)
         }
@@ -315,10 +335,10 @@ private struct IslandOverlayView: View {
         }
       }
       ScrollView(.vertical) {
-        ActiveRequestList(store: store, limit: store.activeRequests.count, compact: true)
+        IslandSessionList(sessions: activeSessions, compact: true)
       }
       .scrollIndicators(.hidden)
-      .frame(maxHeight: CGFloat(store.activeRequestCount) * 40)
+      .frame(maxHeight: CGFloat(max(1, activeSessions.count)) * 40)
 
       HStack {
         Text("DAILY USAGE")
@@ -340,6 +360,16 @@ private struct IslandOverlayView: View {
   }
 
   private var expandedContent: some View {
+    Group {
+      if activeSessions.isEmpty {
+        usageExpandedContent
+      } else {
+        sessionExpandedContent
+      }
+    }
+  }
+
+  private var usageExpandedContent: some View {
     VStack(spacing: 13) {
       HStack(spacing: 10) {
         LiveOrb(state: store.activityState, count: store.activeRequestCount)
@@ -427,6 +457,67 @@ private struct IslandOverlayView: View {
     .padding(.bottom, 12)
   }
 
+  private var sessionExpandedContent: some View {
+    VStack(spacing: 12) {
+      HStack(spacing: 10) {
+        if selectedSession != nil {
+          Button {
+            selectedSessionID = nil
+          } label: {
+            Image(systemName: "chevron.left")
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(routerMuted)
+        }
+        LiveOrb(state: store.activityState, count: activeAgentCount)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(selectedSession?.name ?? "Active sessions")
+            .font(.system(size: 15, weight: .semibold, design: .rounded))
+            .lineLimit(1)
+          Text(selectedSession == nil
+            ? "\(activeSessions.count) running • \(activeAgentCount) active agents"
+            : "\(selectedSession?.agents.count ?? 0) assigned agents")
+            .font(.system(size: 9, weight: .medium, design: .rounded))
+            .foregroundStyle(store.activityState.tint)
+        }
+        Spacer()
+        if let weeklyRemainingPercent {
+          IslandHeaderMetric(
+            value: "\(Int(weeklyRemainingPercent.rounded()))%",
+            label: "WEEKLY LEFT"
+          )
+        }
+        Button("Collapse") { display.setState(.peek) }
+          .buttonStyle(.plain)
+          .font(.system(size: 9, weight: .medium, design: .rounded))
+          .foregroundStyle(routerMuted)
+      }
+
+      Divider().overlay(Color.white.opacity(0.08))
+
+      if let session = selectedSession {
+        ScrollView(.vertical) {
+          IslandAgentList(store: store, session: session)
+        }
+        .scrollIndicators(.hidden)
+      } else {
+        ScrollView(.vertical) {
+          IslandSessionList(
+            sessions: activeSessions,
+            compact: false,
+            onSelect: { selectedSessionID = $0 }
+          )
+        }
+        .scrollIndicators(.hidden)
+      }
+
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 17)
+    .padding(.top, 13)
+    .padding(.bottom, 12)
+  }
+
   private var glow: some View {
     StatusGlow(state: store.activityState)
       .id("\(store.activityState.rawValue)-\(store.activeRequestCount)")
@@ -448,8 +539,27 @@ private struct IslandOverlayView: View {
       ?? "Ready"
   }
 
-  private var hiddenActiveCount: Int {
-    max(0, store.activeRequestCount - 1)
+  private var activeSessions: [IslandActivitySession] {
+    let grouped = Dictionary(grouping: store.activeRequests) { request in
+      request.sessionId ?? request.sessionName ?? "request-\(request.id)"
+    }
+    return grouped.map { id, requests in
+      let fallback = requests.first.map(store.sessionName(for:)) ?? "Active session"
+      let name = requests.compactMap(\.sessionName).first
+        ?? (grouped.count == 1 ? store.activitySessionName : nil)
+        ?? fallback
+      return IslandActivitySession(id: id, name: name, requests: requests)
+    }
+    .sorted { $0.latestStartedAt > $1.latestStartedAt }
+  }
+
+  private var activeAgentCount: Int {
+    activeSessions.reduce(0) { $0 + $1.agents.count }
+  }
+
+  private var selectedSession: IslandActivitySession? {
+    guard let selectedSessionID else { return nil }
+    return activeSessions.first(where: { $0.id == selectedSessionID })
   }
 
   private var sourceLabel: String {
@@ -488,20 +598,20 @@ private struct IslandOverlayView: View {
     return max(0, min(100, used))
   }
 
-  private var weeklyUsedPercent: Double? {
+  private var weeklyRemainingPercent: Double? {
     if store.selectedUsageUsesChatGPT {
       let windows = [store.accountUsage?.primary, store.accountUsage?.secondary].compactMap { $0 }
       guard let weekly = windows.first(where: { $0.durationLabel == "Weekly limit" }) else {
         return nil
       }
-      return Double(max(0, min(100, weekly.usedPercent)))
+      return Double(max(0, min(100, weekly.remainingPercent)))
     }
     guard let weekly = store.selectedProviderUsage?.account.metrics.first(where: {
       $0.kind == "quota" && standardizedLimitLabel($0.label) == "Weekly limit"
-    }), let used = weekly.usedPercent else {
+    }), let remaining = weekly.remainingPercent else {
       return nil
     }
-    return max(0, min(100, used))
+    return max(0, min(100, remaining))
   }
 
   private var accountUsageLabel: String {
@@ -515,12 +625,14 @@ private struct IslandOverlayView: View {
   }
 
   private var accountHeaderValue: String? {
+    if let weeklyRemainingPercent { return "\(Int(weeklyRemainingPercent.rounded()))%" }
     if let quotaUsedPercent { return "\(Int(quotaUsedPercent.rounded()))%" }
     guard let metric = store.selectedAccountMetric, metric.kind == "balance" else { return nil }
     return formattedAccountMetric(metric)
   }
 
   private var accountHeaderLabel: String {
+    if weeklyRemainingPercent != nil { return "WEEKLY LEFT" }
     if quotaUsedPercent != nil {
       let window = accountUsageLabel.replacingOccurrences(
         of: " limit",
@@ -890,6 +1002,132 @@ private struct BouncingSessionName: View {
         try? await Task.sleep(nanoseconds: UInt64((travelDuration + 0.7) * 1_000_000_000))
       }
     }
+  }
+}
+
+private struct IslandSessionList: View {
+  let sessions: [IslandActivitySession]
+  let compact: Bool
+  var onSelect: ((String) -> Void)?
+
+  init(
+    sessions: [IslandActivitySession],
+    compact: Bool,
+    onSelect: ((String) -> Void)? = nil
+  ) {
+    self.sessions = sessions
+    self.compact = compact
+    self.onSelect = onSelect
+  }
+
+  var body: some View {
+    VStack(spacing: compact ? 5 : 7) {
+      ForEach(sessions) { session in
+        Group {
+          if let onSelect {
+            Button { onSelect(session.id) } label: { row(session) }
+              .buttonStyle(.plain)
+          } else {
+            row(session)
+          }
+        }
+      }
+    }
+  }
+
+  private func row(_ session: IslandActivitySession) -> some View {
+    HStack(spacing: 9) {
+      ProviderIcon(providerID: session.requests.first?.provider ?? "openai", size: compact ? 22 : 26)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(session.name)
+          .font(.system(size: compact ? 10.5 : 11.5, weight: .semibold, design: .rounded))
+          .foregroundStyle(.white.opacity(0.94))
+          .lineLimit(1)
+        Text("\(session.agents.count) \(session.agents.count == 1 ? "agent" : "agents")")
+          .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+          .foregroundStyle(routerMuted)
+      }
+      Spacer()
+      if !compact {
+        Text(shortModelSummary(session))
+          .font(.system(size: 8.5, weight: .medium, design: .rounded))
+          .foregroundStyle(routerYellow.opacity(0.9))
+          .lineLimit(1)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 8, weight: .bold))
+          .foregroundStyle(routerMuted)
+      }
+    }
+    .padding(.horizontal, compact ? 8 : 11)
+    .padding(.vertical, compact ? 5 : 9)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .contentShape(Rectangle())
+    .background(Color.white.opacity(0.038), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .stroke(Color.white.opacity(0.055), lineWidth: 0.5)
+    }
+  }
+
+  private func shortModelSummary(_ session: IslandActivitySession) -> String {
+    let models = Array(Set(session.agents.compactMap(\.model))).sorted()
+    guard let first = models.first else { return "Active" }
+    let short = first.split(separator: "/").last.map(String.init) ?? first
+    return models.count == 1 ? short : "\(short) +\(models.count - 1)"
+  }
+}
+
+private struct IslandAgentList: View {
+  @ObservedObject var store: RouterStore
+  let session: IslandActivitySession
+
+  var body: some View {
+    VStack(spacing: 7) {
+      ForEach(session.agents) { request in
+        HStack(spacing: 10) {
+          ProviderIcon(providerID: request.provider, size: 24)
+          VStack(alignment: .leading, spacing: 2) {
+            Text(agentLabel(request))
+              .font(.system(size: 11, weight: .semibold, design: .rounded))
+              .foregroundStyle(.white.opacity(0.94))
+              .lineLimit(1)
+            Text(store.modelLabel(for: request))
+              .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+              .foregroundStyle(routerMuted)
+              .lineLimit(1)
+          }
+          Spacer()
+          TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(elapsedLabel(for: request, now: context.date))
+              .font(.system(size: 9, weight: .medium, design: .rounded))
+              .foregroundStyle(routerYellow.opacity(0.95))
+              .monospacedDigit()
+          }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(Color.white.opacity(0.038), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(Color.white.opacity(0.055), lineWidth: 0.5)
+        }
+      }
+    }
+  }
+
+  private func agentLabel(_ request: RouterActiveRequest) -> String {
+    if let name = request.agentName, !name.isEmpty {
+      return name.replacingOccurrences(of: "_", with: " ")
+    }
+    if let nickname = request.agentNickname, !nickname.isEmpty { return nickname }
+    return request.isSubagent == true ? "Agent" : "Primary"
+  }
+
+  private func elapsedLabel(for request: RouterActiveRequest, now: Date) -> String {
+    let started = Date(timeIntervalSince1970: request.startedAt / 1000)
+    let seconds = max(0, Int(now.timeIntervalSince(started)))
+    if seconds < 60 { return "\(seconds)s" }
+    return "\(seconds / 60)m \(seconds % 60)s"
   }
 }
 

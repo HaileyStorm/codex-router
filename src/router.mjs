@@ -25,7 +25,7 @@ import { MODEL_BY_SLUG, PROVIDERS, providerForModel } from "./model-registry.mjs
 import { readNativeAliases } from "./native-alias.mjs";
 import { readProviderSelection } from "./provider-selection.mjs";
 import { ResponseUsageTransform } from "./response-usage.mjs";
-import { sessionNameFromHeaders } from "./codex-session-names.mjs";
+import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
 import { recordUsageEvent } from "./usage-events.mjs";
 import { VERSION } from "./version.mjs";
 
@@ -107,13 +107,14 @@ function beginRequestActivity() {
   activeRequests.set(requestId, null);
   let finished = false;
   return {
-    setRoute({ provider, model, sessionName } = {}) {
+    setRoute({ provider, model, sessionName, ...metadata } = {}) {
       if (!provider) return;
       const entry = {
         id: String(requestId),
         provider,
         ...(model ? { model } : {}),
         ...(sessionName ? { sessionName } : {}),
+        ...metadata,
         startedAt: Date.now(),
       };
       activeRequests.set(requestId, entry);
@@ -573,7 +574,7 @@ async function handleResponses(request, response, requestUrl) {
     activity.setRoute({
       provider: route?.provider || "openai",
       model: route?.slug || requestedModel || undefined,
-      sessionName: sessionNameFromHeaders(request.headers),
+      ...activityMetadataFromHeaders(request.headers),
     });
     const compactV1 = /\/responses\/compact$/.test(requestUrl.pathname);
     const compactV2 =
@@ -672,7 +673,7 @@ async function handleNativeImage(request, response, requestUrl) {
     activity.setRoute({
       provider: "openai",
       model: requestedModel,
-      sessionName: sessionNameFromHeaders(request.headers),
+      ...activityMetadataFromHeaders(request.headers),
     });
 
     const controller = new AbortController();

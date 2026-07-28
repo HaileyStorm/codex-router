@@ -17,6 +17,7 @@ import {
   NATIVE_CATALOG_PATH,
 } from "./paths.mjs";
 import { codexIsAuthenticated, requireCodexBinary } from "./codex-binary.mjs";
+import { syncRoutedCodexAgents } from "./codex-agent-catalog.mjs";
 import { MODEL_BY_SLUG } from "./model-registry.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels } from "./provider-selection.mjs";
@@ -233,11 +234,13 @@ function main() {
       };
   atomicJson(MERGED_CATALOG_PATH, { models: merged });
   atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
+  const routedAgents = syncRoutedCodexAgents(routedModels);
   process.stdout.write(
     `${JSON.stringify({
       path: MERGED_CATALOG_PATH,
       models: merged.length,
       routed_models: routedModels.length,
+      routed_agents: routedAgents.length,
       native_models: !loginFree && openaiAuthenticated
         ? merged.filter((model) => !MODEL_BY_SLUG.has(String(model.slug))).length
         : 0,

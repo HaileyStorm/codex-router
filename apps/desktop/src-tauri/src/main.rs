@@ -714,11 +714,6 @@ fn standard_source_roots() -> Vec<PathBuf> {
 }
 
 fn resolve_node() -> Option<OsString> {
-    if let Some(configured) = env::var_os("MODEL_ROUTER_NODE") {
-        if !configured.is_empty() {
-            return Some(configured);
-        }
-    }
     let executable = if cfg!(target_os = "windows") {
         "node.exe"
     } else {

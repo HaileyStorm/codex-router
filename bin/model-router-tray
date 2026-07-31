@@ -5,7 +5,7 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 case $(uname -s) in
   Darwin)
-    bundle_dir=$("$repo_dir/scripts/build-macos-tray-app.sh")
+    bundle_dir=$("$repo_dir/scripts/build-macos-tray-app.sh" | tail -n 1)
     open "$bundle_dir"
     ;;
   Linux)

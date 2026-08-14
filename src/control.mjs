@@ -173,6 +173,12 @@ async function emitProbe() {
           id: provider.id,
           displayName: provider.displayName,
           kind: provider.kind,
+          // The vendor, so a UI can group the rows a `variantOf` cannot merge.
+          // Z.ai, Kimi, and xAI each publish several providers that are one
+          // brand but genuinely separate accounts -- different endpoints, and
+          // keys that are not interchangeable -- so they must stay separately
+          // connectable while still reading as one vendor.
+          ownedBy: provider.ownedBy,
         })),
       models,
       ...(selectedModel ? { selectedModel } : {}),

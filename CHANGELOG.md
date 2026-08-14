@@ -8,8 +8,10 @@
   call `interrupt_agent` despite the managed `root_agent_usage_hint_text`. The
   router now scans the request input for unfinished `FINAL_ANSWER` children and
   injects the missing `collaboration.interrupt_agent` calls into the parent
-  response (stream and non-stream) before `response.completed`. Model-authored
-  interrupts are left alone; only missing closes are added.
+  response (stream and non-stream) before `response.completed`. This runs on
+  both routed external models and native OpenAI multi-agent parents (the SF
+  build path). Model-authored interrupts are left alone; only missing closes
+  are added.
 
 - **Finished subagents no longer stay Working just because the parent turn is
   still live.** Codex 0.147 records a child's `FINAL_ANSWER` as

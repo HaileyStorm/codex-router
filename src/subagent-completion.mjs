@@ -150,8 +150,23 @@ export function collectFinishedSubagentState(input) {
   return { finished, interrupted, pending };
 }
 
-export function pendingInterruptTargets(input, { namespaces } = {}) {
-  if (namespaces && !collaborationToolAvailable(namespaces)) return [];
+export function pendingInterruptTargets(
+  input,
+  {
+    namespaces,
+    // Only enforce the tool check when the request actually advertised a
+    // non-empty inventory. Empty/unknown inventories (native deferred tools)
+    // still queue closes for finished children.
+    requireCollaborationTool = namespaces instanceof Map && namespaces.size > 0,
+  } = {},
+) {
+  if (
+    requireCollaborationTool &&
+    namespaces &&
+    !collaborationToolAvailable(namespaces)
+  ) {
+    return [];
+  }
   return collectFinishedSubagentState(input).pending;
 }
 

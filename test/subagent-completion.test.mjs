@@ -76,8 +76,16 @@ test("collectFinishedSubagentState finds FINAL_ANSWER authors and skips already 
 test("pendingInterruptTargets requires the collaboration interrupt tool", () => {
   const input = [finalAnswerMessage("/root/child")];
   assert.deepEqual(pendingInterruptTargets(input), ["/root/child"]);
+  // Empty inventory on a native deferred-tool turn still queues closes.
   assert.deepEqual(
     pendingInterruptTargets(input, { namespaces: new Map() }),
+    ["/root/child"],
+  );
+  // An inventory that omits interrupt_agent must not invent the call.
+  assert.deepEqual(
+    pendingInterruptTargets(input, {
+      namespaces: new Map([["collaboration", new Set(["spawn_agent"])]]),
+    }),
     [],
   );
   assert.deepEqual(

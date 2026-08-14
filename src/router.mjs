@@ -1804,6 +1804,13 @@ async function handleResponses(request, response, requestUrl) {
           toolResultAging = aged.stats;
         }
       }
+      // SF and other native multi-agent parents hit this path (model_provider
+      // openai). They have the same Working-badge bug, so inventory the tools
+      // and queue missing interrupt_agent closes the same way as routed turns.
+      flattenedNamespaces = flattenNamespaceTools(payload.tools).namespaces;
+      pendingInterrupts = pendingInterruptTargets(native.input ?? payload.input, {
+        namespaces: flattenedNamespaces,
+      });
       if (!compactV1) delete native.previous_response_id;
       target = nativeTarget(requestUrl.pathname);
       headers = nativeHeaders(request);
@@ -1903,14 +1910,17 @@ async function handleResponses(request, response, requestUrl) {
             : undefined,
       });
       const transforms = [usageObserver];
-      // Every attempt uses the same normal transform pipeline. In particular,
-      // a tool call recovered by the retry must still have its flattened
-      // namespace restored before Codex sees it.
-      if (route) {
+      // Restore flattened namespace calls for routed chat-completions providers,
+      // and inject missing finished-child interrupts for both routed and native
+      // multi-agent parents (San Francisco uses native GPT).
+      if (route || pendingInterrupts.length > 0) {
         transforms.push(
-          new NamespaceToolCallTransform(flattenedNamespaces, contentType, route.slug, {
-            pendingInterrupts,
-          }),
+          new NamespaceToolCallTransform(
+            flattenedNamespaces,
+            contentType,
+            route?.slug,
+            { pendingInterrupts },
+          ),
         );
       }
       const guard =

@@ -252,10 +252,10 @@ parent turn (or nudge the stuck parent so it issues another request):
 ./bin/model-router codex doctor --fix
 ```
 
-Already-stuck badges in an old San Francisco turn settle on the next routed
-parent response that sees those children's `FINAL_ANSWER` in input. If the
-parent is fully idle and never routes again, click into each child once or
-send a short follow-up on the parent.
+Already-stuck badges in an old San Francisco turn settle on the next parent
+response (native or routed) that sees those children's `FINAL_ANSWER` in
+input. If the parent is fully idle and never turns again, click into each
+child once or send a short follow-up on the parent.
 
 ## The agent stops mid-task with no error
 

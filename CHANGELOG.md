@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Finished subagents no longer stay Working just because the parent turn is
+  still live.** Codex 0.147 records a child's `FINAL_ANSWER` as
+  `subAgentActivity` `interacted` and maps that to Working until the parent
+  turn ends, the user clicks into the child, or the parent calls
+  `interrupt_agent`. `close_agent` is not in that v2 toolset. The managed
+  `multi_agent_v2` block now ships a root usage hint that tells the parent to
+  interrupt finished children, so new tasks settle the badge without a click.
+
 - **GLM-5.3, on every route that actually serves it.** Z.ai shipped GLM-5.3 on
   2026-08-14. It is now in the picker three ways: `zai-coding/glm-5.3` on the
   GLM Coding Plan subscription, `zai-api/glm-5.3` on the metered platform, and

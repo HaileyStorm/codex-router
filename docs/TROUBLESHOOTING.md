@@ -228,6 +228,25 @@ Report zero-token responses to the provider; only they can fix the source. To
 see the provider's own numbers in Codex again, set
 `CODEX_ROUTER_ZERO_INPUT_ESTIMATE=0` in the service environment.
 
+## Finished subagents stay Working
+
+Codex 0.147 keeps a child visually working after it has already written
+`FINAL_ANSWER` if the parent turn is still live. Opening the child flips it
+to done because that loads the child's idle thread status. The router cannot
+rewrite Codex's activity kinds; the managed `multi_agent_v2` usage hint tells
+the parent to call `interrupt_agent` on finished children, which is the
+close path that build actually exposes.
+
+Rebuild the managed config, then fully quit and reopen Codex so a new parent
+turn picks up the hint:
+
+```sh
+./bin/model-router codex doctor --fix
+```
+
+Already-stuck badges in an old San Francisco turn stay until that parent
+interrupts them or you click into each child.
+
 ## The agent stops mid-task with no error
 
 A routed turn that answers 200 with no output text and no tool call is invisible

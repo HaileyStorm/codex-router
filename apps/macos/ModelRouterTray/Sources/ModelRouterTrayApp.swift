@@ -100,6 +100,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     Task { await store.startActivityPolling() }
     Task { await store.startAccountUsagePolling() }
     Task { await store.startProviderPolling() }
+    if Self.launchedByUser { store.revealForUserLaunch() }
+  }
+
+  // Double-clicking an app that is already running sends this instead of a
+  // fresh launch. An LSUIElement app has no window and no Dock icon, so without
+  // handling it the second open is silently swallowed and the app reads as
+  // broken.
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+    store.revealForUserLaunch()
+    return true
+  }
+
+  // launchd passes --supervised (see src/tray-service-macos.mjs) so a login
+  // start is distinguishable from a person opening the app. Without the
+  // distinction every login would force the surfaces visible and quietly
+  // defeat follow mode.
+  private static var launchedByUser: Bool {
+    !CommandLine.arguments.contains("--supervised")
   }
 
   func applicationWillTerminate(_ notification: Notification) {
@@ -147,6 +165,13 @@ final class RouterStore: ObservableObject {
   // re-derive it. Sourced from the routine snapshot, so a client appearing
   // mid-session is picked up without a relaunch.
   @Published private(set) var routerPinsServiceOn = false
+  // Bumped every time the user opens the app by hand. StatusItemLabel watches
+  // it so a double-click gets a visible answer even when the tray was already
+  // running and nothing about the router changed.
+  @Published private(set) var attentionPulse = 0
+  private var attentionRelease: Task<Void, Never>?
+  private var userRevealUntil: Date?
+  private static let userRevealWindow: TimeInterval = 20
 
   private var polling = false
   private var activityPolling = false
@@ -162,6 +187,11 @@ final class RouterStore: ObservableObject {
   // The Codex desktop app plus the ChatGPT desktop app, either of which counts
   // as "Codex is open" for the follow mode.
   private let hostAppBundleIDs = ["com.openai.codex", "com.openai.chat"]
+  // p_comm truncates at 16 characters, so these must be the executable names as
+  // the kernel stores them. The npm wrapper is a Node script that execs a native
+  // binary called `codex`; the desktop app's helper is also `codex`, which is
+  // harmless because that case is already covered by the bundle check.
+  nonisolated static let hostProcessNames = ["codex"]
   private var workspaceObservers: [NSObjectProtocol] = []
   private var pendingServiceStop: Task<Void, Never>?
   private var hostAppRecheck: Task<Void, Never>?
@@ -365,17 +395,94 @@ final class RouterStore: ObservableObject {
   }
 
   private func refreshHostAppRunning() {
-    let detected = hostAppBundleIDs.contains { identifier in
-      NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
-        .contains { !$0.isTerminated }
-    }
+    let detected = hostAppRunningNow()
     if hostAppRunning != detected { hostAppRunning = detected }
     refreshSurfacesVisible()
     reconcileService()
   }
 
+  // Codex ships two ways: the desktop app, which has a bundle identifier, and
+  // the npm CLI, which is a plain terminal process and has none. Follow mode
+  // checked only the bundle identifiers, so every CLI session read as "Codex is
+  // not running" -- which hid the menu bar item immediately and then stopped the
+  // router thirty seconds into the user's work, exactly when it was needed. Look
+  // for the process too.
+  private func hostAppRunningNow() -> Bool {
+    let bundleMatch = hostAppBundleIDs.contains { identifier in
+      NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+        .contains { !$0.isTerminated }
+    }
+    if bundleMatch { return true }
+    return Self.anyProcessRunning(named: Self.hostProcessNames)
+  }
+
+  // sysctl rather than spawning pgrep: this runs every five seconds for the
+  // life of the session, and a fork/exec on that cadence is a real cost on a
+  // laptop. NSRunningApplication cannot see processes that are not bundled apps,
+  // so there is no AppKit answer here.
+  // nonisolated: a process scan touches no actor state, and pinning it to the
+  // main actor would make it unusable from anywhere but the UI.
+  nonisolated static func anyProcessRunning(named names: [String]) -> Bool {
+    var request: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+    var byteCount = 0
+    guard sysctl(&request, UInt32(request.count), nil, &byteCount, nil, 0) == 0, byteCount > 0
+    else { return false }
+
+    let stride = MemoryLayout<kinfo_proc>.stride
+    // Processes can appear between sizing and reading, so ask for headroom and
+    // trust the byte count sysctl reports back rather than the one it predicted.
+    var entries = [kinfo_proc](repeating: kinfo_proc(), count: byteCount / stride + 32)
+    byteCount = entries.count * stride
+    let read = entries.withUnsafeMutableBytes { buffer -> Int32 in
+      sysctl(&request, UInt32(request.count), buffer.baseAddress, &byteCount, nil, 0)
+    }
+    guard read == 0 else { return false }
+
+    for index in 0..<min(byteCount / stride, entries.count) {
+      let comm = withUnsafeBytes(of: entries[index].kp_proc.p_comm) { raw -> String in
+        // p_comm is a fixed 17-byte field, NUL-padded rather than NUL-terminated
+        // when the name fills it, so measure before decoding.
+        var length = 0
+        while length < raw.count, raw[length] != 0 { length += 1 }
+        return String(decoding: raw[0..<length], as: UTF8.self)
+      }
+      if names.contains(where: { $0.compare(comm, options: .caseInsensitive) == .orderedSame }) {
+        return true
+      }
+    }
+    return false
+  }
+
   private func refreshSurfacesVisible() {
-    surfacesVisible = effectivePresenceMode == .always || hostAppRunning
+    let pinnedByUser = userRevealUntil.map { $0 > Date() } ?? false
+    // effectivePresenceMode, not presenceMode: the router pins follow mode to
+    // always while a client it cannot watch is talking to it, and a user launch
+    // must not undo that.
+    surfacesVisible = pinnedByUser || effectivePresenceMode == .always || hostAppRunning
+  }
+
+  // Opening Model Router from Finder, Spotlight, Launchpad, or the Dock has to
+  // produce a menu bar item and a live router even in follow mode with Codex
+  // closed. Without this the app looked broken on exactly the launch that
+  // motivates having an icon at all: double-click, nothing appears, because
+  // follow mode had already decided the surfaces should stay hidden.
+  //
+  // Time-boxed rather than sticky, so follow mode takes over again on its own
+  // and the user does not silently end up in always-on.
+  func revealForUserLaunch() {
+    userRevealUntil = Date().addingTimeInterval(Self.userRevealWindow)
+    refreshSurfacesVisible()
+    startService()
+    attentionPulse &+= 1
+    NSApp.activate(ignoringOtherApps: true)
+    attentionRelease?.cancel()
+    attentionRelease = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(Self.userRevealWindow))
+      guard !Task.isCancelled, let self else { return }
+      self.userRevealUntil = nil
+      self.refreshSurfacesVisible()
+      self.reconcileService()
+    }
   }
 
   private func persistPresenceMode(_ mode: TrayPresenceMode) {
@@ -2581,6 +2688,7 @@ struct ProviderSetupState: Decodable, Identifiable, Equatable {
 
 private struct StatusItemLabel: View {
   @ObservedObject var store: RouterStore
+  @State private var pulsing = false
   private static let reservedWidth: CGFloat = 180
 
   var body: some View {
@@ -2588,6 +2696,21 @@ private struct StatusItemLabel: View {
       Circle()
         .fill(store.activityState.tint)
         .frame(width: 6, height: 6)
+        // Opening a menu bar app gives the user nothing to look at, so the
+        // status dot answers instead. SwiftUI offers no supported way to open a
+        // MenuBarExtra window programmatically -- the usual trick reaches into
+        // the private NSStatusItem behind it -- and a dot that visibly reacts is
+        // worth more than a private API that breaks on the next macOS release.
+        .scaleEffect(pulsing ? 2.1 : 1)
+        .opacity(pulsing ? 0.55 : 1)
+        .animation(.easeOut(duration: 0.45), value: pulsing)
+        .onChange(of: store.attentionPulse) { _ in
+          pulsing = true
+          Task {
+            try? await Task.sleep(for: .milliseconds(450))
+            pulsing = false
+          }
+        }
       Text(store.hasConcurrentActivity ? store.activitySummaryLabel : store.selectedUsageProvider.shortName)
         .font(.system(size: 11, weight: .medium, design: .rounded))
         .lineLimit(1)

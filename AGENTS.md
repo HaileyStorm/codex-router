@@ -795,6 +795,55 @@ minutes later. Do not quietly drop the label because a check happened to pass.
   directories.
 - Do not restart or quit the Codex App from the installation task.
 
+## The `codex` shim is opt-in and must never break `codex`
+
+`src/codex-shim.mjs` can put a wrapper named `codex` on the user's PATH so the
+router is verified up before Codex starts. Installing a file that shadows a
+command the user already has is a change only they may authorize.
+
+1. Never install it from `install.sh`, `install.ps1`, `doctor --fix`, or any
+   automatic repair. It ships behind `model-router codex shim install` only.
+2. Never write into a PATH directory outside the user's home directory. A shim
+   in `/usr/local/bin` changes `codex` for every account on the machine.
+3. Never overwrite or delete a `codex` that does not carry `SHIM_MARKER`.
+   Another wrapper there is somebody's deliberate setup, not debris.
+4. Never edit shell startup files to put the shim on PATH. When no directory
+   ahead of Codex is writable, print the `export PATH=...` line and stop.
+5. Every failure path in the generated shim must still `exec` the real Codex.
+   A stopped router, a deleted checkout, and a gateway that never becomes
+   healthy are all recoverable; a `codex` that refuses to start is not. The
+   wait is bounded by `MODEL_ROUTER_SHIM_WAIT`, and `MODEL_ROUTER_SHIM=0`
+   bypasses the check.
+
+`test/codex-shim.test.mjs` covers each of these. Do not weaken those tests to
+land a change.
+
+## Detecting whether Codex is open
+
+Follow mode ("Show tray: With Codex") decides when the tray is visible and, in
+that mode, when the router runs at all. Codex ships both as a desktop app and as
+an npm CLI, and only the app has a bundle identifier, so
+`NSRunningApplication` alone is not an answer: a bundle-only check reported
+"Codex is not running" for every terminal session, hid the menu bar item, and
+stopped the router 30 seconds into the user's work.
+
+Detection must cover both — bundle identifiers for the apps, and a process-table
+scan for the CLI. Keep the scan in `sysctl`; it runs every five seconds for the
+life of the session, and spawning `pgrep` on that cadence is a cost the check
+does not justify. `apps/macos/ModelRouterTray/Tests/HostProcessDetectionTests.swift`
+guards it.
+
+## The macOS app icon is committed, not built during a tray build
+
+`apps/macos/ModelRouterTray/Resources/AppIcon.svg` is the source and
+`AppIcon.icns` beside it is the committed output of `scripts/build-app-icon.sh`.
+Regenerate and commit both together after editing the SVG. Do not make
+`scripts/build-macos-tray-app.sh` rasterize the icon: it would put `sips` and
+`iconutil` on the critical path of every tray build for one asset that changes
+almost never. Keep the SVG free of `--` inside comments and of SVG filter
+primitives — CoreSVG, which is what `sips` uses, rejects the first and silently
+drops the second.
+
 ## Upstream retries are legal only before the first relayed byte
 
 `src/upstream-retry.mjs` retries a native upstream request a bounded number of

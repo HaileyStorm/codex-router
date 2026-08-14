@@ -134,8 +134,13 @@ Linux installations support the Codex CLI.
 | DeepSeek V4 Pro (Qwen Plan) | `qwen-plan/deepseek-v4-pro` | Alibaba Model Studio plan API key |
 | DeepSeek V4 Flash (Qwen Plan) | `qwen-plan/deepseek-v4-flash-0731` | Alibaba Model Studio plan API key |
 | GLM-5.2 (Qwen Plan) | `qwen-plan/glm-5.2` | Alibaba Model Studio plan API key |
+| GLM-5.3 (Coding Plan) | `zai-coding/glm-5.3` | Z.ai GLM Coding Plan API key |
+| GLM-5.3 1M (Coding Plan) | `zai-coding/glm-5.3-1m` | Z.ai GLM Coding Plan API key |
 | GLM-5.2 (Coding Plan) | `zai-coding/glm-5.2` | Z.ai GLM Coding Plan API key |
 | GLM-5-Turbo (Coding Plan) | `zai-coding/glm-5-turbo` | Z.ai GLM Coding Plan API key |
+| GLM-5.3 (Z.ai API) | `zai-api/glm-5.3` | Separately billed Z.ai platform API key |
+| GLM-5.2 (Z.ai API) | `zai-api/glm-5.2` | Separately billed Z.ai platform API key |
+| GLM-4.7 (Z.ai API) | `zai-api/glm-4.7` | Separately billed Z.ai platform API key |
 | Muse Spark 1.2 (Meta) | `meta/muse-spark-1.2` | Meta Model API key |
 | Muse Spark 1.2 Contributor (Meta) | `meta/muse-spark-1.2-contributor` | Meta Model API key |
 | Muse Spark 1.1 (Meta) | `meta/muse-spark-1.1` | Meta Model API key |
@@ -256,10 +261,17 @@ the Singapore region. Coding Plan subscribers or other regions can point
 `QWEN_PLAN_BASE_URL` at their dashboard-issued base URL. Plan keys use the
 `sk-sp-` prefix and are separate from pay-as-you-go Model Studio keys; Alibaba
 reserves plan endpoints for interactive coding tools.
-The Z.ai entries use the GLM Coding Plan's dedicated endpoint and its
+The `zai-coding` entries use the GLM Coding Plan's dedicated endpoint and its
 subscription API key. That key is not interchangeable with general Z.ai
 platform keys, and Z.ai reserves the coding endpoint for interactive coding
-tools.
+tools. The metered platform is therefore a separate provider, `zai-api`, on
+`https://api.z.ai/api/paas/v4` with its own key file and its own environment
+variable (`ZAI_PLATFORM_API_KEY`, never the plan's `ZAI_API_KEY`) — connecting
+one does not connect the other. GLM-5.3 ships on both routes with Z.ai's
+documented low/high/max reasoning tiers; the 1M context window is only
+documented behind the `[1m]` model suffix, which is what the separate
+`zai-coding/glm-5.3-1m` entry sends, so the plain GLM-5.3 entries stay at the
+200K lineage default until a live run proves otherwise.
 Beyond the built-in models, each API-key provider's live catalog can be
 curated interactively: `./bin/curate-models PROVIDER` lists the models the
 provider currently advertises that are not in the registry, lets you toggle
@@ -311,6 +323,7 @@ started with.
 | Picker label | Model ID |
 | --- | --- |
 | Grok 4.5 (opencode Go) | `opencode-go/grok-4.5` |
+| GLM-5.3 (opencode Go) | `opencode-go/glm-5.3` |
 | GLM-5.2 (opencode Go) | `opencode-go/glm-5.2` |
 | GLM-5.1 (opencode Go) | `opencode-go/glm-5.1` |
 | Kimi K3 (opencode Go) | `opencode-go/kimi-k3` |

@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **GLM-5.3, on every route that actually serves it.** Z.ai shipped GLM-5.3 on
+  2026-08-14. It is now in the picker three ways: `zai-coding/glm-5.3` on the
+  GLM Coding Plan subscription, `zai-api/glm-5.3` on the metered platform, and
+  `opencode-go/glm-5.3` on the opencode Go subscription, whose catalog already
+  advertises it (`./bin/discover-models opencode-go`). Command Code, Qwen Plan,
+  Ollama Cloud, and ClinePass do not carry it yet, so nothing was added there.
+
+  Z.ai documents the 1M context window for GLM-5.3 only behind the `[1m]` model
+  suffix, so that is a separate entry — `zai-coding/glm-5.3-1m`, which sends
+  `glm-5.3[1m]` and a one-million-token compaction window. The suffix-free
+  entries stay at the 200K lineage default rather than inheriting GLM-5.2's 1M,
+  because under-declaring a context window compacts early and over-declaring
+  overruns the turn.
+
+- **A Z.ai key now means one of two different things, and the router keeps them
+  apart.** `zai-api` is a new provider for the metered open platform on
+  `https://api.z.ai/api/paas/v4`, carrying GLM-5.3, GLM-5.2 (1M context), and
+  the cheaper GLM-4.7. It ships GLM-5.3 and GLM-5.2 with the same reasoning
+  ladders as the plan route, and GLM-4.7 with none, because Z.ai documents no
+  effort control for it.
+
+  It is a separate credential end to end: its own key file
+  (`zai-api-key.secret`), its own keychain service, and its own environment
+  variable (`ZAI_PLATFORM_API_KEY`) — never the plan's `ZAI_API_KEY`. A Coding
+  Plan key is not billable on the metered endpoint and vice versa, so a
+  `planNote` says so wherever a key is connected, and the account panel links
+  the billing page instead of polling the plan quota route with a key that has
+  no plan behind it.
+
+- **GLM reasoning effort follows the model, not the vendor.** The `glm-thinking`
+  request profile mapped every multi-tier GLM onto GLM-5.2's two rungs
+  (high/max), which would have silently rounded GLM-5.3's new `low` tier up to
+  `high` and billed deeper thinking than was asked for. The requested effort is
+  now clamped onto the ladder each model's own registry entry declares.
+
 - **DeepSeek Harness can use the Codex models you are already signed in to.**
   Native GPT traffic is authorized by the caller's own ChatGPT session — the
   router copies `authorization` and `chatgpt-account-id` off each request, Codex

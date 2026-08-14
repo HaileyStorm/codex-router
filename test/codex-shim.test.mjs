@@ -258,3 +258,96 @@ test("a healthy router is left alone: the shim never calls control", execRequire
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+// The router must never resolve `codex` to its own shim.
+//
+// The shim starts the router when it finds it down, so a router that reaches it
+// revives itself: the tray polls `control account` every 30 seconds, that spawns
+// Codex through `findCodexBinary`, and the shim restarts the service the tray
+// just stopped -- forever.
+//
+// These assert the invariant rather than an exact path, because `findCodexBinary`
+// consults absolute locations (`/Applications/ChatGPT.app/...`, Homebrew) that a
+// test cannot remove from the machine it runs on. "Never a shim" is the contract;
+// which real Codex it settles on is the machine's business.
+test("findCodexBinary never returns a shim named by CODEX_BIN", async (t) => {
+  if (process.platform === "win32") return t.skip("no shim is installed on Windows");
+  const home = scratch();
+  try {
+    const shimFile = path.join(home, "codex");
+    // A shim by content, not by name: the marker is what identifies one.
+    writeFileSync(shimFile, `#!/bin/sh\n# ${SHIM_MARKER}\nexec /nowhere/codex "$@"\n`, {
+      mode: 0o755,
+    });
+    chmodSync(shimFile, 0o755);
+    assert.equal(isShimFile(shimFile), true, "fixture must actually look like a shim");
+
+    const { findCodexBinary } = await import(
+      `../src/codex-binary.mjs?candidate-shim=${Date.now()}`
+    );
+    const previousBin = process.env.CODEX_BIN;
+    try {
+      // CODEX_BIN is the first entry in the candidate list, so this is the
+      // strongest possible case for the filter: an explicitly named shim.
+      process.env.CODEX_BIN = shimFile;
+      const found = findCodexBinary();
+      assert.notEqual(found, shimFile, "resolved to its own shim, which is the restart loop");
+      if (found) assert.equal(isShimFile(found), false);
+    } finally {
+      if (previousBin === undefined) delete process.env.CODEX_BIN;
+      else process.env.CODEX_BIN = previousBin;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("findCodexBinary never returns a shim that shadows PATH", async (t) => {
+  if (process.platform === "win32") return t.skip("no shim is installed on Windows");
+  const home = scratch();
+  try {
+    const only = path.join(home, "bin");
+    mkdirSync(only, { recursive: true });
+    const shimFile = path.join(only, "codex");
+    writeFileSync(shimFile, `#!/bin/sh\n# ${SHIM_MARKER}\nexec /nowhere/codex "$@"\n`, {
+      mode: 0o755,
+    });
+    chmodSync(shimFile, 0o755);
+
+    const { findCodexBinary } = await import(`../src/codex-binary.mjs?path-shim=${Date.now()}`);
+    const previous = { path: process.env.PATH, bin: process.env.CODEX_BIN };
+    try {
+      process.env.PATH = only;
+      delete process.env.CODEX_BIN;
+      const found = findCodexBinary();
+      assert.notEqual(found, shimFile);
+      if (found) assert.equal(isShimFile(found), false, "stepped onto a shim via PATH");
+    } finally {
+      process.env.PATH = previous.path;
+      if (previous.bin !== undefined) process.env.CODEX_BIN = previous.bin;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// The PATH half of the same rule, isolated from the absolute candidates so it
+// can assert the "there is no real Codex" answer exactly.
+test("resolveRealCodex reports nothing when the only codex on PATH is a shim", (t) => {
+  if (process.platform === "win32") return t.skip("no shim is installed on Windows");
+  const home = scratch();
+  try {
+    const only = path.join(home, "bin");
+    mkdirSync(only, { recursive: true });
+    const shimFile = path.join(only, "codex");
+    writeFileSync(shimFile, `#!/bin/sh\n# ${SHIM_MARKER}\nexec /nowhere/codex "$@"\n`, {
+      mode: 0o755,
+    });
+    chmodSync(shimFile, 0o755);
+    // Honest "none" rather than handing back the shim: a caller that spawned it
+    // would restart the router, which is the loop this filter exists to break.
+    assert.equal(resolveRealCodex({ PATH: only }), null);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

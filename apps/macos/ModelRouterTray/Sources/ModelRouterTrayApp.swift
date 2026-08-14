@@ -194,6 +194,9 @@ final class RouterStore: ObservableObject {
   nonisolated static let hostProcessNames = ["codex"]
   private var workspaceObservers: [NSObjectProtocol] = []
   private var pendingServiceStop: Task<Void, Never>?
+  // Bumped for every scheduled stop so a cancelled task can tell whether the
+  // handle it would clear is still its own.
+  private var serviceStopGeneration = 0
   private var hostAppRecheck: Task<Void, Never>?
   private var serviceWork: Task<Void, Never>?
   private var serviceIntent: ServiceIntent = .unknown
@@ -438,8 +441,23 @@ final class RouterStore: ObservableObject {
     }
     guard read == 0 else { return false }
 
+    // Our own Codex does not count as "Codex is running".
+    //
+    // The tray polls `control account` every 30 seconds, which starts
+    // `codex app-server` to read usage -- a process whose `p_comm` is exactly
+    // `codex`. Counting it latches follow mode on: the tray sees Codex as
+    // permanently present and never releases the router again.
+    //
+    // The match is a *grandchild*, not a child: the tray spawns `control`, and
+    // `control` spawns Codex. So collect the parent of every process first and
+    // walk the chain, rather than comparing a single ppid.
+    var parentOf: [pid_t: pid_t] = [:]
+    var matches: [pid_t] = []
     for index in 0..<min(byteCount / stride, entries.count) {
-      let comm = withUnsafeBytes(of: entries[index].kp_proc.p_comm) { raw -> String in
+      let process = entries[index].kp_proc
+      let identifier = process.p_pid
+      parentOf[identifier] = entries[index].kp_eproc.e_ppid
+      let comm = withUnsafeBytes(of: process.p_comm) { raw -> String in
         // p_comm is a fixed 17-byte field, NUL-padded rather than NUL-terminated
         // when the name fills it, so measure before decoding.
         var length = 0
@@ -447,8 +465,26 @@ final class RouterStore: ObservableObject {
         return String(decoding: raw[0..<length], as: UTF8.self)
       }
       if names.contains(where: { $0.compare(comm, options: .caseInsensitive) == .orderedSame }) {
-        return true
+        matches.append(identifier)
       }
+    }
+    let own = getpid()
+    return matches.contains { !isDescendant($0, of: own, parentOf: parentOf) }
+  }
+
+  // Walks a pid up to an ancestor. Bounded rather than `while true`: this reads
+  // a table sampled from the kernel between two sysctl calls, and a torn read
+  // must not be able to spin the scan that runs every five seconds.
+  nonisolated static func isDescendant(
+    _ pid: pid_t,
+    of ancestor: pid_t,
+    parentOf: [pid_t: pid_t],
+  ) -> Bool {
+    var current = pid
+    for _ in 0..<64 {
+      if current == ancestor { return true }
+      guard let parent = parentOf[current], parent != 0, parent != current else { return false }
+      current = parent
     }
     return false
   }
@@ -513,8 +549,19 @@ final class RouterStore: ObservableObject {
     }
     // Periodic process rechecks must not restart this grace period forever.
     guard pendingServiceStop == nil else { return }
+    serviceStopGeneration += 1
+    let generation = serviceStopGeneration
     pendingServiceStop = Task { [weak self] in
       guard let self else { return }
+      // The handle is released however this task ends, including the early
+      // returns below and the ones inside `stopServiceWhenIdle`. Leaving it set
+      // is what made a single spurious "Codex is running" permanent: the
+      // `pendingServiceStop == nil` guard above would then refuse to schedule
+      // another stop for the rest of the session. The generation check keeps a
+      // cancelled task from clearing a handle a later reconcile installed.
+      defer {
+        if self.serviceStopGeneration == generation { self.pendingServiceStop = nil }
+      }
       try? await Task.sleep(for: self.hostAppAbsenceGrace)
       guard !Task.isCancelled else { return }
       // Do not trust a possibly missed launch notification. Query the process

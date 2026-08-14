@@ -56,6 +56,12 @@ function layout(home, { realIn = "npm-global/bin", extras = ["bin", "early"] } =
   };
 }
 
+// The shim is a bash script the installer refuses to write on Windows, so the
+// two tests that actually execute one are skipped there rather than asserting
+// something the platform was never promised. Everything else -- PATH ordering,
+// marker handling, the Windows refusal itself -- runs everywhere.
+const execRequiresPosix = { skip: process.platform === "win32" ? "the shim is POSIX-only" : false };
+
 test("the real codex is found by PATH order", () => {
   const home = scratch();
   try {
@@ -184,7 +190,7 @@ test("the generated shim carries its marker so it never execs itself", () => {
   assert.match(shim, /grep -q '.*MODEL_ROUTER_CODEX_SHIM.*'/);
 });
 
-test("a router that never comes up delays Codex but never blocks it", () => {
+test("a router that never comes up delays Codex but never blocks it", execRequiresPosix, () => {
   const home = scratch();
   try {
     const paths = layout(home);
@@ -221,7 +227,7 @@ test("a router that never comes up delays Codex but never blocks it", () => {
   }
 });
 
-test("a healthy router is left alone: the shim never calls control", async () => {
+test("a healthy router is left alone: the shim never calls control", execRequiresPosix, async () => {
   const home = scratch();
   const server = createServer();
   try {

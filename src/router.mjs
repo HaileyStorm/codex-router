@@ -14,6 +14,7 @@ import {
   assertCallerSecret,
   authenticatedRoute,
 } from "./caller-auth.mjs";
+import { handlePanelRequest, isPanelRoute } from "./desktop-panel.mjs";
 import {
   applyKeepAliveTimeouts,
   endStreamedResponse,
@@ -2278,6 +2279,12 @@ async function handleRequest(request, response) {
     return;
   }
   requestUrl.pathname = route;
+
+  // Behind the caller capability, like every other local endpoint: the panel
+  // reads the same data the tray does, so it is gated the same way.
+  if (isPanelRoute(route) && (await handlePanelRequest(request, response, route, { writeJson }))) {
+    return;
+  }
 
   if (
     request.method === "GET" &&

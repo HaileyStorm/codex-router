@@ -5,8 +5,18 @@
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, shell } = require("electron");
 const http = require("node:http");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
-const UI_DIR = path.join(__dirname, "..", "desktop", "ui");
+// Packaged, main.js runs from inside app.asar while the UI and src/ are
+// unpacked beside it under resources/app -- so a path relative to __dirname
+// points at nothing and the window loads a blank page while the process looks
+// perfectly healthy. One root, resolved per mode, keeps dev and packaged from
+// drifting: everything else is derived from it.
+const APP_ROOT = app.isPackaged
+  ? path.join(process.resourcesPath, "app")
+  : path.resolve(__dirname, "..", "..");
+const UI_DIR = path.join(APP_ROOT, "apps", "desktop", "ui");
+const COMMANDS_MODULE = pathToFileURL(path.join(APP_ROOT, "src", "desktop-commands.mjs")).href;
 const ROUTER_PORT = Number(process.env.MODEL_ROUTER_PORT || 4202);
 
 let bridge;
@@ -16,8 +26,8 @@ let panel;
 const settings = { islandEnabled: false, islandExpanded: false };
 
 async function loadBridge() {
-  bridge ??= await import("./bridge.mjs");
-  root ??= bridge.sourceRoot(process.env, __dirname);
+  bridge ??= await import(COMMANDS_MODULE);
+  root ??= process.env.MODEL_ROUTER_SOURCE_ROOT || APP_ROOT;
   return bridge;
 }
 
@@ -49,7 +59,7 @@ function routerHealth() {
 }
 
 async function handleInvoke(command, args) {
-  const { COMMANDS, runControl, parseJson } = await loadBridge();
+  const { runDesktopCommand } = await loadBridge();
 
   if (command === "router_health") return routerHealth();
   if (command === "platform_info") {
@@ -77,14 +87,9 @@ async function handleInvoke(command, args) {
     return null;
   }
 
-  const build = COMMANDS[command];
-  if (!build) throw new Error(`Unknown command: ${command}`);
-  const plan = build(args ?? {});
-  const output = await runControl(root, plan.args, { stdin: plan.stdin });
-  for (const extra of plan.select ?? []) await runControl(root, extra);
-  // A mutating command re-reads so the renderer always paints fresh state.
-  if (plan.then) return parseJson(await runControl(root, plan.then));
-  return output.trim() ? parseJson(output) : null;
+  // The shared runner, so the shell adds a window and an IPC hop and nothing
+  // else. Behaviour lives in src/desktop-commands.mjs for every surface.
+  return runDesktopCommand(command, args ?? {}, { root });
 }
 
 function showPanel() {

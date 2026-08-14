@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **The companion opens in a browser, with nothing to install.** The router is
+  already an HTTP server on loopback with a capability-gated path, and the UI
+  is plain HTML whose entire backend surface is one function, so it now serves
+  itself at `/panel` behind the same caller capability every other local
+  endpoint uses. No binary, no toolchain, no packaging, no tray icon to find.
+  The panel deliberately carries only the reading half of the command table:
+  a browser tab is reachable by anything that learns the capability, and
+  "save this API key" is not something to expose on that assumption.
+
+- **An Electron shell, packaged.** `apps/electron` builds an installer through
+  electron-builder (NSIS and zip on Windows, AppImage on Linux). It is a shell
+  rather than a second application: `apps/desktop/ui` is loaded verbatim and
+  every command runs through the same table, so all three surfaces -- tray,
+  Electron, browser panel -- are windows onto one application. The command
+  table moved to `src/desktop-commands.mjs` for exactly that reason.
+
 - **The desktop companion is a download now, not a build.** It could be
   obtained exactly one way -- install a Rust toolchain and compile it -- which
   is a hard prerequisite for anyone who only wants to run it. CI was already

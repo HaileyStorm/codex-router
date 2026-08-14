@@ -1,18 +1,23 @@
-// Every backend call the companion makes is one shell-out to the router's own
-// control CLI, exactly as the Tauri app's Rust side does it. Keeping the two
-// bridges argument-for-argument identical is what lets both shells drive the
-// same UI without a second copy of the behaviour.
+// One command table for every surface that drives apps/desktop/ui: the Tauri
+// tray, the Electron shell, and the router's own browser panel. Each call is a
+// single shell-out to the control CLI, so a shell is only a window and an IPC
+// hop -- not a second implementation of what the companion does. Duplicating
+// this table is how the surfaces would drift apart, so they all import it.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CONTROL_TIMEOUT_MS = 120_000;
 
-export function sourceRoot(env = process.env, here = process.cwd()) {
+const SELF_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+export function sourceRoot(env = process.env, here = SELF_ROOT) {
   if (env.MODEL_ROUTER_SOURCE_ROOT) return env.MODEL_ROUTER_SOURCE_ROOT;
-  // apps/electron -> repository root
-  const guess = path.resolve(here, "..", "..");
-  return existsSync(path.join(guess, "src", "control.mjs")) ? guess : undefined;
+  for (const guess of [here, path.resolve(here, "..", "..")]) {
+    if (existsSync(path.join(guess, "src", "control.mjs"))) return guess;
+  }
+  return undefined;
 }
 
 // A command that mutates and then re-reads: the UI always wants the fresh
@@ -154,4 +159,17 @@ export function parseJson(output) {
   } catch {
     throw new Error("Model Router returned an unreadable response.");
   }
+}
+
+// Runs a command from the table end to end. Every surface calls this rather
+// than sequencing runControl itself, so "mutate, then re-read so the caller
+// paints fresh state" cannot be implemented three slightly different ways.
+export async function runDesktopCommand(command, args = {}, { root = sourceRoot() } = {}) {
+  const build = COMMANDS[command];
+  if (!build) throw new Error(`Unknown command: ${command}`);
+  const plan = build(args ?? {});
+  const output = await runControl(root, plan.args, { stdin: plan.stdin });
+  for (const extra of plan.select ?? []) await runControl(root, extra);
+  if (plan.then) return parseJson(await runControl(root, plan.then));
+  return output.trim() ? parseJson(output) : null;
 }

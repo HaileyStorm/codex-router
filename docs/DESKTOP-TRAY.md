@@ -52,6 +52,22 @@ status dot, and the Error label remains explicit. A low-contrast edge signal
 appears only while generating. The app honors the system's reduced-motion
 preference.
 
+## Downloading a prebuilt binary
+
+Building needs a Rust toolchain and several minutes of compilation, which is a
+lot to ask of someone who only wants to run the companion. Every CI run
+publishes the binary it already builds, so you can take that instead:
+
+1. Open the repository's **Actions** tab and pick a green **CI** run.
+2. Download the **codex-router-tray-Windows** artifact (or
+   **codex-router-tray-Linux**) from the run's Artifacts section.
+3. Unzip it and run `codex-router-desktop.exe`.
+
+Windows 10 and 11 already ship the WebView2 runtime the companion needs, so
+there is nothing else to install. To have it start at logon as well, point the
+tray command at the downloaded binary's location, or build in place with
+`./codex-router.ps1 tray`.
+
 ## Build prerequisites
 
 - Node.js 22.19 or newer

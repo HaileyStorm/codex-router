@@ -54,6 +54,7 @@ import {
   flattenNamespacedHistory,
   flattenNamespaceTools,
 } from "./namespace-relay.mjs";
+import { pendingInterruptTargets } from "./subagent-completion.mjs";
 import { mergeCodexAppTools } from "./codex-app-tools.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
 import { translateGatewayError } from "./error-translation.mjs";
@@ -1594,6 +1595,7 @@ async function handleResponses(request, response, requestUrl) {
   let usage;
   let estimatedInputTokens;
   let toolResultAging;
+  let pendingInterrupts = [];
   let emptyCompletion = false;
   let emptyCompletionRetried = false;
   // An empty turn the router could not repair because the attempt was already
@@ -1758,6 +1760,11 @@ async function handleResponses(request, response, requestUrl) {
       if (namespacesFlattened) {
         routedInput = flattenNamespacedHistory(routedInput, flattenedNamespaces);
       }
+      // Close finished children the parent left Working. Only when the
+      // collaboration toolset is actually available on this turn.
+      pendingInterrupts = pendingInterruptTargets(input, {
+        namespaces: flattenedNamespaces,
+      });
       const routed = {
         ...payload,
         model: route.gatewayModel,
@@ -1901,7 +1908,9 @@ async function handleResponses(request, response, requestUrl) {
       // namespace restored before Codex sees it.
       if (route) {
         transforms.push(
-          new NamespaceToolCallTransform(flattenedNamespaces, contentType, route.slug),
+          new NamespaceToolCallTransform(flattenedNamespaces, contentType, route.slug, {
+            pendingInterrupts,
+          }),
         );
       }
       const guard =

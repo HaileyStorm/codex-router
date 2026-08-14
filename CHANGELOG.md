@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Finished subagents close without a click, even when the parent ignores the
+  usage hint.** Codex 0.147 still maps a child's `FINAL_ANSWER` to Working for
+  the live parent turn, and long San Francisco multi-agent parents often never
+  call `interrupt_agent` despite the managed `root_agent_usage_hint_text`. The
+  router now scans the request input for unfinished `FINAL_ANSWER` children and
+  injects the missing `collaboration.interrupt_agent` calls into the parent
+  response (stream and non-stream) before `response.completed`. Model-authored
+  interrupts are left alone; only missing closes are added.
+
 - **Finished subagents no longer stay Working just because the parent turn is
   still live.** Codex 0.147 records a child's `FINAL_ANSWER` as
   `subAgentActivity` `interacted` and maps that to Working until the parent

@@ -229,5 +229,8 @@ On Codex 0.147, a child's FINAL_ANSWER is recorded as `subAgentActivity`
 `interacted` and stays visually working for the whole live parent turn.
 `close_agent` is not in that v2 toolset. The managed `multi_agent_v2` block
 therefore also sets `usage_hint_enabled` and tells the root agent to call
-`interrupt_agent` on a finished child, which is the only model-callable way
-to flip the badge to done without clicking into that child.
+`interrupt_agent` on a finished child. Because long multi-agent parents
+still skip that call, the router additionally injects any missing
+`interrupt_agent` tool calls into the parent response when the request input
+already contains those children's FINAL_ANSWER messages. That is the only
+path that settles the badge without the user clicking into each child.

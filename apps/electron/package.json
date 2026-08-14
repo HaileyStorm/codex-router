@@ -1,0 +1,16 @@
+{
+  "name": "@codex-router/electron",
+  "version": "0.4.0-beta.3",
+  "private": true,
+  "description": "Electron desktop companion for Codex Model Router",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.js && node --check preload.js && node --check bridge.mjs",
+    "test:e2e": "node --test e2e.test.mjs"
+  },
+  "devDependencies": {
+    "electron": "43.4.0",
+    "playwright": "^1.62.1"
+  }
+}

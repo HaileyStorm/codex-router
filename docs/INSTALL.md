@@ -106,6 +106,7 @@ API-key providers use hidden prompts:
 ./bin/provider-key ollama-cloud set
 ./bin/provider-key qwen-plan set
 ./bin/provider-key zai-coding set
+./bin/provider-key zai-api set
 ./bin/provider-key github-copilot set
 ```
 

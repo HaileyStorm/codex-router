@@ -86,6 +86,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go/deepseek-v4-pro",
       "opencode-go/glm-5.1",
       "opencode-go/glm-5.2",
+      "opencode-go/glm-5.3",
       "opencode-go/grok-4.5",
       "opencode-go/hy3",
       "opencode-go/kimi-k2.6",
@@ -108,8 +109,13 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "qwen-plan/qwen3.7-plus",
       "qwen-plan/qwen3.8-max-preview",
       "qwen-plan/qwen3.8-max",
+      "zai-api/glm-4.7",
+      "zai-api/glm-5.2",
+      "zai-api/glm-5.3",
       "zai-coding/glm-5-turbo",
       "zai-coding/glm-5.2",
+      "zai-coding/glm-5.3-1m",
+      "zai-coding/glm-5.3",
     ],
   );
   assert.equal(PROVIDERS.get("deepseek").baseUrl, "https://api.deepseek.com");
@@ -121,6 +127,21 @@ test("provider registry exposes configured API and OAuth model families", () => 
     PROVIDERS.get("zai-coding").baseUrl,
     "https://api.z.ai/api/coding/paas/v4",
   );
+  // The pay-per-token platform is its own endpoint, its own credential, and its
+  // own key file: a Coding Plan key is not billable on it.
+  assert.equal(PROVIDERS.get("zai-api").baseUrl, "https://api.z.ai/api/paas/v4");
+  assert.equal(PROVIDERS.get("zai-api").variantOf, undefined);
+  assert.equal(PROVIDERS.get("zai-api").credential.file, "zai-api-key.secret");
+  assert.notEqual(
+    PROVIDERS.get("zai-api").credential.file,
+    PROVIDERS.get("zai-coding").credential.file,
+  );
+  assert.ok(
+    !PROVIDERS.get("zai-api").credential.environment.some((name) =>
+      PROVIDERS.get("zai-coding").credential.environment.includes(name),
+    ),
+  );
+  assert.ok(PROVIDERS.get("zai-api").planNote);
   assert.equal(PROVIDERS.get("ollama-cloud").baseUrl, "https://ollama.com/v1");
   assert.equal(PROVIDERS.get("minimax-token-plan").baseUrl, "https://api.minimax.io/v1");
   // Go is its own endpoint, not the pay-per-use Zen one.

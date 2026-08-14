@@ -468,6 +468,7 @@ final class RouterStore: ObservableObject {
     "kimi-api-cn": "Kimi CN",
     "anthropic-api": "Claude",
     "zai-coding": "GLM",
+    "zai-api": "GLM API",
     "qwen-plan": "Qwen",
     "ollama-cloud": "Ollama",
     "commandcode": "Command Code",

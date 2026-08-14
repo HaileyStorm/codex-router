@@ -67,7 +67,7 @@ case $(uname -s) in
     nohup "$binary_path" >/dev/null 2>&1 &
     ;;
   *)
-    printf 'codex-router: use scripts/build-desktop-tray.ps1 on Windows.\n' >&2
+    printf 'codex-router: on Windows run ./codex-router.ps1 tray\n' >&2
     exit 1
     ;;
 esac

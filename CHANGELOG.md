@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **The Windows tray is managed the way the macOS one is.** Installing it was
+  possible but nothing else was: `bin/model-router-tray` answered Windows with
+  "use scripts/build-desktop-tray.ps1" and `codex-router.ps1` had no `tray`
+  verb at all, so where macOS and Linux each have one command that builds the
+  companion and hands it to a supervisor, Windows had two incantations and no
+  way to check, restart, or remove it. `./codex-router.ps1 tray
+  [install|status|start|stop|restart|uninstall]` is that command. Install
+  rebuilds only when the sources moved and stamps the build, so an update no
+  longer rebuilds a current companion from scratch — Windows was missing from
+  the rebuild gating entirely, which meant the one platform whose tray must be
+  built deliberately was also the one that never recorded having been built.
+  Guided setup now runs the same command instead of repeating its steps.
+
+- **`control apply` stopped carrying its own Windows installer invocation.** It
+  reuses the checkout-installer helper that `update` already uses and that is
+  unit tested, rather than a second hand-written PowerShell argument list that
+  nothing covered — the follow-up asked for in the review of #186.
+
 - **Windows installs the tray companion, and keeps it.** Nothing on Windows
   ever built or started it: `install.ps1` had no tray option at all, the
   installer's own decision helper excluded the platform outright, and

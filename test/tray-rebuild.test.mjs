@@ -86,13 +86,38 @@ test("a companion left inside a checkout is migrated, not abandoned", () => {
   }
 });
 
-test("Windows has no companion to keep in sync", () => {
+// Windows has a companion now, and it is the one platform whose tray must be
+// built deliberately -- so it was also the one that never recorded having been
+// built, and every update would have rebuilt it from scratch.
+test("a Windows companion is kept in sync like the others", () => {
   const home = scratch();
+  const fakeRoot = scratch();
+  const release = path.join(fakeRoot, "apps", "desktop", "src-tauri", "target", "release");
+  const rust = path.join(fakeRoot, "apps", "desktop", "src-tauri", "src");
   try {
-    assert.equal(trayRebuildPlan({ root, platform: "win32", home }), "unsupported");
+    mkdirSync(rust, { recursive: true });
+    writeFileSync(path.join(rust, "main.rs"), "fn main() {}\n", "utf8");
+
+    // Nothing built yet: an update must not install one unasked.
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "win32", home }), "absent");
+
+    mkdirSync(release, { recursive: true });
+    writeFileSync(path.join(release, "codex-router-desktop.exe"), "binary", "utf8");
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "win32", home }), "rebuild");
+
+    recordTrayBuild({ root: fakeRoot, platform: "win32", home });
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "win32", home }), "skip");
+
+    writeFileSync(path.join(rust, "main.rs"), "fn main() { /* changed */ }\n", "utf8");
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "win32", home }), "rebuild");
   } finally {
     rmSync(home, { recursive: true, force: true });
+    rmSync(fakeRoot, { recursive: true, force: true });
   }
+});
+
+test("a platform with no companion at all stays unsupported", () => {
+  assert.equal(trayRebuildPlan({ root, platform: "aix", home: scratch() }), "unsupported");
 });
 
 // trayDecision offers the companion on Linux too. Answering "unsupported"
@@ -124,14 +149,26 @@ test("a Linux companion is kept in sync like the macOS one", () => {
   }
 });
 
-test("each platform fingerprints its own sources", () => {
+test("each companion fingerprints its own sources", () => {
   // A shared fingerprint would make a Swift edit look like a reason to rebuild
   // the Tauri app, and vice versa.
   assert.notEqual(
     traySourceFingerprint(root, "darwin"),
     traySourceFingerprint(root, "linux"),
   );
-  assert.equal(traySourceFingerprint(root, "win32"), "");
+  assert.notEqual(
+    traySourceFingerprint(root, "darwin"),
+    traySourceFingerprint(root, "win32"),
+  );
+  // Windows and Linux are the same Tauri project, so they deliberately agree:
+  // one edit to the UI or the Rust makes both stale, which is correct.
+  assert.equal(
+    traySourceFingerprint(root, "win32"),
+    traySourceFingerprint(root, "linux"),
+  );
+  assert.notEqual(traySourceFingerprint(root, "win32"), "");
+  // A platform with no companion has nothing to fingerprint.
+  assert.equal(traySourceFingerprint(root, "aix"), "");
 });
 
 test("one companion location: the Node and shell sides name the same directory", () => {

@@ -306,7 +306,7 @@ function refreshActiveTarget(target) {
 
 // Active routers read provider selection on each request, so only their picker
 // catalog needs refreshing. The full enable path is reserved for inactive targets.
-function runApply() {
+async function runApply() {
   const requested = optionValue("--targets");
   const selected = requested ? requested.split(",").map((value) => value.trim()) : TARGETS;
   const activate = args.includes("--activate");
@@ -321,32 +321,19 @@ function runApply() {
     if (targetIsActive(target)) {
       refreshActiveTarget(target);
     } else {
-      // `bin/enable` is a POSIX shell script. Windows reaches the same enable
-      // path through the PowerShell installer, the way doctor --fix and
-      // curate-models already do; spawning the shell script there failed with
-      // ENOEXEC and reported it as a plain "apply failed".
-      const result = process.platform === "win32"
-        ? spawnSync(
-            "powershell.exe",
-            [
-              "-NoLogo",
-              "-NoProfile",
-              "-ExecutionPolicy",
-              "Bypass",
-              "-File",
-              path.join(REPO_ROOT, "install.ps1"),
-              "-CheckoutInstall",
-            ],
-            {
-              cwd: REPO_ROOT,
-              env: { ...process.env, MODEL_ROUTER_TARGET: target },
-              stdio: "inherit",
-            },
-          )
-        : spawnSync(path.join(REPO_ROOT, "bin", "enable"), [], {
-            env: { ...process.env, MODEL_ROUTER_TARGET: target },
-            stdio: "inherit",
-          });
+      // `bin/enable` is a POSIX shell script; spawning it on Windows failed
+      // with ENOEXEC and reported it as a plain "apply failed". The shared
+      // helper already knows each platform's checkout entry point and is unit
+      // tested, so this branch is no longer a second untested copy.
+      const { currentCheckoutInstaller } = await import("./update.mjs");
+      const enable = currentCheckoutInstaller(process.platform, target, {
+        posixScript: "enable",
+      });
+      const result = spawnSync(enable.command, enable.args, {
+        cwd: REPO_ROOT,
+        env: { ...process.env, MODEL_ROUTER_TARGET: target },
+        stdio: "inherit",
+      });
       if (result.status !== 0) throw new Error(`${target}: apply failed`);
     }
     applied.push(target);
@@ -1479,7 +1466,7 @@ if (args.includes("--probe")) {
   if (!args[1] || !args[2]) throw new Error("Usage: control set <provider> <on|off> [--targets ...]");
   runSet(args[1], args[2]);
 } else if (args[0] === "apply") {
-  runApply();
+  await runApply();
 } else if (args[0] === "account") {
   await printAccountUsage();
 } else if (args[0] === "provider-usage") {

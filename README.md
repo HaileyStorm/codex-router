@@ -1039,6 +1039,11 @@ surface.
 Start-Process .\apps\desktop\src-tauri\target\release\codex-router-desktop.exe
 ```
 
+Or skip the build entirely: every release attaches
+`codex-router-tray-<version>-windows-x64.exe`, and every CI run publishes the
+same binary as an artifact. Windows already ships the WebView2 runtime it
+needs.
+
 Windows 11 hides new tray icons in the `^` overflow next to the clock; drag the
 icon onto the taskbar to pin it.
 

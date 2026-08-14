@@ -55,13 +55,23 @@ preference.
 ## Downloading a prebuilt binary
 
 Building needs a Rust toolchain and several minutes of compilation, which is a
-lot to ask of someone who only wants to run the companion. Every CI run
-publishes the binary it already builds, so you can take that instead:
+lot to ask of someone who only wants to run the companion. You do not have to:
 
-1. Open the repository's **Actions** tab and pick a green **CI** run.
-2. Download the **codex-router-tray-Windows** artifact (or
-   **codex-router-tray-Linux**) from the run's Artifacts section.
-3. Unzip it and run `codex-router-desktop.exe`.
+**From a release (recommended).** Every release attaches the companion for
+Windows and Linux, checksummed in `SHA256SUMS` and covered by the same build
+provenance attestation as the source archives:
+
+| Asset | Platform |
+| --- | --- |
+| `codex-router-tray-<version>-windows-x64.exe` | Windows 10/11 |
+| `codex-router-tray-<version>-linux-x64` | Linux |
+
+Download it and run it. Nothing else to install.
+
+**From a CI run (for unreleased changes).** Open the **Actions** tab, pick a
+green **CI** run, and download the **codex-router-tray-Windows** artifact (or
+**codex-router-tray-Linux**) from its Artifacts section. Unzip and run
+`codex-router-desktop.exe`.
 
 Windows 10 and 11 already ship the WebView2 runtime the companion needs, so
 there is nothing else to install. To have it start at logon as well, point the

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The desktop companion is a download now, not a build.** It could be
+  obtained exactly one way -- install a Rust toolchain and compile it -- which
+  is a hard prerequisite for anyone who only wants to run it. CI was already
+  building the Windows and Linux binaries on every run and discarding them, and
+  releases shipped source archives only. Releases now attach
+  `codex-router-tray-<version>-windows-x64.exe` and the Linux binary,
+  checksummed in `SHA256SUMS` and covered by the same provenance attestation as
+  every other asset; CI publishes the same binaries as artifacts so unreleased
+  changes can be tried without a toolchain. Windows already ships the WebView2
+  runtime the companion needs, so a downloaded binary just runs.
+
 - **The Windows tray is managed the way the macOS one is.** Installing it was
   possible but nothing else was: `bin/model-router-tray` answered Windows with
   "use scripts/build-desktop-tray.ps1" and `codex-router.ps1` had no `tray`

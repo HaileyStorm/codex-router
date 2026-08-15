@@ -3080,6 +3080,9 @@ private struct TrayView: View {
       }
       .pickerStyle(.segmented)
       .labelsHidden()
+      // AppKit's segmented control keeps the titles it was created with, so a
+      // language change must recreate it rather than relabel it in place.
+      .id(store.language)
 
       ScrollView(showsIndicators: false) {
         VStack(alignment: .leading, spacing: 14) {
@@ -3411,6 +3414,9 @@ private struct TrayView: View {
       .pickerStyle(.segmented)
       .labelsHidden()
       .frame(width: 168)
+      // AppKit's segmented control keeps the titles it was created with, so a
+      // language change must recreate it rather than relabel it in place.
+      .id(store.language)
     }
     .padding(.vertical, 2)
     HStack(spacing: 12) {
@@ -3438,6 +3444,9 @@ private struct TrayView: View {
       .pickerStyle(.menu)
       .labelsHidden()
       .frame(width: 168)
+      // The "System · <resolved>" option is itself translated, so the menu
+      // must also be recreated when the language changes.
+      .id(store.language)
     }
     .padding(.vertical, 2)
     HStack(spacing: 12) {
@@ -3464,6 +3473,9 @@ private struct TrayView: View {
       .pickerStyle(.segmented)
       .labelsHidden()
       .frame(width: 168)
+      // AppKit's segmented control keeps the titles it was created with, so a
+      // language change must recreate it rather than relabel it in place.
+      .id(store.language)
     }
     .padding(.vertical, 2)
     settingRow(

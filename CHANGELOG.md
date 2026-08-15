@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0-beta.4
 
 - **A command that opens the browser panel.** The panel shipped with no way to
   reach it: its URL carries the caller capability, and nothing printed one, so

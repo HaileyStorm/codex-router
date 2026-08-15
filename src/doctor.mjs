@@ -14,6 +14,7 @@ import { MODEL_BY_SLUG, PROVIDERS } from "./model-registry.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { kimiOAuthHealth } from "./oauth-status.mjs";
 import {
+  applyMultiAgentCapabilities,
   readMultiAgentSettings,
   subagentEligibleModels,
 } from "./multi-agent-state.mjs";
@@ -508,8 +509,17 @@ if (visionSettings.enabled && !visionEngine) {
 // Codex-only: these are files in Codex's own agents directory, and the harness
 // spawns children through `dsh-tool-subagent` instead
 // (`./bin/model-router dsh subagent-preset`).
+const multiAgentSettings = readMultiAgentSettings();
+const hiddenModels = readHiddenModels();
+const effectiveSubagentModels = applyMultiAgentCapabilities(
+  catalogRoutedModels,
+  multiAgentSettings,
+  { hidden: hiddenModels },
+);
 const agentStatus = codexTarget
-  ? routedCodexAgentStatus(subagentEligibleModels(catalogRoutedModels, readMultiAgentSettings()))
+  ? routedCodexAgentStatus(
+      subagentEligibleModels(effectiveSubagentModels, multiAgentSettings),
+    )
   : undefined;
 if (codexTarget) add(
   agentStatus.ok ? "ok" : "fail",
@@ -524,23 +534,17 @@ if (codexTarget) add(
 add(
   "ok",
   "Dynamic subagent models",
-  (() => {
-    const settings = readMultiAgentSettings();
-    return settings.disabled.length
-      ? `registry-proven v2 models except ${settings.disabled.length} disabled model(s)`
-      : "only registry-proven v2 models";
-  })(),
+  multiAgentSettings.disabled.length
+    ? `verified v2 models except ${multiAgentSettings.disabled.length} disabled model(s)`
+    : "only verified v2 models",
   "Complete the native collaboration proof before adding multiAgentVersion v2 to a model.",
 );
 add(
   "ok",
   "Model picker visibility",
-  (() => {
-    const hidden = readHiddenModels();
-    return hidden.size === 0
-      ? "all enabled models visible"
-      : `${hidden.size} model(s) hidden from the picker`;
-  })(),
+  hiddenModels.size === 0
+    ? "all enabled models visible"
+    : `${hiddenModels.size} model(s) hidden from the picker`,
   "Change per-model visibility in the desktop Models settings.",
 );
 add(

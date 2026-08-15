@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { writePrivateJson } from "./file-security.mjs";
 import { STATE_DIR } from "./paths.mjs";
-import { subagentProofSnapshot } from "./subagent-proofs.mjs";
+import { applySubagentProofs, subagentProofSnapshot } from "./subagent-proofs.mjs";
 
 export const MULTI_AGENT_STATE_PATH =
   process.env.MODEL_ROUTER_MULTI_AGENT_STATE ||
@@ -149,6 +149,21 @@ export function applyMultiAgentSettings(models, settings, hidden = new Set()) {
     }
     return model;
   });
+}
+
+// Resolve the effective v2 claims once so catalog publication, managed agent
+// definitions, and doctor checks cannot disagree about machine-local proofs.
+export function applyMultiAgentCapabilities(
+  models,
+  settings,
+  { hidden = new Set(), proofs = subagentProofSnapshot() } = {},
+) {
+  const configured = settings || readMultiAgentSettings();
+  return applySubagentProofs(
+    applyMultiAgentSettings(models, configured, hidden),
+    proofs,
+    { hidden, disabled: configured.disabled },
+  );
 }
 
 // Models the user has not switched off as a subagent.

@@ -20,6 +20,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { pickerCommandArgs } from "../src/control-args.mjs";
+import { privateFileIsProtected, protectPrivateFile } from "../src/file-security.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -364,7 +365,7 @@ test("real aging store is deterministic across processes and missing-key state f
     `const value = "restart test row\\n".repeat(3000);`,
     `const input = [{ type: "function_call", call_id: "restart-call", name: "exec_command", arguments: JSON.stringify({ cmd: "npm test" }) }, { type: "function_call_output", call_id: "restart-call", output: value }, { type: "message", role: "assistant", content: "acted" }];`,
     `const result = ageToolResults(input, { frontier: 0, retain: retainToolResult, retentionContext: toolResultRetentionContext("routed", "deepseek/deepseek-v4-pro") });`,
-    `if (result.stats.toolResultsAged !== 1) process.exit(9);`,
+    `if (result.stats.toolResultsAged !== 1) { process.stderr.write(JSON.stringify(result.stats)); process.exit(9); }`,
     `process.stdout.write(result.input[1].output);`,
   ].join("\n");
   const runAging = (targetStateDir = stateDir) => execFileSync(
@@ -395,7 +396,12 @@ test("real aging store is deterministic across processes and missing-key state f
     tornStateDir = mkdtempSync(path.join(os.tmpdir(), "aging-torn-key-"));
     const tornRetentionDir = path.join(tornStateDir, "retained-tool-results");
     mkdirSync(tornRetentionDir, { recursive: true, mode: 0o700 });
-    writeFileSync(path.join(tornRetentionDir, ".retention-key"), "torn-key", { mode: 0o600 });
+    const tornKeyPath = path.join(tornRetentionDir, ".retention-key");
+    writeFileSync(tornKeyPath, "torn-key", { mode: 0o600 });
+    // POSIX mode 0600 is not a Windows ACL. The repair fixture must satisfy
+    // the same exact owner-only precondition as a production-created key;
+    // otherwise Windows is correctly required to reject it rather than repair.
+    protectPrivateFile(tornKeyPath);
     const concurrent = await Promise.all([
       execFileAsync(process.execPath, ["--input-type=module", "--eval", source], {
         cwd: root,
@@ -449,6 +455,85 @@ test("real aging store is deterministic across processes and missing-key state f
     if (tornStateDir) rmSync(tornStateDir, { recursive: true, force: true });
   }
 });
+
+test(
+  "Windows refuses to repair a torn key whose ACL grants another principal",
+  { skip: process.platform !== "win32" },
+  () => {
+    const stateDir = mkdtempSync(path.join(os.tmpdir(), "aging-unprotected-key-"));
+    const retentionDir = path.join(stateDir, "retained-tool-results");
+    const keyPath = path.join(retentionDir, ".retention-key");
+    const retentionUrl = pathToFileURL(path.join(root, "src", "tool-result-retention.mjs")).href;
+    const agingUrl = pathToFileURL(path.join(root, "src", "tool-result-aging.mjs")).href;
+    const aclScript = [
+      "$target = $env:CODEX_ROUTER_TEST_KEY",
+      "$acl = [System.IO.File]::GetAccessControl($target)",
+      "$everyone = New-Object Security.Principal.SecurityIdentifier('S-1-1-0')",
+      "$rule = New-Object Security.AccessControl.FileSystemAccessRule($everyone, [Security.AccessControl.FileSystemRights]::Read, [Security.AccessControl.AccessControlType]::Allow)",
+      "[void]$acl.AddAccessRule($rule)",
+      "[System.IO.File]::SetAccessControl($target, $acl)",
+    ].join("; ");
+    const sddl = () => execFileSync(
+      "powershell.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$acl = [System.IO.File]::GetAccessControl($env:CODEX_ROUTER_TEST_KEY); [Console]::Out.Write($acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All))",
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, CODEX_ROUTER_TEST_KEY: keyPath },
+      },
+    );
+    try {
+      mkdirSync(retentionDir, { recursive: true, mode: 0o700 });
+      writeFileSync(keyPath, "torn-key", { mode: 0o600 });
+      protectPrivateFile(keyPath);
+      execFileSync(
+        "powershell.exe",
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", aclScript],
+        {
+          env: { ...process.env, CODEX_ROUTER_TEST_KEY: keyPath },
+          stdio: "ignore",
+        },
+      );
+      assert.equal(privateFileIsProtected(keyPath), false);
+      const bytesBefore = readFileSync(keyPath);
+      const aclBefore = sddl();
+      const source = [
+        `import { ageToolResults } from ${JSON.stringify(agingUrl)};`,
+        `import { retainToolResult, toolResultRetentionContext } from ${JSON.stringify(retentionUrl)};`,
+        `const value = "unprotected key row\\n".repeat(3000);`,
+        `const input = [{ type: "function_call", call_id: "unprotected-key", name: "exec_command", arguments: JSON.stringify({ cmd: "npm test" }) }, { type: "function_call_output", call_id: "unprotected-key", output: value }, { type: "message", role: "assistant", content: "acted" }];`,
+        `const result = ageToolResults(input, { frontier: 0, retain: retainToolResult, retentionContext: toolResultRetentionContext("routed", "deepseek/deepseek-v4-pro") });`,
+        `process.stdout.write(JSON.stringify({ unchanged: result.input === input, aged: result.stats.toolResultsAged, failures: result.stats.toolResultRetentionFailures, reason: result.stats.toolResultRetentionDegradedReason }));`,
+      ].join("\n");
+      const result = JSON.parse(execFileSync(
+        process.execPath,
+        ["--input-type=module", "--eval", source],
+        {
+          cwd: root,
+          env: { ...process.env, MODEL_ROUTER_STATE_DIR: stateDir },
+          encoding: "utf8",
+        },
+      ));
+      assert.deepEqual(result, {
+        unchanged: true,
+        aged: 0,
+        failures: 1,
+        reason: "storage",
+      });
+      assert.deepEqual(readFileSync(keyPath), bytesBefore);
+      assert.equal(sddl(), aclBefore);
+      assert.equal(privateFileIsProtected(keyPath), false);
+      assert.equal(readdirSync(retentionDir).some((name) => name.endsWith(".result")), false);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("orphan retention stages count toward the hard file cap", () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "aging-stage-cap-"));

@@ -39,6 +39,8 @@ const STAGE_FILE_PATTERN = /^\.(.+)\.stage\.([0-9a-f]{32})$/u;
 const NO_FOLLOW = constants.O_NOFOLLOW || 0;
 const RETENTION_REASONS = new Set(["capacity", "storage"]);
 const LOCK_WAIT_WORD = new Int32Array(new SharedArrayBuffer(4));
+const LOCK_WAIT_TIMEOUT_MS = process.platform === "win32" ? 15_000 : 1_000;
+const LOCK_WAIT_POLL_MS = process.platform === "win32" ? 25 : 10;
 
 function retentionFailure(reason, message, cause) {
   const error = new Error(message, cause === undefined ? undefined : { cause });
@@ -137,8 +139,8 @@ function syncDirectory(directory) {
 }
 
 function lockRetentionDirectory() {
-  let lastError;
-  for (let attempt = 0; attempt <= 100; attempt += 1) {
+  const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+  while (true) {
     try {
       return lockfile.lockSync(TOOL_RESULT_RETENTION_DIR, {
         realpath: true,
@@ -146,15 +148,20 @@ function lockRetentionDirectory() {
         stale: 30_000,
       });
     } catch (error) {
-      lastError = error;
-      if (error?.code !== "ELOCKED" || attempt === 100) throw error;
+      const remaining = deadline - Date.now();
+      if (error?.code !== "ELOCKED" || remaining <= 0) throw error;
       // proper-lockfile deliberately rejects retry configuration for its sync
-      // API. A bounded synchronous wait preserves the store-before-rewrite
-      // contract while allowing another short fsync/publication to finish.
-      Atomics.wait(LOCK_WAIT_WORD, 0, 0, 10);
+      // API. Windows owner-only ACL verification invokes PowerShell several
+      // times inside one repair, so its normal contention window is longer
+      // than POSIX fsync-only publication. Both deadlines remain bounded.
+      Atomics.wait(
+        LOCK_WAIT_WORD,
+        0,
+        0,
+        Math.min(LOCK_WAIT_POLL_MS, remaining),
+      );
     }
   }
-  throw lastError;
 }
 
 function ensurePrivateDirectory() {

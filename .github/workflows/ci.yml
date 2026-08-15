@@ -141,3 +141,17 @@ jobs:
       - run: npm ci --prefix apps/desktop
       - run: npm run check --prefix apps/desktop
       - run: npm run build:binary --prefix apps/desktop
+      # The companion needs a Rust toolchain and a multi-minute compile, which
+      # is a hard prerequisite for anyone who only wants to run it. This job
+      # already produces exactly the binary they need and was discarding it, so
+      # there was no way to obtain a prebuilt tray anywhere -- every user had
+      # to install Rust and build it themselves, or go without.
+      - name: Publish the tray binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-router-tray-${{ runner.os }}
+          path: |
+            apps/desktop/src-tauri/target/release/codex-router-desktop
+            apps/desktop/src-tauri/target/release/codex-router-desktop.exe
+          if-no-files-found: error
+          retention-days: 14

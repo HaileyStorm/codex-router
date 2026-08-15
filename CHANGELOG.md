@@ -2,6 +2,91 @@
 
 ## Unreleased
 
+- **A command that opens the browser panel.** The panel shipped with no way to
+  reach it: its URL carries the caller capability, and nothing printed one, so
+  "nothing to install" still meant "and no way in". `codex-router.ps1 panel`
+  (`bin/panel`) opens it in the default browser. It reports the router being
+  down instead of opening a page that would load empty, and prints the address
+  redacted, because AGENTS.md treats the capability path as local
+  authentication; `--print` is the deliberate exception and says what it is
+  handing over.
+
+- **Caller-key redaction covered only `/v1`.** `redactCallerUrl` is what keeps
+  the capability out of support bundles, doctor output, and error messages, and
+  it matched the API path alone -- so a panel URL, the identical secret in the
+  identical position, travelled through every one of those surfaces verbatim.
+  It now covers each leaf the capability guards.
+
+- **The companion no longer requires a Rust toolchain.** Building it meant
+  installing cargo, the heaviest prerequisite in the project, asked of someone
+  who only wanted to see the panel; without it the install step failed and the
+  machine ended up with no companion at all. `tray install` now falls back to
+  the Electron shell, which needs only the Node the router install already
+  required, and `codex-router.ps1 companion` selects it explicitly.
+  `scripts/build-electron-companion.ps1` and its shell counterpart verify the
+  runtime is actually present: npm 11 blocks install scripts by default and
+  electron downloads its runtime from one, so `npm ci` exits 0 having fetched
+  the package but not the binary, and the failure surfaces much later as an app
+  that never starts.
+
+- **Every single-argument Windows subcommand was unreachable.** PowerShell
+  enumerates a statement's output into an assignment, so
+  `$Arguments = if (...) { @(...) }` collapsed a one-element array to the
+  element itself; `$Arguments[0]` then indexed a String and returned its first
+  character. `codex-router.ps1 tray status` died on "Unknown tray action 's'",
+  as did start, stop, restart, and uninstall. The existing tests asserted the
+  script's text rather than running it, so none of them saw it.
+
+- **`bin/` scripts were not pinned to LF.** They are the same POSIX shell
+  scripts as `install.sh` without the extension, so `.gitattributes`' `*.sh`
+  rule never reached them and a Windows checkout with `core.autocrlf=true`
+  rewrote all 27 to CRLF, which `sh` fails on. The blobs were already LF, which
+  is why POSIX installs kept working and the damage stayed invisible.
+
+- **The companion opens in a browser, with nothing to install.** The router is
+  already an HTTP server on loopback with a capability-gated path, and the UI
+  is plain HTML whose entire backend surface is one function, so it now serves
+  itself at `/panel` behind the same caller capability every other local
+  endpoint uses. No binary, no toolchain, no packaging, no tray icon to find.
+  The panel deliberately carries only the reading half of the command table:
+  a browser tab is reachable by anything that learns the capability, and
+  "save this API key" is not something to expose on that assumption.
+
+- **An Electron shell, packaged.** `apps/electron` builds an installer through
+  electron-builder (NSIS and zip on Windows, AppImage on Linux). It is a shell
+  rather than a second application: `apps/desktop/ui` is loaded verbatim and
+  every command runs through the same table, so all three surfaces -- tray,
+  Electron, browser panel -- are windows onto one application. The command
+  table moved to `src/desktop-commands.mjs` for exactly that reason.
+
+- **The desktop companion is a download now, not a build.** It could be
+  obtained exactly one way -- install a Rust toolchain and compile it -- which
+  is a hard prerequisite for anyone who only wants to run it. CI was already
+  building the Windows and Linux binaries on every run and discarding them, and
+  releases shipped source archives only. Releases now attach
+  `codex-router-tray-<version>-windows-x64.exe` and the Linux binary,
+  checksummed in `SHA256SUMS` and covered by the same provenance attestation as
+  every other asset; CI publishes the same binaries as artifacts so unreleased
+  changes can be tried without a toolchain. Windows already ships the WebView2
+  runtime the companion needs, so a downloaded binary just runs.
+
+- **The Windows tray is managed the way the macOS one is.** Installing it was
+  possible but nothing else was: `bin/model-router-tray` answered Windows with
+  "use scripts/build-desktop-tray.ps1" and `codex-router.ps1` had no `tray`
+  verb at all, so where macOS and Linux each have one command that builds the
+  companion and hands it to a supervisor, Windows had two incantations and no
+  way to check, restart, or remove it. `./codex-router.ps1 tray
+  [install|status|start|stop|restart|uninstall]` is that command. Install
+  rebuilds only when the sources moved and stamps the build, so an update no
+  longer rebuilds a current companion from scratch — Windows was missing from
+  the rebuild gating entirely, which meant the one platform whose tray must be
+  built deliberately was also the one that never recorded having been built.
+  Guided setup now runs the same command instead of repeating its steps.
+
+- **`control apply` stopped carrying its own Windows installer invocation.** It
+  reuses the checkout-installer helper that `update` already uses and that is
+  unit tested, rather than a second hand-written PowerShell argument list that
+  nothing covered — the follow-up asked for in the review of #186.
 - **A credential-free install mode for lifecycle validation.** (#224)
   `install.sh --no-provider --no-discovery` (PowerShell: `-NoProvider
   -NoDiscovery`) installs the router idle: an explicit empty provider

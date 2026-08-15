@@ -83,7 +83,16 @@ function requireReplaceableCheckout(force) {
   git(["reset", "--hard", "HEAD"], { inherit: true });
 }
 
-export function currentCheckoutInstaller(platform = process.platform, target = TARGET) {
+// `posixScript` picks which bin/ entry point the POSIX branch runs. Windows
+// has only the one installer -- codex-router.ps1 maps both `install` and
+// `enable` onto `install.ps1 -CheckoutInstall` -- so the Windows half is
+// identical either way, which is exactly why control.mjs reuses this instead
+// of hand-rolling a second PowerShell argument list that nothing tested.
+export function currentCheckoutInstaller(
+  platform = process.platform,
+  target = TARGET,
+  { posixScript = "install" } = {},
+) {
   return platform === "win32"
     ? {
         command: "powershell.exe",
@@ -99,7 +108,7 @@ export function currentCheckoutInstaller(platform = process.platform, target = T
           target,
         ],
       }
-    : { command: path.join(SOURCE_ROOT, "bin", "install"), args: [] };
+    : { command: path.join(SOURCE_ROOT, "bin", posixScript), args: [] };
 }
 
 function installCurrentCheckout() {

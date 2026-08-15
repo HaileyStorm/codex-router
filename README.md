@@ -782,8 +782,8 @@ For reading images only — cannot code:
   moondream            1.7 GB  captions-only
 ```
 
-The tray's **View more** panel also exposes the full 178-tag snapshot captured
-from the official Ollama pages for Gemma 4, Qwen 3.5/3.6, Nemotron 3 Super,
+The tray's **View more** panel also exposes the full 201-tag snapshot captured
+from the official Ollama pages for Gemma 4, Qwen 3.5/3.6/3.8, Nemotron 3 Super,
 Ornith, Nemotron 3, and Muse Glimmer, including quantized and MLX variants.
 Cloud aliases are listed for completeness but marked cloud-only and cannot be
 downloaded as local weights.
@@ -1213,6 +1213,11 @@ surface.
 Start-Process .\apps\desktop\src-tauri\target\release\codex-router-desktop.exe
 ```
 
+Or skip the build entirely: every release attaches
+`codex-router-tray-<version>-windows-x64.exe`, and every CI run publishes the
+same binary as an artifact. Windows already ships the WebView2 runtime it
+needs.
+
 Windows 11 hides new tray icons in the `^` overflow next to the clock; drag the
 icon onto the taskbar to pin it.
 
@@ -1391,3 +1396,4 @@ References: [Kimi Code CLI OAuth](https://www.kimi.com/help/kimi-code/cli-gettin
 and [opencodex](https://github.com/lidge-jun/opencodex).
 
 MIT licensed. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
+

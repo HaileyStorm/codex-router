@@ -14,12 +14,18 @@ process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 // Not an empty directory -- the probe runs `which`, which has to stay findable
 // -- but the two system directories that never hold a Codex install.
 //
-// POSIX only. On Windows this PATH would hide `powershell.exe`, which
-// `protectPrivateFile` needs to read the current SID -- so every test in this
-// file that writes protected state would fail on a detail none of them are
-// about. The probe's own tests skip there for the same reason.
-const emptyPathDir = process.platform === "win32" ? process.env.PATH : "/usr/bin:/bin";
-if (process.platform !== "win32") process.env.PATH = emptyPathDir;
+// Keep the probe deterministic on every host. Windows needs its system tools
+// (`where.exe`, PowerShell, and icacls) for command detection and protected
+// state, but the user's full PATH may also contain the real Codex executable.
+// Restricting it to those system directories exercises the no-terminal-client
+// case without changing the production detection rule.
+const emptyPathDir = process.platform === "win32"
+  ? [
+      path.join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32"),
+      path.join(process.env.SystemRoot || process.env.windir || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0"),
+    ].join(path.delimiter)
+  : "/usr/bin:/bin";
+process.env.PATH = emptyPathDir;
 
 const {
   PRESENCE_ALWAYS,

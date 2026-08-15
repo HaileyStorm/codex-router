@@ -338,23 +338,21 @@ function installTray() {
       process.stdout.write(`Menu-bar companion installed at ${bundleDir} and opened.\n`);
     } else if (process.platform === "win32") {
       // Windows had no path through here at all: the tray was built by hand or
-      // not at all, and nothing brought it back after a reboot. Registering the
-      // logon task is what makes it stay, and it also starts the first
-      // instance, so there is no separate launch step.
+      // not at all, and nothing brought it back after a reboot. `tray install`
+      // builds when the sources moved, stamps the build, and registers the
+      // logon task that starts it now and at every logon -- the same entry
+      // point a user runs by hand, so the sequence exists once instead of
+      // drifting between the installer and the CLI.
       run("powershell.exe", [
         "-NoLogo",
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        path.join(SOURCE_ROOT, "scripts", "build-desktop-tray.ps1"),
-        "-BinaryOnly",
+        path.join(SOURCE_ROOT, "codex-router.ps1"),
+        "tray",
+        "install",
       ]);
-      run(process.execPath, [path.join(SOURCE_ROOT, "src", "tray-service.mjs"), "install"]);
-      process.stdout.write(
-        "Desktop companion built, launched, and set to start at logon.\n" +
-          "Windows 11 hides new tray icons: click the ^ chevron by the clock to find it, and drag it onto the taskbar to pin it.\n",
-      );
     } else {
       run(path.join(SOURCE_ROOT, "bin", "model-router-tray"), []);
       process.stdout.write("Desktop companion built and launched.\n");
@@ -366,9 +364,12 @@ function installTray() {
           ? "Recent macOS SDKs need the full Xcode app (not only the Command Line Tools) to build the menu-bar companion's SwiftUI macros.\n"
           : "") +
         (process.platform === "win32"
-          ? "The Tauri companion needs Rust stable and Cargo on PATH.\n" +
-            "The router itself is installed; retry later with .\\scripts\\build-desktop-tray.ps1 -BinaryOnly.\n"
-          : "The router itself is installed; retry later with ./bin/model-router-tray.\n"),
+          ? "The router itself is installed; retry later with .\\codex-router.ps1 tray,\n" +
+            "or .\\codex-router.ps1 companion for the Electron build, which needs no Rust.\n"
+          : "The router itself is installed; retry later with ./bin/model-router-tray.\n") +
+        // Nothing to build and nothing to download, so it is the one suggestion
+        // that cannot fail for the same reason this just did.
+        "The companion also runs in a browser: .\\codex-router.ps1 panel (./bin/panel on macOS and Linux).\n",
     );
   }
 }

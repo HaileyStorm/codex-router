@@ -152,10 +152,12 @@ function sourceFilesIn(dir, extensions) {
   }
 }
 
-// trayDecision offers the companion on macOS *and* Linux, so both need a
-// staleness answer here. Covering only macOS would leave Linux users with the
-// exact drift this gating exists to stop: a companion built once and never
-// rebuilt, running against router code it no longer matches.
+// trayDecision offers the companion on macOS, Linux *and* Windows, so all
+// three need a staleness answer here. Covering only some would leave the rest
+// with the exact drift this gating exists to stop: a companion built once and
+// never rebuilt, running against router code it no longer matches. Windows was
+// the gap -- recordTrayBuild() threw there, so the one platform whose tray has
+// to be built deliberately was also the one that never recorded having been.
 const TRAY_PLATFORMS = {
   darwin: {
     sources: (root) => {
@@ -191,6 +193,23 @@ const TRAY_PLATFORMS = {
     // stamp sits beside it, so deleting the build tree invalidates both.
     artifact: (root) =>
       path.join(root, "apps", "desktop", "src-tauri", "target", "release", "codex-router-desktop"),
+    stamp: (root) =>
+      path.join(root, "apps", "desktop", "src-tauri", "target", "release", STAMP_NAME),
+  },
+  // Same Tauri project as Linux, same in-place build; only the artifact
+  // extension differs.
+  win32: {
+    sources: (root) => TRAY_PLATFORMS.linux.sources(root),
+    artifact: (root) =>
+      path.join(
+        root,
+        "apps",
+        "desktop",
+        "src-tauri",
+        "target",
+        "release",
+        "codex-router-desktop.exe",
+      ),
     stamp: (root) =>
       path.join(root, "apps", "desktop", "src-tauri", "target", "release", STAMP_NAME),
   },

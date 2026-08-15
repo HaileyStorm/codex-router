@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -87,4 +88,47 @@ test("a platform with no supervisor says so instead of reporting success", () =>
   assert.match(result.stderr, /not supervised on linux/);
   // `status` is machine-readable and stays quiet.
   assert.equal(trayDispatch("status", "linux").stderr, "");
+});
+
+// macOS and Linux each have one command that builds the companion and hands it
+// to a supervisor. Windows had none: bin/model-router-tray told you to go read
+// a build script, and codex-router.ps1 had no tray verb at all, so the only
+// route was knowing two separate incantations.
+test("the Windows CLI exposes tray as a first-class command", () => {
+  const script = readFileSync(path.join(root, "codex-router.ps1"), "utf8");
+  assert.match(script, /"refresh-catalog", "media", "tray"/);
+  assert.match(script, /"tray" \{/);
+  // Build only when the sources moved, then stamp it, then register.
+  assert.match(script, /install-plan\.mjs"\) tray-plan/);
+  assert.match(script, /build-desktop-tray\.ps1"\) -BinaryOnly/);
+  assert.match(script, /install-plan\.mjs"\) record-tray/);
+  assert.match(script, /tray-service\.mjs" @\(\$Action\)/);
+  // Every action the supervisor accepts is reachable.
+  for (const action of ["install", "status", "start", "stop", "restart", "uninstall"]) {
+    assert.ok(script.includes(`"${action}"`), `tray action ${action} is unreachable`);
+  }
+});
+
+test("the POSIX tray launcher points Windows at that command", () => {
+  const launcher = readFileSync(path.join(root, "bin", "model-router-tray"), "utf8");
+  assert.match(launcher, /codex-router\.ps1 tray/);
+  assert.doesNotMatch(launcher, /use scripts\/build-desktop-tray\.ps1 on Windows/);
+});
+
+test("setup reuses the tray command instead of repeating its steps", () => {
+  const source = readFileSync(path.join(root, "src", "setup.mjs"), "utf8");
+  assert.match(source, /"codex-router\.ps1"\),\s*\n\s*"tray",\s*\n\s*"install",/);
+  // The build/stamp/register sequence must live in one place.
+  assert.doesNotMatch(source, /build-desktop-tray\.ps1/);
+});
+
+test("Windows gets the same rebuild gating as the other tray platforms", async () => {
+  // recordTrayBuild() threw on win32, so the one platform whose tray has to be
+  // built deliberately was also the one that never recorded having been built
+  // -- every update would have rebuilt it from scratch.
+  const { trayRebuildPlan, traySourceFingerprint } = await import("../src/install-plan.mjs");
+  assert.notEqual(trayRebuildPlan({ platform: "win32" }), "unsupported");
+  // Same Tauri sources as Linux, so the fingerprints must agree.
+  assert.equal(traySourceFingerprint(root, "win32"), traySourceFingerprint(root, "linux"));
+  assert.notEqual(traySourceFingerprint(root, "win32"), "");
 });

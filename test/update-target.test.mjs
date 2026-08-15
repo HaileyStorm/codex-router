@@ -191,3 +191,32 @@ test("a long list of local changes is previewed, not dumped", () => {
 test("a single local change reads as one file, not one files", () => {
   assert.match(localModificationsMessage([" M src/router.mjs"]), /1 tracked file;/);
 });
+
+// The reviewer of #186 flagged that control.mjs's Windows apply branch was a
+// hand-rolled PowerShell argument list with no test. It now reuses this helper,
+// so the branch is covered here rather than being a second untested copy.
+test("the enable path picks each platform's checkout entry point", () => {
+  const windows = currentCheckoutInstaller("win32", "codex", { posixScript: "enable" });
+  assert.equal(windows.command, "powershell.exe");
+  assert.ok(windows.args.includes("-CheckoutInstall"));
+  assert.ok(windows.args.some((argument) => argument.endsWith("install.ps1")));
+  assert.deepEqual(windows.args.slice(-2), ["-Target", "codex"]);
+
+  const posix = currentCheckoutInstaller("linux", "codex", { posixScript: "enable" });
+  assert.match(posix.command, /bin[\\/]enable$/);
+  assert.deepEqual(posix.args, []);
+});
+
+test("Windows runs one installer whichever entry point is asked for", () => {
+  // codex-router.ps1 maps both `install` and `enable` onto
+  // install.ps1 -CheckoutInstall, so posixScript must not leak into the
+  // Windows argument list.
+  assert.deepEqual(
+    currentCheckoutInstaller("win32", "codex", { posixScript: "enable" }),
+    currentCheckoutInstaller("win32", "codex"),
+  );
+});
+
+test("the default entry point is still install", () => {
+  assert.match(currentCheckoutInstaller("darwin", "codex").command, /bin[\\/]install$/);
+});

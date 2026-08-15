@@ -262,3 +262,4 @@ export const EXPLORE_LOCAL_MODELS = Object.freeze(
     {"tag": "muse-glimmer:30b-bf16", "sizeGb": 57, "tools": false, "context": 131072, "codex": "unverified", "displayName": "Muse Glimmer · 30b bf16", "note": "Official Ollama tag; capabilities are checked after pull.", "downloadable": true},
   ].map((entry) => Object.freeze(entry)),
 );
+

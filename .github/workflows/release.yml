@@ -11,7 +11,55 @@ permissions:
   attestations: write
 
 jobs:
+  # Releases shipped source archives only, so the desktop companion could be
+  # obtained exactly one way: install a Rust toolchain and compile it. Building
+  # it here turns that into a download.
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Select stable Rust
+        run: |
+          rustup update stable
+          rustup default stable
+      - name: Install Linux desktop libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: npm ci --prefix apps/desktop
+      - run: npm run build:binary --prefix apps/desktop
+      # Named for the release rather than the build tree, so a downloaded asset
+      # still says which version and platform it is.
+      - name: Stage the companion under its release name
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          built=apps/desktop/src-tauri/target/release
+          mkdir -p staged
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "$built/codex-router-desktop.exe" "staged/codex-router-tray-${version}-windows-x64.exe"
+          else
+            cp "$built/codex-router-desktop" "staged/codex-router-tray-${version}-linux-x64"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tray-${{ runner.os }}
+          path: staged/*
+          if-no-files-found: error
+
   release:
+    needs: desktop
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -29,13 +77,24 @@ jobs:
         run: |
           package_version=$(node -p 'require("./package.json").version')
           test "v$package_version" = "$GITHUB_REF_NAME"
-      - name: Build source archives and checksums
+      - name: Build source archives
         shell: bash
         run: |
           mkdir -p dist
           prefix="codex-router-${GITHUB_REF_NAME#v}/"
           git archive --format=tar.gz --prefix="$prefix" -o "dist/codex-router-${GITHUB_REF_NAME#v}.tar.gz" "$GITHUB_REF_NAME"
           git archive --format=zip --prefix="$prefix" -o "dist/codex-router-${GITHUB_REF_NAME#v}.zip" "$GITHUB_REF_NAME"
+      # Before the checksums are taken, so the companion binaries are covered by
+      # SHA256SUMS and the provenance attestation like every other asset.
+      - name: Collect the companion binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tray-*
+          path: dist
+          merge-multiple: true
+      - name: Checksum every asset
+        shell: bash
+        run: |
           cd dist
           sha256sum codex-router-* > SHA256SUMS
       - uses: actions/attest-build-provenance@v4

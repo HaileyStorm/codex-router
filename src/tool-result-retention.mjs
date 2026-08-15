@@ -83,8 +83,37 @@ function normalizedRealPath(value) {
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-function ensureDirectoryPathWithoutLinks(directory) {
+// The canonical form of a path whose deepest components may not exist yet:
+// resolve the longest existing prefix, then re-append what is still missing.
+//
+// Refusing every symlink between the filesystem root and the store treats the
+// operating system's own layout as an attack. `/var` is a symlink to
+// `/private/var` on stock macOS, so every path under `os.tmpdir()` traverses
+// one; container bind mounts and symlinked home directories are equally
+// ordinary. Canonicalizing first keeps the guarantee that actually matters --
+// the directory written to is the directory that was validated, and we own it
+// -- while the per-component walk below still refuses a link planted inside
+// the store after canonicalization.
+function canonicalExistingPath(directory) {
   const resolved = path.resolve(directory);
+  const missing = [];
+  let current = resolved;
+  for (;;) {
+    try {
+      return path.join(realpathSync.native(current), ...missing);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      const parent = path.dirname(current);
+      // A root that does not resolve has nothing left to walk up to.
+      if (parent === current) return resolved;
+      missing.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function ensureDirectoryPathWithoutLinks(directory) {
+  const resolved = canonicalExistingPath(directory);
   const root = path.parse(resolved).root;
   const parts = resolved.slice(root.length).split(path.sep).filter(Boolean);
   let current = root;
@@ -107,9 +136,12 @@ function assertPlainOwnedDirectory(directory) {
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error("Retained-result storage is not a plain directory.");
   }
+  // Compared against the canonical form rather than the literal one: what has
+  // to hold is that this path resolves where it resolved when it was checked,
+  // not that the operating system placed it behind no symlink at all.
   if (
     normalizedRealPath(realpathSync.native(directory)) !==
-    normalizedRealPath(path.resolve(directory))
+    normalizedRealPath(canonicalExistingPath(directory))
   ) {
     throw new Error("Retained-result storage may not traverse a link.");
   }

@@ -123,6 +123,13 @@ export function recordUsageEvent({
   toolResultBytesBefore,
   toolResultBytesAfter,
   toolResultBytesSaved,
+  // Present whenever the aging pass ran, even when it changed nothing. Every
+  // count above is omitted when zero, so without these an operator who enables
+  // aging and sees an empty ledger cannot tell whether the pass never ran or
+  // ran and found every result under the floor. `BytesLargest` separates the
+  // two: compare it against the eligibility floor.
+  toolResultsEvaluated,
+  toolResultBytesLargest,
   at = Date.now(),
 }) {
   const event = {
@@ -173,6 +180,14 @@ export function recordUsageEvent({
     ...(safeTokenCount(toolResultBytesSaved)
       ? { toolResultBytesSaved: safeTokenCount(toolResultBytesSaved) }
       : {}),
+    // Zero is meaningful here -- it says the pass ran and saw no tool results
+    // at all -- so these are written whenever defined rather than when truthy.
+    ...(safeTokenCount(toolResultsEvaluated) !== undefined
+      ? { toolResultsEvaluated: safeTokenCount(toolResultsEvaluated) }
+      : {}),
+    ...(safeTokenCount(toolResultBytesLargest) !== undefined
+      ? { toolResultBytesLargest: safeTokenCount(toolResultBytesLargest) }
+      : {}),
   };
   try {
     mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
@@ -219,6 +234,13 @@ function emptyRange(buckets) {
 export function toolResultAgingTotals({ now = Date.now() } = {}) {
   const totals = {
     requests: 0,
+    // Requests where the pass ran, whether or not it changed anything, plus the
+    // largest single result any of them saw. `evaluatedRequests` above zero
+    // with `requests` at zero is the signature of a workload whose results all
+    // sit under the eligibility floor: proof the pass is wired in, and the
+    // number that says by how much it missed.
+    evaluatedRequests: 0,
+    largestResultBytes: 0,
     resultsAged: 0,
     bytesSaved: 0,
     estimatedTokensSaved: 0,
@@ -234,7 +256,8 @@ export function toolResultAgingTotals({ now = Date.now() } = {}) {
   try {
     for (const line of usageEventLines()) {
       // Pre-filter: aging stats and cache telemetry are both rare fields.
-      const hasAging = line.includes('"toolResultsAged"');
+      const hasAging =
+        line.includes('"toolResultsAged"') || line.includes('"toolResultsEvaluated"');
       const hasCache = line.includes('"cachedInputTokens"');
       if (!hasAging && !hasCache) continue;
       let event;
@@ -244,6 +267,12 @@ export function toolResultAgingTotals({ now = Date.now() } = {}) {
         continue;
       }
       const at = typeof event?.at === "string" ? Date.parse(event.at) : NaN;
+      const evaluated = safeTokenCount(event?.toolResultsEvaluated);
+      if (evaluated !== undefined) {
+        totals.evaluatedRequests += 1;
+        const largest = safeTokenCount(event?.toolResultBytesLargest) ?? 0;
+        if (largest > totals.largestResultBytes) totals.largestResultBytes = largest;
+      }
       const resultsAged = safeTokenCount(event?.toolResultsAged);
       if (resultsAged) {
         totals.requests += 1;

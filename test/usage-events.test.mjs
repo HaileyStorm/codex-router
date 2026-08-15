@@ -66,6 +66,8 @@ test("tool-result aging totals aggregate savings across recorded events", async 
     // No events file yet: totals must report zeros rather than fail.
     assert.deepEqual(usage.toolResultAgingTotals(), {
       requests: 0,
+      evaluatedRequests: 0,
+      largestResultBytes: 0,
       resultsAged: 0,
       bytesSaved: 0,
       estimatedTokensSaved: 0,
@@ -226,6 +228,46 @@ test("a guard budget release persists its marker and reads back", async () => {
       .recentUsageEvents()
       .filter((candidate) => candidate.emptyCompletionGuardReleased !== true);
     assert.equal("emptyCompletionGuardReleased" in ordinary, false);
+  } finally {
+    if (previousStateDir === undefined) delete process.env.MODEL_ROUTER_STATE_DIR;
+    else process.env.MODEL_ROUTER_STATE_DIR = previousStateDir;
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// An operator who enables aging on a workload of medium-sized results saw an
+// all-zero ledger and reasonably concluded the hook had never loaded. The
+// evaluated counter is what separates "ran and nothing qualified" from "never
+// ran", and the largest-result byte count says how far under the floor it was.
+test("totals separate a pass that ran and aged nothing from one that never ran", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "model-router-usage-"));
+  const previousStateDir = process.env.MODEL_ROUTER_STATE_DIR;
+  process.env.MODEL_ROUTER_STATE_DIR = stateDir;
+  try {
+    const usage = await import(`../src/usage-events.mjs?evaluated=${Date.now()}`);
+    // Aging enabled, ran over eleven results, none of them past the floor.
+    usage.recordUsageEvent({
+      model: "qwen-plan/qwen3.8-max",
+      provider: "qwen-plan",
+      status: 200,
+      durationMs: 100,
+      inputTokens: 275_000,
+      toolResultsEvaluated: 11,
+      toolResultBytesLargest: 12_400,
+    });
+    // Aging off: the pass reports nothing, so this row must not be counted.
+    usage.recordUsageEvent({
+      model: "qwen-plan/qwen3.8-max",
+      provider: "qwen-plan",
+      status: 200,
+      durationMs: 100,
+      inputTokens: 275_000,
+    });
+    const totals = usage.toolResultAgingTotals();
+    assert.equal(totals.evaluatedRequests, 1, "only the row from an enabled pass counts");
+    assert.equal(totals.largestResultBytes, 12_400);
+    assert.equal(totals.requests, 0, "nothing was aged, so no request saved anything");
+    assert.equal(totals.bytesSaved, 0);
   } finally {
     if (previousStateDir === undefined) delete process.env.MODEL_ROUTER_STATE_DIR;
     else process.env.MODEL_ROUTER_STATE_DIR = previousStateDir;

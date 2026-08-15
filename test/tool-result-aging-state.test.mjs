@@ -99,6 +99,8 @@ test("snapshot reports zeroed savings stats before any usage is recorded", () =>
   const emptyCache = { agedRate: null, unagedRate: null, agedTurns: 0, unagedTurns: 0 };
   assert.deepEqual(toolResultAgingSnapshot().stats, {
     requests: 0,
+    evaluatedRequests: 0,
+    largestResultBytes: 0,
     resultsAged: 0,
     bytesSaved: 0,
     estimatedTokensSaved: 0,

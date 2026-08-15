@@ -101,3 +101,31 @@ test("does not split surrogate pairs at either preview boundary", () => {
   assert.doesNotMatch(result.input[1].output, /�/);
   assert.equal((result.input[1].output.match(/😀/gu) || []).length, 2);
 });
+
+// The failure this instrumentation exists for: a session that spends its whole
+// context on results which each sit under the floor reported the same empty
+// stats as a pass that never ran, so an operator could not tell an ineffective
+// feature from an unloaded one.
+test("a pass that ages nothing still reports what it evaluated and the largest result it saw", () => {
+  const input = [
+    ...Array.from({ length: 12 }, (_, index) => [
+      call(`mid-${index}`),
+      output(`mid-${index}`, "x".repeat(12_000)),
+      { type: "message", role: "assistant", content: `read ${index}` },
+    ]).flat(),
+  ];
+  const { stats, input: unchanged } = ageToolResults(input);
+  assert.equal(stats.toolResultsAged, 0);
+  assert.equal(stats.toolResultsEvaluated, 8, "the four newest results stay protected");
+  assert.equal(stats.toolResultBytesLargest, 12_000);
+  assert.equal(unchanged, input, "nothing qualified, so the input is passed through by reference");
+});
+
+test("a disabled pass stays distinguishable from one that ran and found nothing", () => {
+  const input = [call("a"), output("a", "x".repeat(12_000))];
+  const off = ageToolResults(input, { enabled: false });
+  assert.equal(off.stats.toolResultsEvaluated, undefined);
+  assert.equal(off.stats.toolResultBytesLargest, undefined);
+  const on = ageToolResults(input);
+  assert.equal(on.stats.toolResultsEvaluated, 0, "every result here sits inside the frontier");
+});

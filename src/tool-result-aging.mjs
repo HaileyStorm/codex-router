@@ -98,6 +98,9 @@ export function ageToolResults(
     toolResultBytesAfter: 0,
     toolResultBytesSaved: 0,
   };
+  // A disabled pass reports nothing beyond the zeroed counters, so "off" stays
+  // distinguishable from "on and nothing qualified" -- two states this used to
+  // report identically, leaving no way to prove the pass had run at all.
   if (!enabled || !Array.isArray(input)) return { input, stats: empty };
 
   const outputIndexes = [];
@@ -116,12 +119,23 @@ export function ageToolResults(
   let toolResultsAged = 0;
   let toolResultBytesBefore = 0;
   let toolResultBytesAfter = 0;
+  // What the pass looked at, recorded whether or not anything qualified. A
+  // session can spend its whole context on results that each sit under the
+  // floor, and without these the outcome is indistinguishable from the pass
+  // never running. The largest result seen says which it was: compare it
+  // against minBytes.
+  let toolResultsEvaluated = 0;
+  let toolResultBytesLargest = 0;
   const replacements = new Map();
   for (let index = 0; index < input.length; index += 1) {
     const item = input[index];
     if (protectedIndexes.has(index)) continue;
     const value = textualOutput(item);
-    if (value === undefined || Buffer.byteLength(value, "utf8") <= minBytes) continue;
+    if (value === undefined) continue;
+    const size = Buffer.byteLength(value, "utf8");
+    toolResultsEvaluated += 1;
+    if (size > toolResultBytesLargest) toolResultBytesLargest = size;
+    if (size <= minBytes) continue;
     // A later result alone does not prove the model saw this one. A later
     // model-authored message, reasoning item, or tool call does.
     if (!actedAfter[index]) continue;
@@ -130,7 +144,7 @@ export function ageToolResults(
     // Count model-visible text rather than serializing the whole item again.
     // The request path will serialize once later; avoiding a second copy here
     // matters when the result itself is hundreds of megabytes.
-    const before = Buffer.byteLength(value, "utf8");
+    const before = size;
     const after = Buffer.byteLength(receipt, "utf8");
     if (after >= before) continue;
     changed = true;
@@ -150,6 +164,8 @@ export function ageToolResults(
       toolResultBytesBefore,
       toolResultBytesAfter,
       toolResultBytesSaved,
+      toolResultsEvaluated,
+      toolResultBytesLargest,
     },
   };
 }

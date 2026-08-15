@@ -21,7 +21,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { pickerCommandArgs } from "../src/control-args.mjs";
 import { privateFileIsProtected, protectPrivateFile } from "../src/file-security.mjs";
-import { resolveRetentionPathForTests } from "../src/tool-result-retention.mjs";
+import {
+  resolveRetentionPathForTests,
+  retentionDirectoryIdentityMatchesForTests,
+  retentionDirectoryValidationMatchesForTests,
+} from "../src/tool-result-retention.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -788,6 +792,54 @@ test(
     }
   },
 );
+
+test("retention directory identity resolves both Windows path spellings", () => {
+  const short = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\state";
+  const long = "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\state";
+  const other = "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\other";
+  const calls = [];
+  const realpath = (value) => {
+    calls.push(value);
+    return value === short ? long : value;
+  };
+
+  assert.equal(retentionDirectoryIdentityMatchesForTests(short, short, realpath), true);
+  assert.deepEqual(calls, [short, short]);
+  assert.equal(retentionDirectoryIdentityMatchesForTests(short, other, realpath), false);
+});
+
+test("retention validates links before resolving directory identity", () => {
+  const regular = { uid: 0, mode: 0o040755, isSymbolicLink: () => false };
+  const untrustedLink = { uid: 1, mode: 0o120777, isSymbolicLink: () => true };
+  const fixtureRoot = path.parse(path.resolve(".")).root;
+  const linked = path.join(fixtureRoot, "linked");
+  const directory = path.join(linked, "state");
+  const entries = new Map([[fixtureRoot, regular], [linked, untrustedLink]]);
+  const missing = () => {
+    const error = new Error("missing");
+    error.code = "ENOENT";
+    throw error;
+  };
+  const io = {
+    exists: (value) => entries.has(value),
+    lstat: (value) => entries.get(value) || missing(),
+    readlink: missing,
+  };
+  let realpathCalls = 0;
+
+  assert.throws(
+    () => retentionDirectoryValidationMatchesForTests(
+      directory,
+      io,
+      (value) => {
+        realpathCalls += 1;
+        return value;
+      },
+    ),
+    /untrusted link/,
+  );
+  assert.equal(realpathCalls, 0);
+});
 
 test(
   "trusted system-link resolution rejects nested untrusted, cyclic, and dangling targets",

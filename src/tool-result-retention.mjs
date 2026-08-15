@@ -142,6 +142,27 @@ export function resolveRetentionPathForTests(directory, io) {
   return canonicalExistingPath(directory, new Set(), io);
 }
 
+function sameDirectoryIdentity(left, right, realpath = realpathSync.native) {
+  return normalizedRealPath(realpath(left)) === normalizedRealPath(realpath(right));
+}
+
+export function retentionDirectoryIdentityMatchesForTests(left, right, realpath) {
+  return sameDirectoryIdentity(left, right, realpath);
+}
+
+function validatedDirectoryIdentity(
+  directory,
+  io = PATH_IO,
+  realpath = realpathSync.native,
+) {
+  const canonical = canonicalExistingPath(directory, new Set(), io);
+  return sameDirectoryIdentity(directory, canonical, realpath);
+}
+
+export function retentionDirectoryValidationMatchesForTests(directory, io, realpath) {
+  return validatedDirectoryIdentity(directory, io, realpath);
+}
+
 function ensureDirectoryPathWithoutLinks(directory) {
   const resolved = canonicalExistingPath(directory);
   const root = path.parse(resolved).root;
@@ -167,11 +188,10 @@ function assertPlainOwnedDirectory(directory) {
     throw new Error("Retained-result storage is not a plain directory.");
   }
   // A lexical path may traverse only the immutable system-layout links that
-  // canonicalExistingPath accepted above.
-  if (
-    normalizedRealPath(realpathSync.native(directory)) !==
-    normalizedRealPath(canonicalExistingPath(directory))
-  ) {
+  // canonicalExistingPath accepted above. Resolve both spellings before the
+  // comparison because Windows may expand an 8.3 component such as RUNNER~1
+  // only in realpathSync.native().
+  if (!validatedDirectoryIdentity(directory)) {
     throw new Error("Retained-result storage may not traverse a link.");
   }
   if (process.platform !== "win32" && typeof process.getuid === "function") {

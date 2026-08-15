@@ -2372,15 +2372,18 @@ struct RouterProviderInfo: Decodable {
   // Optional because a router older than the field still answers without it;
   // those rows simply stay ungrouped rather than failing to decode.
   let ownedBy: String?
+  // Optional for the same reason. "anonymous" keeps a keyless gateway out of
+  // a vendor's "N accounts" group; a missing value reads as credentialed.
+  let authMode: String?
 
   static let legacyFallback: [RouterProviderInfo] = [
-    .init(id: "grok-oauth", displayName: "Grok OAuth", kind: "oauth", ownedBy: "xai"),
-    .init(id: "kimi-oauth", displayName: "Kimi OAuth", kind: "oauth", ownedBy: "kimi"),
-    .init(id: "deepseek", displayName: "DeepSeek API", kind: "openai-compatible", ownedBy: "deepseek"),
-    .init(id: "grok-api", displayName: "Grok API", kind: "openai-compatible", ownedBy: "xai"),
-    .init(id: "kimi-api", displayName: "Kimi API", kind: "openai-compatible", ownedBy: "kimi"),
-    .init(id: "kimi-api-cn", displayName: "Kimi API (China)", kind: "openai-compatible", ownedBy: "kimi"),
-    .init(id: "anthropic-api", displayName: "Anthropic API", kind: "openai-compatible", ownedBy: "anthropic"),
+    .init(id: "grok-oauth", displayName: "Grok OAuth", kind: "oauth", ownedBy: "xai", authMode: nil),
+    .init(id: "kimi-oauth", displayName: "Kimi OAuth", kind: "oauth", ownedBy: "kimi", authMode: nil),
+    .init(id: "deepseek", displayName: "DeepSeek API", kind: "openai-compatible", ownedBy: "deepseek", authMode: nil),
+    .init(id: "grok-api", displayName: "Grok API", kind: "openai-compatible", ownedBy: "xai", authMode: nil),
+    .init(id: "kimi-api", displayName: "Kimi API", kind: "openai-compatible", ownedBy: "kimi", authMode: nil),
+    .init(id: "kimi-api-cn", displayName: "Kimi API (China)", kind: "openai-compatible", ownedBy: "kimi", authMode: nil),
+    .init(id: "anthropic-api", displayName: "Anthropic API", kind: "openai-compatible", ownedBy: "anthropic", authMode: nil),
   ]
 }
 
@@ -2866,25 +2869,34 @@ private struct TrayView: View {
     }
     let enabled = Set(target.enabledProviders)
     let names = Dictionary(uniqueKeysWithValues: registry.map { ($0.id, $0.displayName) })
+    func lone(_ entry: RouterProviderInfo) -> ProviderGroup {
+      ProviderGroup(id: entry.id, vendorLabel: nil, members: [
+        ProviderGroup.Member(id: entry.id, enabled: enabled.contains(entry.id), shortName: nil)
+      ])
+    }
     return Dictionary(grouping: registry) { $0.ownedBy ?? $0.id }
-      .map { vendor, entries -> ProviderGroup in
+      .flatMap { vendor, entries -> [ProviderGroup] in
         let sorted = entries.sorted { $0.id < $1.id }
+        // An anonymous gateway is not an account of the vendor's paid product;
+        // drawing it under an "N accounts" heading beside a credentialed
+        // sibling claims a relationship that does not exist (opencode-free
+        // would read as a second opencode account). It always stands alone.
+        let accounts = sorted.filter { $0.authMode != "anonymous" }
+        let standalone = sorted.filter { $0.authMode == "anonymous" }
         // A lone provider keeps its own name and no header: a vendor heading
         // above a single row is noise, not structure.
-        guard sorted.count > 1 else {
-          return ProviderGroup(id: vendor, vendorLabel: nil, members: sorted.map {
-            ProviderGroup.Member(id: $0.id, enabled: enabled.contains($0.id), shortName: nil)
-          })
-        }
-        let prefix = commonWordPrefix(sorted.map { names[$0.id] ?? $0.id })
-        return ProviderGroup(
+        guard accounts.count > 1 else { return sorted.map(lone) }
+        let prefix = commonWordPrefix(accounts.map { names[$0.id] ?? $0.id })
+        // No shared leading words means the display names cannot supply a
+        // heading, and a raw registry id is not one either -- those rows stay
+        // flat rather than shipping a lowercase internal id as a brand.
+        guard !prefix.isEmpty else { return sorted.map(lone) }
+        let group = ProviderGroup(
           id: vendor,
-          vendorLabel: prefix.isEmpty ? vendor : prefix,
-          members: sorted.map { entry in
+          vendorLabel: prefix,
+          members: accounts.map { entry in
             let full = names[entry.id] ?? entry.id
-            let short = prefix.isEmpty
-              ? full
-              : String(full.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            let short = String(full.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
             // "Z.ai API" minus "Z.ai" leaves "API"; a name that is nothing but
             // its vendor leaves nothing, so keep the full name there.
             return ProviderGroup.Member(
@@ -2894,6 +2906,7 @@ private struct TrayView: View {
             )
           }
         )
+        return [group] + standalone.map(lone)
       }
       .sorted { ($0.vendorLabel ?? $0.members[0].id) < ($1.vendorLabel ?? $1.members[0].id) }
   }

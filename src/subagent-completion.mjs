@@ -10,8 +10,16 @@
 
 const FINAL_ANSWER_HEADER =
   /Message Type:\s*FINAL_ANSWER\b[\s\S]*?\nSender:\s*(\S+)/gi;
-const TASK_NAME_HEADER = /(?:^|\n)Task name:\s*(\S+)/i;
 const NATIVE_ENCRYPTED_TOKEN = /^gAAAAA[A-Za-z0-9_-]+={0,2}$/;
+
+// A close must always name a child. "/root" (and its bare and slashed forms)
+// is the parent itself, and interrupting it would cancel the turn that is
+// still running -- so a sender that resolves to the root is never a target.
+function isRootTarget(target) {
+  if (typeof target !== "string") return true;
+  const normalized = target.replace(/^\/+/, "").replace(/^root\/?/, "");
+  return normalized === "";
+}
 
 function contentPartsText(content) {
   if (typeof content === "string") return content;
@@ -112,6 +120,13 @@ export function collaborationToolAvailable(namespaces) {
 // Walk the request input once. Returns every child that has already finished
 // (FINAL_ANSWER seen) and every child the parent has already interrupted, so
 // the response path only injects the missing closes.
+//
+// Evidence of a finished child comes from `agent_message` items only -- the
+// envelope type Codex uses for collaboration traffic on both the native and
+// routed paths. Ordinary `message` items are the operator's and the model's
+// own prose; scanning them meant a turn that merely *quoted* a FINAL_ANSWER
+// envelope (docs, a changelog, this very feature under discussion) had a
+// fabricated interrupt_agent call spliced into its response.
 export function collectFinishedSubagentState(input) {
   const finished = new Set();
   const interrupted = new Set();
@@ -126,23 +141,8 @@ export function collectFinishedSubagentState(input) {
       continue;
     }
     if (item.type === "agent_message") {
-      for (const target of targetsFromAgentMessage(item)) finished.add(target);
-      continue;
-    }
-    if (item.type === "message" || item.role) {
-      const text = itemText(item);
-      for (const target of extractFinalAnswerTargetsFromText(text)) {
-        finished.add(target);
-      }
-      if (/Message Type:\s*FINAL_ANSWER\b/i.test(text)) {
-        const taskName = text.match(TASK_NAME_HEADER)?.[1];
-        if (
-          taskName &&
-          (taskName.startsWith("/root") || taskName.includes("/")) &&
-          !finished.has(taskName)
-        ) {
-          finished.add(taskName);
-        }
+      for (const target of targetsFromAgentMessage(item)) {
+        if (!isRootTarget(target)) finished.add(target);
       }
     }
   }
@@ -156,7 +156,10 @@ export function pendingInterruptTargets(
     namespaces,
     // Only enforce the tool check when the request actually advertised a
     // non-empty inventory. Empty/unknown inventories (native deferred tools)
-    // still queue closes for finished children.
+    // still queue closes for finished children. That bypass is safe only
+    // because detection is scoped to `agent_message` envelopes: an ordinary
+    // turn cannot contain one, so an empty inventory plus quoted envelope
+    // text can no longer manufacture an interrupt.
     requireCollaborationTool = namespaces instanceof Map && namespaces.size > 0,
   } = {},
 ) {

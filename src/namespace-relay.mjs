@@ -375,6 +375,7 @@ export class NamespaceToolCallTransform extends Transform {
   #lookups;
   #sessionModel;
   #pendingInterrupts;
+  #injectOnly = false;
   #interruptedTargets = new Set();
   #lastSequence = 0;
   #interruptSeq = 0;
@@ -389,6 +390,11 @@ export class NamespaceToolCallTransform extends Transform {
     this.#pendingInterrupts = Array.isArray(options.pendingInterrupts)
       ? [...options.pendingInterrupts]
       : [];
+    // Native turns attach this transform only to close finished children. A
+    // native stream is otherwise relayed byte-identical, so inject-only mode
+    // must not run the namespace rewrites (they exist for routed providers)
+    // or re-serialize model-authored events it did not change.
+    this.#injectOnly = Boolean(options.injectOnly);
     const declared = String(contentType).toLowerCase();
     this.#eventStream = declared.includes("text/event-stream");
     this.#headerlessDetector =
@@ -448,15 +454,24 @@ export class NamespaceToolCallTransform extends Transform {
         return;
       }
       try {
-        let payload = JSON.parse(body.toString("utf8"));
-        const rewritten = rewriteNamespaceResponsePayload(
-          payload,
-          this.#lookups,
-          this.#sessionModel,
-        );
-        if (rewritten) payload = rewritten;
+        const original = JSON.parse(body.toString("utf8"));
+        let payload = original;
+        if (!this.#injectOnly) {
+          const rewritten = rewriteNamespaceResponsePayload(
+            payload,
+            this.#lookups,
+            this.#sessionModel,
+          );
+          if (rewritten) payload = rewritten;
+        }
         payload = this.#injectJsonInterrupts(payload);
-        this.push(Buffer.from(JSON.stringify(payload), "utf8"));
+        // An inject-only relay that injected nothing returns the exact bytes
+        // it was handed rather than a re-serialization of them.
+        if (this.#injectOnly && payload === original) {
+          this.push(body);
+        } else {
+          this.push(Buffer.from(JSON.stringify(payload), "utf8"));
+        }
       } catch {
         this.push(body);
       }
@@ -500,7 +515,7 @@ export class NamespaceToolCallTransform extends Transform {
       dataText = line.slice(5).trimStart();
       break;
     }
-    if (dataLineIndex === -1) return [block.endsWith("\n") ? block : `${block}`];
+    if (dataLineIndex === -1) return [block];
     if (!dataText || dataText === "[DONE]") {
       // Inject before the stream terminator so Codex still executes the calls.
       if (dataText === "[DONE]" || eventName === "response.done") {
@@ -510,8 +525,10 @@ export class NamespaceToolCallTransform extends Transform {
     }
     try {
       let event = JSON.parse(dataText);
-      const next = rewriteNamespaceResponsePayload(event, this.#lookups, this.#sessionModel);
-      if (next) event = next;
+      if (!this.#injectOnly) {
+        const next = rewriteNamespaceResponsePayload(event, this.#lookups, this.#sessionModel);
+        if (next) event = next;
+      }
       this.#observeEvent(event);
       const rebuilt = [...lines];
       rebuilt[dataLineIndex] = `data: ${JSON.stringify(event)}`;
@@ -520,12 +537,20 @@ export class NamespaceToolCallTransform extends Transform {
       if (event?.type === "response.completed" || eventName === "response.completed") {
         const interruptBlocks = this.#drainInterruptBlocks();
         const withOutput = this.#mergeInjectedIntoCompleted(event);
+        // Nothing injected and nothing rewritten: the event goes out as it
+        // came in, not as a JSON round-trip of itself.
+        if (this.#injectOnly && !interruptBlocks.length && withOutput === event) {
+          return [block];
+        }
         rebuilt[dataLineIndex] = `data: ${JSON.stringify(withOutput)}`;
         return [...interruptBlocks, rebuilt.join("\n")];
       }
       if (event?.type === "response.done" || eventName === "response.done") {
-        return [...this.#drainInterruptBlocks(), rebuilt.join("\n")];
+        const interruptBlocks = this.#drainInterruptBlocks();
+        if (this.#injectOnly) return [...interruptBlocks, block];
+        return [...interruptBlocks, rebuilt.join("\n")];
       }
+      if (this.#injectOnly) return [block];
       return [rebuilt.join("\n")];
     } catch {
       return [block];

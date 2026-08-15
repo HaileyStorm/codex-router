@@ -102,6 +102,73 @@ test("filterAlreadyInterrupted matches /root/child and child forms", () => {
   ]);
 });
 
+test("ordinary prose quoting a FINAL_ANSWER envelope is not a finished child", () => {
+  // Docs, changelogs, and conversations about this very feature all contain
+  // envelope-shaped text inside plain messages. None of it is evidence that a
+  // child exists, so nothing may be queued for interruption.
+  const quoted =
+    "Here is what the envelope looks like:\n" +
+    "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/example\nPayload:\ndone";
+  const input = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: quoted }] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: quoted }] },
+    { role: "user", content: quoted },
+  ];
+  const state = collectFinishedSubagentState(input);
+  assert.equal(state.finished.size, 0);
+  assert.deepEqual(state.pending, []);
+  assert.deepEqual(pendingInterruptTargets(input), []);
+  assert.deepEqual(pendingInterruptTargets(input, { namespaces: new Map() }), []);
+});
+
+test("the root itself is never an interrupt target", () => {
+  const input = [finalAnswerMessage("/root"), finalAnswerMessage("root")];
+  const state = collectFinishedSubagentState(input);
+  assert.equal(state.finished.size, 0);
+  assert.deepEqual(state.pending, []);
+});
+
+test("inject-only relay leaves unrelated native events byte-identical", async () => {
+  const namespaces = collaborationNamespaces();
+  // Deliberately non-canonical JSON spacing: a re-serialization would lose it,
+  // so its survival proves the event bytes were relayed, not rebuilt.
+  const unrelated =
+    'event: response.output_item.done\ndata: {"type": "response.output_item.done",  "sequence_number": 1, "item": {"type": "function_call", "name": "spawn_agent", "namespace": "collaboration", "call_id": "call_spawn", "arguments": "{\\"model\\": \\"anything\\"}"}}\n\n';
+  const completed =
+    'event: response.completed\ndata: {"type":"response.completed","sequence_number":2,"response":{"output":[]}}\n\n';
+  const transform = new NamespaceToolCallTransform(
+    namespaces,
+    "text/event-stream",
+    undefined,
+    { pendingInterrupts: ["/root/child"], injectOnly: true },
+  );
+  const output = await collect(Readable.from([unrelated, completed]).pipe(transform));
+  // The unrelated event survives verbatim -- spacing intact, spawn model
+  // argument untouched by the routed-provider sanitizer.
+  assert.ok(output.includes(unrelated.trimEnd()));
+  assert.match(output, /"name":"interrupt_agent"/);
+  assert.match(output, /\/root\/child/);
+});
+
+test("inject-only relay with nothing to inject returns the stream untouched", async () => {
+  const namespaces = collaborationNamespaces();
+  const blocks = [
+    'event: response.output_item.done\ndata: {"type": "response.output_item.done", "sequence_number": 1, "item": {"type": "function_call", "name": "interrupt_agent", "namespace": "collaboration", "call_id": "call_done", "arguments": "{\\"target\\": \\"/root/child\\"}"}}\n\n',
+    'event: response.completed\ndata: {"type": "response.completed", "sequence_number": 2, "response": {"output": []}}\n\n',
+  ];
+  const transform = new NamespaceToolCallTransform(
+    namespaces,
+    "text/event-stream",
+    undefined,
+    { pendingInterrupts: ["/root/child"], injectOnly: true },
+  );
+  const output = await collect(Readable.from(blocks).pipe(transform));
+  // The model already closed the child, so the relay changes nothing but the
+  // trailing empty separator the block splitter has always re-appended.
+  assert.equal(output.trimEnd(), blocks.join("").trimEnd());
+  assert.equal(output.trim().startsWith(blocks[0].trimEnd()), true);
+});
+
 test("stream transform injects interrupt_agent before response.completed", async () => {
   const namespaces = collaborationNamespaces();
   const events = [

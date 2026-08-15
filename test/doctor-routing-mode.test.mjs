@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -157,6 +158,16 @@ test(
     writeFileSync(path.join(stateDir, "deepseek-api-key.secret"), "test-key\n", {
       mode: 0o600,
     });
+    writeFileSync(
+      path.join(stateDir, "multi-agent-proofs.json"),
+      `${JSON.stringify({
+        version: 1,
+        proofs: {
+          "deepseek/deepseek-v4-pro": { status: "proven" },
+        },
+      })}\n`,
+      { mode: 0o600 },
+    );
     writeFileSync(path.join(stateDir, "caller-secret"), `${callerSecret}\n`, {
       mode: 0o600,
     });
@@ -179,6 +190,9 @@ test(
       const catalog = child("catalog.mjs", ["--refresh-native", "--bundled-native"], env);
       assert.equal(catalog.status, 0, catalog.stderr);
       assert.equal(JSON.parse(catalog.stdout).routed_catalog_active, true);
+      unlinkSync(
+        path.join(codexHome, "agents", "router-model-deepseek-deepseek-v4-pro.toml"),
+      );
 
       const routes = child("litellm-config.mjs", [], env);
       assert.equal(routes.status, 0, routes.stderr);
@@ -193,6 +207,12 @@ test(
         name: "Codex model catalog",
         detail: "startup catalog is stale",
         fix: "Fully quit Codex, reopen it, and create a new task.",
+      });
+      assert.deepEqual(byName.get("Routed model agents"), {
+        status: "fail",
+        name: "Routed model agents",
+        detail: `0 of 1 current definitions in ${path.join(codexHome, "agents")}`,
+        fix: "Run ./bin/doctor --fix, then fully quit Codex, reopen it, and create a new task.",
       });
     } finally {
       rmSync(codexHome, { recursive: true, force: true });

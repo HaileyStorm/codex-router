@@ -25,11 +25,10 @@ import { readUserModels } from "./user-models.mjs";
 import { syncRoutedCodexAgents } from "./codex-agent-catalog.mjs";
 import { MODEL_BY_SLUG } from "./model-registry.mjs";
 import {
-  applyMultiAgentSettings,
+  applyMultiAgentCapabilities,
   readMultiAgentSettings,
   subagentEligibleModels,
 } from "./multi-agent-state.mjs";
-import { applySubagentProofs, subagentProofSnapshot } from "./subagent-proofs.mjs";
 import { readHiddenModels } from "./model-picker-state.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels, configuredProviderIds } from "./provider-selection.mjs";
@@ -777,10 +776,10 @@ function main() {
   // never manufacture a v2 claim — a promotion here traces to a live probe
   // or an observed spawn in `multi-agent-proofs.json` — and a slug the
   // operator hid or switched off stays v1 whatever evidence it carries.
-  const allMultiAgentModels = applySubagentProofs(
-    applyMultiAgentSettings(selectedModels, multiAgentSettings, hiddenModels),
-    subagentProofSnapshot(),
-    { hidden: hiddenModels, disabled: multiAgentSettings.disabled },
+  const allMultiAgentModels = applyMultiAgentCapabilities(
+    selectedModels,
+    multiAgentSettings,
+    { hidden: hiddenModels },
   );
   // Clamp before announcements and agent sync so every surface Codex reads —
   // picker levels, defaults, and announcement copy — stays inside the effort

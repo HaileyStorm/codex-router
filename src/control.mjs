@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { pickerCommandArgs } from "./control-args.mjs";
+import { promoteNativeMultiAgent } from "./catalog.mjs";
 // The publish marker lives under the shared state directory, which does not
 // vary by target, so reading it here does not disturb the per-target probes
 // below that re-import paths with their own MODEL_ROUTER_TARGET.
@@ -83,11 +84,15 @@ async function shippedNativeVisionEngines(hidden) {
   return installedNativeVisionEngines({ hidden });
 }
 
-function nativeCodexModels(catalogPath, hiddenModels = new Set()) {
+function nativeCodexModels(catalogPath, hiddenModels = new Set(), subagentSettings = {}) {
   if (!existsSync(catalogPath)) return [];
   try {
     const parsed = JSON.parse(readFileSync(catalogPath, "utf8"));
-    return (Array.isArray(parsed.models) ? parsed.models : [])
+    return promoteNativeMultiAgent(
+      Array.isArray(parsed.models) ? parsed.models : [],
+      subagentSettings,
+      hiddenModels,
+    )
       .filter((model) => model.visibility === "list" && typeof model.slug === "string")
       .map((model) => ({
         slug: model.slug,
@@ -151,6 +156,7 @@ async function emitProbe() {
 
   const enabledProviders = readProviderSelection();
   const hiddenModels = new Set(modelPickerSnapshot().hidden);
+  const subagentSettings = subagentSettingsSnapshot();
   const usageEvents = TARGET === "codex"
     ? (await import("./usage-events.mjs")).recentUsageEvents()
     : [];
@@ -167,7 +173,7 @@ async function emitProbe() {
   const { applySubagentProofs } = await import("./subagent-proofs.mjs");
   const provenListedModels = applySubagentProofs(
     LISTED_MODELS,
-    subagentSettingsSnapshot().proofs,
+    subagentSettings.proofs,
     { hidden: hiddenModels },
   );
   // The tray groups models by provider to build its rows, so protocol
@@ -182,7 +188,10 @@ async function emitProbe() {
     visible: !hiddenModels.has(model.slug),
   }));
   const models = TARGET === "codex"
-    ? [...nativeCodexModels(NATIVE_CATALOG_PATH, hiddenModels), ...routedModels]
+    ? [
+        ...nativeCodexModels(NATIVE_CATALOG_PATH, hiddenModels, subagentSettings),
+        ...routedModels,
+      ]
     : routedModels;
   const selectedModel = TARGET === "codex" ? configuredDefaultModel(CONFIG_PATH) : undefined;
   const codexConfig = TARGET === "codex" ? codexConfigSnapshot() : undefined;
@@ -225,7 +234,7 @@ async function emitProbe() {
             usageEvents,
             nativeAliases: readNativeAliases(),
             modelSettings: {
-              subagents: subagentSettingsSnapshot(),
+              subagents: subagentSettings,
               picker: modelPickerSnapshot(),
               toolResultAging: toolResultAgingSnapshot(),
               localModels: {
@@ -805,14 +814,18 @@ async function handleSubagents(action, value, flag, rest = []) {
   } else if (action === "unselect-all") {
     const { selectedConfiguredListedModels } = await import("./provider-selection.mjs");
     const { readHiddenModels } = await import("./model-picker-state.mjs");
+    const { NATIVE_CATALOG_PATH } = await import("./paths.mjs");
     const hidden = readHiddenModels();
-    const visibleExternal = selectedConfiguredListedModels()
-      .filter((model) => !hidden.has(model.slug))
-      .map((model) => model.slug);
+    const visibleModels = [
+      ...nativeCodexModels(NATIVE_CATALOG_PATH, hidden).map((model) => model.slug),
+      ...selectedConfiguredListedModels()
+        .filter((model) => !hidden.has(model.slug))
+        .map((model) => model.slug),
+    ];
     replaceMultiAgentState({
       mode: "selected",
       enabled: [],
-      disabled: visibleExternal,
+      disabled: visibleModels,
     });
   } else if (action === "mode") {
     setMultiAgentMode(value);
@@ -853,9 +866,15 @@ async function handleSubagents(action, value, flag, rest = []) {
       "./provider-selection.mjs"
     );
     const provider = canonicalProviderId(String(value || "").trim());
-    const slugs = selectedConfiguredListedModels()
-      .filter((model) => canonicalProviderId(model.provider) === provider)
-      .map((model) => model.slug);
+    let slugs;
+    if (provider === "openai") {
+      const { NATIVE_CATALOG_PATH } = await import("./paths.mjs");
+      slugs = nativeCodexModels(NATIVE_CATALOG_PATH).map((model) => model.slug);
+    } else {
+      slugs = selectedConfiguredListedModels()
+        .filter((model) => canonicalProviderId(model.provider) === provider)
+        .map((model) => model.slug);
+    }
     if (slugs.length === 0) {
       throw new Error(`No enabled models found for provider: ${value}`);
     }

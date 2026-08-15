@@ -10,6 +10,7 @@ process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 const {
   MULTI_AGENT_ALL_PATH,
   MULTI_AGENT_STATE_PATH,
+  applyMultiAgentCapabilities,
   applyMultiAgentSettings,
   readAllMultiAgent,
   readMultiAgentSettings,
@@ -125,6 +126,37 @@ test("selected mode retains only registry-proven v2 claims", () => {
     [
       ["opencode-go/deepseek-v4-flash", undefined],
       ["qwen-plan/qwen3.8-max", undefined],
+      ["kimi-oauth/k3", "v2"],
+    ],
+  );
+});
+
+test("effective capabilities include machine-local proofs and respect exclusions", () => {
+  const models = [
+    { slug: "opencode-go/deepseek-v4-pro" },
+    { slug: "opencode-go/deepseek-v4-flash" },
+    { slug: "kimi-oauth/k3", multiAgentVersion: "v2" },
+  ];
+  const resolved = applyMultiAgentCapabilities(
+    models,
+    {
+      version: 2,
+      mode: "selected",
+      enabled: ["opencode-go/deepseek-v4-pro"],
+      disabled: ["opencode-go/deepseek-v4-flash"],
+    },
+    {
+      proofs: {
+        "opencode-go/deepseek-v4-pro": { status: "proven" },
+        "opencode-go/deepseek-v4-flash": { status: "proven" },
+      },
+    },
+  );
+  assert.deepEqual(
+    resolved.map((model) => [model.slug, model.multiAgentVersion]),
+    [
+      ["opencode-go/deepseek-v4-pro", "v2"],
+      ["opencode-go/deepseek-v4-flash", "v1"],
       ["kimi-oauth/k3", "v2"],
     ],
   );

@@ -31,6 +31,13 @@ function probe(target, providers, usageEvents = [], options = {}) {
       { mode: 0o600 },
     );
   }
+  if (options.subagentSettings) {
+    writeFileSync(
+      path.join(stateDir, "multi-agent-settings.json"),
+      `${JSON.stringify({ version: 2, ...options.subagentSettings })}\n`,
+      { mode: 0o600 },
+    );
+  }
   if (options.selectedModel) {
     writeFileSync(
       path.join(stateDir, "config.toml"),
@@ -166,6 +173,39 @@ test("codex probe includes native GPT models and the configured default", () => 
   assert.equal(slice.modelSettings.localModels.lmstudio.provider, "lmstudio");
   assert.equal(typeof slice.modelSettings.localModels.lmstudio.reachable, "boolean");
   assert.ok(Array.isArray(slice.modelSettings.localModels.lmstudio.models));
+});
+
+test("codex probe reports the effective v2 state of selected native GPT models", () => {
+  const slice = probe("codex", [], [], {
+    nativeModels: [
+      {
+        slug: "gpt-5.6-terra",
+        display_name: "GPT-5.6-Terra",
+        visibility: "list",
+        multi_agent_version: "v1",
+      },
+      {
+        slug: "gpt-5.6-luna",
+        display_name: "GPT-5.6-Luna",
+        visibility: "list",
+        multi_agent_version: "v1",
+      },
+    ],
+    subagentSettings: {
+      mode: "selected",
+      enabled: ["gpt-5.6-terra"],
+      disabled: [],
+    },
+  });
+
+  assert.equal(
+    slice.models.find((model) => model.slug === "gpt-5.6-terra")?.multiAgentVersion,
+    "v2",
+  );
+  assert.equal(
+    slice.models.find((model) => model.slug === "gpt-5.6-luna")?.multiAgentVersion,
+    "v2",
+  );
 });
 
 test("codex probe exposes managed login-free mode without credential details", () => {

@@ -2737,6 +2737,12 @@ struct SubagentSettingsSnapshot: Decodable {
   let enabled: [String]
   let disabled: [String]
   let all: Bool
+  let proofs: [String: SubagentProofSnapshot]?
+}
+
+struct SubagentProofSnapshot: Decodable {
+  let status: String
+  let reason: String?
 }
 
 struct PickerSettingsSnapshot: Decodable {
@@ -3597,11 +3603,9 @@ private struct TrayView: View {
     // a subagent either, but dropping its row made it look deleted and left no
     // way back to it from this panel -- the tray must always show every model
     // it can still change.
-    private var enabledExternalModels: [RouterModel] {
+    private var subagentModels: [RouterModel] {
       target.models
-        .filter {
-          $0.enabled && $0.provider != "openai" && $0.multiAgentVersion == "v2"
-        }
+        .filter(\.enabled)
         .sorted {
           if $0.provider != $1.provider { return $0.provider < $1.provider }
           return $0.slug < $1.slug
@@ -3691,7 +3695,7 @@ private struct TrayView: View {
                 ("Subagents off", { Task { await store.unselectAllSubagents() } }),
               ]
             )
-            ForEach(providerGroups(enabledExternalModels)) { group in
+            ForEach(providerGroups(subagentModels)) { group in
               AccordionPanel(
                 title: providerName(group.provider),
                 summary: subagentGroupSummary(group),
@@ -4986,23 +4990,32 @@ private struct TrayView: View {
       Set(settings?.subagents.disabled ?? [])
     }
 
-    // A local selection may withhold a proven model, but never promote an
-    // unverified one to native v2 collaboration.
+    private var selectedSubagentSet: Set<String> {
+      Set(settings?.subagents.enabled ?? [])
+    }
+
+    // Keep a selected candidate checked while its capability probe runs. The
+    // backend, not this UI state, decides when it is actually advertised as v2.
     private func isSubagent(_ model: RouterModel) -> Bool {
       if model.visible == false { return false }
-      if model.multiAgentVersion != "v2" { return false }
       if disabledSubagentSet.contains(model.slug) { return false }
-      return true
+      return model.multiAgentVersion == "v2" || selectedSubagentSet.contains(model.slug)
     }
 
     private func subagentDetail(for model: RouterModel) -> String {
       if model.visible == false { return routerLocalized("Hidden from picker — show it below to use it here") }
-      if isSubagent(model) { return routerLocalized("Proven v2") }
+      if let proof = settings?.subagents.proofs?[model.slug] {
+        if proof.status == "checking" { return routerLocalized("Checking…") }
+        if proof.status == "failed" {
+          return proof.reason ?? routerLocalized("Error")
+        }
+      }
+      if model.multiAgentVersion == "v2" { return routerLocalized("Proven v2") }
       return routerLocalized("Not selected")
     }
 
   private var subagentSummary: String {
-      let count = enabledExternalModels.filter { isSubagent($0) }.count
+      let count = subagentModels.filter { isSubagent($0) }.count
       return RouterLanguage.isSimplifiedChinese
         ? "\(count) 个已启用 · \(settings?.subagents.mode ?? "proven")"
         : "\(count) enabled · \(settings?.subagents.mode ?? "proven")"

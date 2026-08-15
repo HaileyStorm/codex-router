@@ -655,13 +655,12 @@ function startPanel() {
     const snapshot = state.snapshot?.targets?.codex;
     const settings = snapshot?.modelSettings;
     const models = snapshot?.models || [];
-    const enabledProviders = new Set(snapshot?.enabledProviders || []);
-    const enabledModels = models.filter(
-      (model) => model.enabled && enabledProviders.has(model.provider),
-    );
+    const enabledModels = models.filter((model) => model.enabled);
     const pickerModels = models.filter((model) => model.enabled);
     const subagent = settings?.subagents || { mode: "proven", enabled: [], disabled: [] };
     const disabledSubagents = new Set(subagent.disabled || []);
+    const selectedSubagents = new Set(subagent.enabled || []);
+    const subagentProofs = subagent.proofs || {};
     const hiddenModels = new Set(settings?.picker?.hidden || []);
     const providerNames = new Map(
       (snapshot?.providers || []).map((provider) => [provider.id, provider.displayName]),
@@ -715,38 +714,36 @@ function startPanel() {
     elements.subagentAllSwitch.checked = subagent.mode === "all";
     elements.subagentAllSwitchLabel.title = t("models.onlyProvenV2");
 
-    // Models hidden from the picker are forced off as subagents, so their
-    // rows here were permanently locked noise. They are filtered out; the
-    // note under the list keeps the count visible and points at the picker
-    // section, which is where unhiding brings a model back.
-    const subagentModels = enabledModels.filter(
-      (model) =>
-        !model.native && model.visible !== false && model.multiAgentVersion === "v2",
-    );
-    const hiddenSubagentCount = enabledModels.filter(
-      (model) =>
-        !model.native && model.visible === false && model.multiAgentVersion === "v2",
-    ).length;
+    // Every enabled model belongs here. Native OpenAI models use their
+    // effective Codex catalog capability, while an unverified routed model
+    // starts the existing capability probe when selected. Hiding v1 candidates
+    // made that route impossible to discover; filtering native models made
+    // usable GPT models disappear from the panel entirely.
+    const subagentModels = enabledModels;
     const subagentGroups = groupModels(subagentModels);
     const isSubagentOn = (model) =>
       model.visible === false
         ? false
-        : !disabledSubagents.has(model.slug);
+        : !disabledSubagents.has(model.slug) &&
+          (model.multiAgentVersion === "v2" || selectedSubagents.has(model.slug));
     const subagentRow = (model) => {
         const checked = isSubagentOn(model);
-        const badge = t("models.provenV2");
+        const proof = subagentProofs[model.slug];
+        const badge = model.visible === false
+          ? t("models.hidden")
+          : proof?.status === "checking"
+            ? t("status.working")
+            : proof?.status === "failed"
+              ? `${t("status.error")}: ${proof.reason || t("models.untested")}`
+              : model.multiAgentVersion === "v2"
+                ? t("models.provenV2")
+                : t("models.untested");
         return `<label class="model-setting-row">
           <span><strong>${escapeHtml(model.displayName)}</strong><small>${escapeHtml(badge)}</small></span>
-          <span class="provider-check"><input type="checkbox" data-subagent="${escapeHtml(model.slug)}" aria-label="${escapeHtml(t("models.useModelAria", { model: model.displayName }))}"${checked ? " checked" : ""}${state.modelSettingsBusy ? " disabled" : ""}></span>
+          <span class="provider-check"><input type="checkbox" data-subagent="${escapeHtml(model.slug)}" aria-label="${escapeHtml(t("models.useModelAria", { model: model.displayName }))}"${checked ? " checked" : ""}${state.modelSettingsBusy || model.visible === false ? " disabled" : ""}></span>
         </label>`;
       };
 
-    const hiddenSubagentNote = hiddenSubagentCount
-      ? `<div class="model-settings-note">${escapeHtml(t(
-          hiddenSubagentCount === 1 ? "models.hiddenFromPickerOne" : "models.hiddenFromPickerMany",
-          { count: hiddenSubagentCount },
-        ))}</div>`
-      : "";
     elements.subagentModelList.innerHTML = subagentGroups.length
       ? providerGroupsMarkup(
           subagentGroups,
@@ -756,11 +753,9 @@ function startPanel() {
             on: group.items.filter(isSubagentOn).length,
             total: group.items.length,
           }),
-        ) + hiddenSubagentNote
-      : `<div class="empty-state">${escapeHtml(t("models.enableProviderForSubagents"))}</div>${hiddenSubagentNote}`;
-    const subagentCount = subagentModels.filter(
-      (model) => !disabledSubagents.has(model.slug),
-    ).length;
+        )
+      : `<div class="empty-state">${escapeHtml(t("models.enableProviderForSubagents"))}</div>`;
+    const subagentCount = subagentModels.filter(isSubagentOn).length;
     elements.subagentSummary.textContent = t("models.subagentSummary", {
       count: subagentCount,
       plural: subagentCount === 1 ? "" : "s",

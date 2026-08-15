@@ -66,7 +66,15 @@ test("ages a large consumed result while preserving its call pairing and recover
   assert.ok(result.stats.toolResultBytesSaved > 40_000);
   assert.equal(result.input[1].call_id, "old");
   assert.doesNotMatch(result.input[1].output, /\.\/bin\/control|retrieve\s/i);
-  assert.match(result.input[1].output, /Owner-local exact note/);
+  // The receipt names the recovery the model can actually perform. Describing
+  // the owner-private retention instead pointed it at bytes it has no way to
+  // reach, which is how a model ends up claiming it re-read something it did
+  // not; the graduation A/B measured re-running the tool, not retrieval.
+  assert.match(
+    result.input[1].output,
+    /Repeat the preceding exec_command call with the same arguments/,
+  );
+  assert.doesNotMatch(result.input[1].output, /owner-priv|Owner-local|Retrieval is/i);
   assert.match(result.input[1].output, /HEAD/);
   assert.match(result.input[1].output, /TAIL/);
   assert.match(

@@ -3,7 +3,10 @@
 enum RouterHindiText {
   static let values: [String: String] = [
     "Uninstalling": "अनइंस्टॉल हो रहा है",
-    "Off by default · replaces consumed tool results on external models": "डिफ़ॉल्ट रूप से बंद · बाहरी मॉडलों पर उपभोग किए गए टूल परिणाम बदल देता है",
+    "On by default · summarizes repetitive old logs; exact bytes stay owner-local": "डिफ़ॉल्ट रूप से चालू · दोहरावदार पुराने लॉग को संक्षेप करता है; सटीक बाइट्स स्वामी के पास स्थानीय रहते हैं",
+    "A prior retention failure remains recorded · the latest attempt succeeded; affected results stayed full": "पिछली रिटेंशन विफलता दर्ज है · नवीनतम प्रयास सफल रहा; प्रभावित परिणाम पूर्ण रहे",
+    "Retention capacity reached · new eligible results pass through unchanged": "रिटेंशन क्षमता पूरी · नए योग्य परिणाम अपरिवर्तित भेजे जाते हैं",
+    "Local retention is degraded · eligible results pass through unchanged": "स्थानीय रिटेंशन ख़राब है · योग्य परिणाम अपरिवर्तित भेजे जाते हैं",
     "Fix Codex Router installation": "Codex राउटर इंस्टॉलेशन ठीक करें",
     "Language": "भाषा",
     "System": "सिस्टम के अनुसार",

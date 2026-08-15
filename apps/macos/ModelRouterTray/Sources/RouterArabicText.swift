@@ -3,7 +3,10 @@
 enum RouterArabicText {
   static let values: [String: String] = [
     "Uninstalling": "جارٍ الإزالة",
-    "Off by default · replaces consumed tool results on external models": "معطّل افتراضيًا · يستبدل نتائج الأدوات المستهلكة على النماذج الخارجية",
+    "On by default · summarizes repetitive old logs; exact bytes stay owner-local": "مفعّل افتراضيًا · يلخّص السجلات القديمة المتكررة؛ تبقى البايتات الأصلية محليًا لدى المالك",
+    "A prior retention failure remains recorded · the latest attempt succeeded; affected results stayed full": "لا يزال هناك سجل لفشل احتفاظ سابق · نجحت المحاولة الأخيرة؛ وبقيت النتائج المتأثرة كاملة",
+    "Retention capacity reached · new eligible results pass through unchanged": "تم بلوغ سعة الاحتفاظ · تمر النتائج المؤهَّلة الجديدة دون تغيير",
+    "Local retention is degraded · eligible results pass through unchanged": "الاحتفاظ المحلي متدهور · تمر النتائج المؤهَّلة دون تغيير",
     "Fix Codex Router installation": "إصلاح تثبيت موجّه Codex",
     "Language": "اللغة",
     "System": "حسب النظام",

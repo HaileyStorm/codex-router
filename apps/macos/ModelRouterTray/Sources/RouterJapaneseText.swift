@@ -3,7 +3,10 @@
 enum RouterJapaneseText {
   static let values: [String: String] = [
     "Uninstalling": "アンインストール中",
-    "Off by default · replaces consumed tool results on external models": "デフォルトでオフ · 外部モデルで消費済みのツール結果を置き換えます",
+    "On by default · summarizes repetitive old logs; exact bytes stay owner-local": "既定で有効 · 繰り返しの多い古いログを要約します。正確なバイトは所有者のローカルに保持されます",
+    "A prior retention failure remains recorded · the latest attempt succeeded; affected results stayed full": "以前の保持失敗の記録が残っています · 直近の試行は成功し、影響を受けた結果は完全なまま保持されました",
+    "Retention capacity reached · new eligible results pass through unchanged": "保持容量の上限に達しました · 新たな対象結果はそのまま送信されます",
+    "Local retention is degraded · eligible results pass through unchanged": "ローカル保持が劣化しています · 対象の結果はそのまま送信されます",
     "Fix Codex Router installation": "Codex ルーターのインストールを修復",
     "Language": "言語",
     "System": "システムに従う",

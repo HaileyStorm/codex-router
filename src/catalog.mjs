@@ -92,7 +92,7 @@ export function mergeNativeCatalogs(accountCatalog, bundledCatalog) {
     if (seen.has(slug)) continue;
     seen.add(slug);
     const base = fallbackBySlug.get(slug);
-    const merged = base ? { ...base, ...model } : { ...model };
+    const merged = mergeNativeModel(model, base);
     // The remote cache may omit `base_instructions` because Codex can derive
     // it internally. A custom model_catalog_json is parsed more strictly and
     // requires the field, so derive it the same way for account-only models
@@ -109,6 +109,53 @@ export function mergeNativeCatalogs(accountCatalog, bundledCatalog) {
       ...fallback.filter((model) => !seen.has(String(model?.slug || ""))),
     ],
   };
+}
+
+function isEmptyNativeMetadata(value) {
+  if (value === undefined || value === null) return true;
+  if (typeof value === "string") return value.trim() === "";
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+
+// Only fields where an empty account value can never be a deliberate account
+// narrowing may be backfilled from the bundled catalog. Each entry earns its
+// place: the speed/service tiers are the observed bug (a stale account schema
+// wiped the Fast tier), `input_modalities: []` would describe a model nothing
+// can call, and the tool/instruction fields are binary-schema data the account
+// cache merely mirrors. Deliberately absent: `visibility` (the account's own
+// signal, always non-empty in practice but not worth betting on) and
+// `supported_reasoning_levels` (an account that lost an effort ladder is
+// expressing exactly that — resurrecting bundled's ladder would offer efforts
+// the account cannot spend).
+const BUNDLED_BACKFILL_FIELDS = Object.freeze([
+  "additional_speed_tiers",
+  "service_tiers",
+  "input_modalities",
+  "experimental_supported_tools",
+  "include_apps_usage_instructions",
+  "model_messages",
+]);
+
+// The account catalog may use an older schema and publish empty fields for
+// capabilities already present in the current binary. Preserve the non-empty
+// bundled value for the allowlisted schema fields in that case; a non-empty
+// account value always remains authoritative.
+export function mergeNativeModel(accountModel, bundledModel) {
+  if (!bundledModel) return { ...accountModel };
+
+  const merged = { ...bundledModel, ...accountModel };
+  for (const field of BUNDLED_BACKFILL_FIELDS) {
+    const value = bundledModel[field];
+    if (
+      !isEmptyNativeMetadata(value) &&
+      isEmptyNativeMetadata(accountModel[field])
+    ) {
+      merged[field] = value;
+    }
+  }
+  return merged;
 }
 
 // One read serves both the catalog contents and the fingerprint; reading the

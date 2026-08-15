@@ -2470,6 +2470,9 @@ struct ToolResultAgingStats: Decodable {
   let resultsAged: Int?
   let bytesSaved: Int?
   let estimatedTokensSaved: Int?
+  let backendDegraded: Bool?
+  let degradedReason: String?
+  let lastRetentionAttemptHealthy: Bool?
   let ranges: [String: ToolResultAgingRange]?
 
   var savingsSummary: String? {
@@ -3185,7 +3188,7 @@ private struct TrayView: View {
       VStack(alignment: .leading, spacing: 8) {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
           VStack(alignment: .leading, spacing: 2) {
-            Text("Old tool results replaced with receipts")
+            Text("Repetitive old logs replaced with smart summaries")
               .font(.system(size: 10, weight: .medium))
               .lineLimit(1)
             Text("\(range?.requests ?? 0) compacted requests in this window")
@@ -3483,13 +3486,21 @@ private struct TrayView: View {
       title: routerLocalized("Compact old tool results"),
       detail: target.modelSettings?.toolResultAging?.environmentOverride == true
         ? routerLocalized("Forced off by CODEX_ROUTER_TOOL_RESULT_AGING=0")
+        : target.modelSettings?.toolResultAging?.stats?.degradedReason != nil
+          && target.modelSettings?.toolResultAging?.stats?.lastRetentionAttemptHealthy == true
+        ? routerLocalized("A prior retention failure remains recorded · the latest attempt succeeded; affected results stayed full")
+        : target.modelSettings?.toolResultAging?.stats?.degradedReason == "capacity"
+        ? routerLocalized("Retention capacity reached · new eligible results pass through unchanged")
+        : target.modelSettings?.toolResultAging?.stats?.degradedReason == "storage"
+        ? routerLocalized("Local retention is degraded · eligible results pass through unchanged")
         : (target.modelSettings?.toolResultAging?.stats?.savingsSummary
-          ?? routerLocalized("Off by default · replaces consumed tool results on external models")),
+          ?? routerLocalized("On by default · summarizes repetitive old logs; exact bytes stay owner-local")),
       isOn: Binding(
-        get: { target.modelSettings?.toolResultAging?.enabled ?? true },
+        get: { target.modelSettings?.toolResultAging?.enabled ?? false },
         set: { enabled in Task { await store.setToolResultAgingEnabled(enabled) } }
       ),
       isDisabled: store.providerOperation != nil
+        || target.modelSettings?.toolResultAging == nil
         || target.modelSettings?.toolResultAging?.environmentOverride == true
     )
     harnessRow

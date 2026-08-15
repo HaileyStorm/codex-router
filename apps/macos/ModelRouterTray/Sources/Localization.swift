@@ -79,7 +79,10 @@ func routerFormat(_ english: String, _ arguments: CVarArg...) -> String {
 enum RouterChineseText {
   static let values: [String: String] = [
     "Uninstalling": "正在卸载",
-    "Off by default · replaces consumed tool results on external models": "默认关闭 · 在外部模型上替换已使用的工具结果",
+    "On by default · summarizes repetitive old logs; exact bytes stay owner-local": "默认开启 · 摘要重复的旧日志；完整字节仅保留在所有者本地",
+    "A prior retention failure remains recorded · the latest attempt succeeded; affected results stayed full": "先前的保留失败仍有记录 · 最近一次尝试已成功；受影响的结果保持完整",
+    "Retention capacity reached · new eligible results pass through unchanged": "保留容量已满 · 新的符合条件结果将保持原样传递",
+    "Local retention is degraded · eligible results pass through unchanged": "本地保留功能异常 · 符合条件的结果将保持原样传递",
     "Fix Codex Router installation": "修复 Codex 路由安装",
     "Language": "语言",
     "System": "跟随系统",

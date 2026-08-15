@@ -1,14 +1,28 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { pickerCommandArgs } from "../src/control-args.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const execFileAsync = promisify(execFile);
 
 function probe(target, providers, usageEvents = [], options = {}) {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-probe-"));
@@ -158,8 +172,8 @@ test("codex probe includes native GPT models and the configured default", () => 
   assert.equal(slice.loginFreeManaged, false);
   assert.equal(slice.modelSettings.picker.hidden.length, 0);
   assert.ok(["all", "selected", "proven"].includes(slice.modelSettings.subagents.mode));
-  // Compaction is opt-in, so an unconfigured probe reports it off.
-  assert.equal(slice.modelSettings.toolResultAging.enabled, false);
+  // Routed compaction is default-on; native remains a separate setting.
+  assert.equal(slice.modelSettings.toolResultAging.enabled, true);
   // The panel's periodic refresh reads this snapshot, not `local-models
   // list`, so the LM Studio section has to ride here or it paints once and
   // vanishes on the next poll.
@@ -224,16 +238,368 @@ test("control toggles tool-result aging without a router restart", () => {
       ),
     );
   try {
-    // Starts off, because compaction is opted into.
-    assert.equal(runControl("status").enabled, false);
-    assert.equal(runControl("on").enabled, true);
+    // A missing saved choice uses the routed default-on policy.
     assert.equal(runControl("status").enabled, true);
     assert.equal(runControl("off").enabled, false);
     assert.equal(runControl("status").enabled, false);
+    assert.equal(runControl("on").enabled, true);
+    assert.equal(runControl("status").enabled, true);
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test("control retrieves exact owner-local bytes and fails closed on mismatches", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-tool-result-retrieve-"));
+  const env = {
+    ...process.env,
+    MODEL_ROUTER_TARGET: "codex",
+    MODEL_ROUTER_STATE_DIR: stateDir,
+  };
+  const value = Buffer.from("exact control bytes\0\u001b]0;not-a-title\u0007😀", "utf8");
+  const digest = createHash("sha256").update(value).digest("hex");
+  const callId = "control-call";
+  const outputType = "function_call_output";
+  const routeKind = "routed";
+  const routeModel = "deepseek/deepseek-v4-pro";
+  const destination = path.join(stateDir, "retrieved-tool-results", "saved-output.bin");
+  const retentionUrl = pathToFileURL(path.join(root, "src", "tool-result-retention.mjs")).href;
+  try {
+    execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `import { retainToolResult, toolResultRetentionContext } from ${JSON.stringify(retentionUrl)}; retainToolResult(Buffer.from(${JSON.stringify(value.toString("base64"))}, "base64"), { expectedDigest: ${JSON.stringify(digest)}, callId: ${JSON.stringify(callId)}, outputType: ${JSON.stringify(outputType)}, context: toolResultRetentionContext(${JSON.stringify(routeKind)}, ${JSON.stringify(routeModel)}) });`,
+      ],
+      { cwd: root, env },
+    );
+    const retrieved = JSON.parse(execFileSync(
+      process.execPath,
+      [
+        path.join(root, "src", "control.mjs"),
+        "tool-result-aging",
+        "retrieve",
+        digest,
+        String(value.length),
+        callId,
+        outputType,
+        routeKind,
+        routeModel,
+        destination,
+      ],
+      { cwd: root, env, encoding: "utf8" },
+    ));
+    assert.deepEqual(retrieved, { ok: true, byteLength: value.length });
+    assert.deepEqual(readFileSync(destination), value);
+    assert.doesNotMatch(JSON.stringify(retrieved), /not-a-title|\u001b/);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(destination).mode & 0o777, 0o600);
+    }
+    assert.throws(
+      () => execFileSync(
+        process.execPath,
+        [
+          path.join(root, "src", "control.mjs"),
+          "tool-result-aging",
+          "retrieve",
+          digest,
+          String(value.length),
+          "wrong-call",
+          outputType,
+          routeKind,
+          routeModel,
+          path.join(stateDir, "retrieved-tool-results", "wrong-output.bin"),
+        ],
+        { cwd: root, env, stdio: "pipe" },
+      ),
+      (error) => {
+        const stderr = error.stderr?.toString("utf8") || "";
+        return error.status !== 0
+          && !error.stdout?.includes(value)
+          && !stderr.includes(stateDir)
+          && !stderr.includes(digest)
+          && !stderr.includes("cause:");
+      },
+    );
+
+    // The control entrypoint is absolute and never executes a cwd-controlled
+    // project bin/control while handling owner-local retrieval.
+    const hostile = path.join(stateDir, "hostile-project");
+    mkdirSync(path.join(hostile, "bin"), { recursive: true });
+    writeFileSync(path.join(hostile, "bin", "control"), "hostile marker", "utf8");
+    assert.throws(
+      () => execFileSync(
+        process.execPath,
+        [
+          path.join(root, "src", "control.mjs"),
+          "tool-result-aging",
+          "retrieve",
+          digest,
+          String(value.length),
+          callId,
+          outputType,
+          routeKind,
+          routeModel,
+          destination,
+        ],
+        { cwd: hostile, env, stdio: "pipe" },
+      ),
+      (error) => error.status !== 0,
+    );
+    assert.equal(readFileSync(path.join(hostile, "bin", "control"), "utf8"), "hostile marker");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("real aging store is deterministic across processes and missing-key state fails closed", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "aging-process-restart-"));
+  const env = { ...process.env, MODEL_ROUTER_STATE_DIR: stateDir };
+  const agingUrl = pathToFileURL(path.join(root, "src", "tool-result-aging.mjs")).href;
+  const retentionUrl = pathToFileURL(path.join(root, "src", "tool-result-retention.mjs")).href;
+  const source = [
+    `import { ageToolResults } from ${JSON.stringify(agingUrl)};`,
+    `import { retainToolResult, toolResultRetentionContext } from ${JSON.stringify(retentionUrl)};`,
+    `const value = "restart test row\\n".repeat(3000);`,
+    `const input = [{ type: "function_call", call_id: "restart-call", name: "exec_command", arguments: JSON.stringify({ cmd: "npm test" }) }, { type: "function_call_output", call_id: "restart-call", output: value }, { type: "message", role: "assistant", content: "acted" }];`,
+    `const result = ageToolResults(input, { frontier: 0, retain: retainToolResult, retentionContext: toolResultRetentionContext("routed", "deepseek/deepseek-v4-pro") });`,
+    `if (result.stats.toolResultsAged !== 1) process.exit(9);`,
+    `process.stdout.write(result.input[1].output);`,
+  ].join("\n");
+  const runAging = (targetStateDir = stateDir) => execFileSync(
+    process.execPath,
+    ["--input-type=module", "--eval", source],
+    {
+      cwd: root,
+      env: { ...env, MODEL_ROUTER_STATE_DIR: targetStateDir },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  let tornStateDir;
+  try {
+    const first = runAging();
+    const second = runAging();
+    assert.equal(second, first);
+    const retainedDir = path.join(stateDir, "retained-tool-results");
+    assert.equal(
+      readdirSync(retainedDir).filter((name) => name.endsWith(".result")).length,
+      1,
+    );
+    const [resultName] = readdirSync(retainedDir).filter((name) => name.endsWith(".result"));
+    writeFileSync(path.join(retainedDir, resultName), "torn", { mode: 0o600 });
+    assert.equal(runAging(), first, "an exact replay atomically repairs a torn result");
+    assert.ok(statSync(path.join(retainedDir, resultName)).size > 40_000);
+
+    tornStateDir = mkdtempSync(path.join(os.tmpdir(), "aging-torn-key-"));
+    const tornRetentionDir = path.join(tornStateDir, "retained-tool-results");
+    mkdirSync(tornRetentionDir, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(tornRetentionDir, ".retention-key"), "torn-key", { mode: 0o600 });
+    const concurrent = await Promise.all([
+      execFileAsync(process.execPath, ["--input-type=module", "--eval", source], {
+        cwd: root,
+        env: { ...env, MODEL_ROUTER_STATE_DIR: tornStateDir },
+        encoding: "utf8",
+      }),
+      execFileAsync(process.execPath, ["--input-type=module", "--eval", source], {
+        cwd: root,
+        env: { ...env, MODEL_ROUTER_STATE_DIR: tornStateDir },
+        encoding: "utf8",
+      }),
+    ]);
+    assert.match(concurrent[0].stdout, /smart summary v2/);
+    assert.equal(concurrent[1].stdout, concurrent[0].stdout);
+    assert.equal(runAging(tornStateDir), concurrent[0].stdout);
+    assert.equal(statSync(path.join(tornRetentionDir, ".retention-key")).size, 32);
+    assert.equal(
+      readdirSync(tornRetentionDir).filter((name) => name.endsWith(".result")).length,
+      1,
+    );
+    const exact = Buffer.from("restart test row\n".repeat(3000), "utf8");
+    const exactDigest = createHash("sha256").update(exact).digest("hex");
+    const retrieveSource = [
+      `import { retrieveToolResultByDigest, toolResultRetentionContext } from ${JSON.stringify(retentionUrl)};`,
+      `const value = retrieveToolResultByDigest(${JSON.stringify(exactDigest)}, ${exact.length}, "restart-call", "function_call_output", toolResultRetentionContext("routed", "deepseek/deepseek-v4-pro"));`,
+      `process.stdout.write(value.toString("base64"));`,
+    ].join("\n");
+    const retrieved = execFileSync(
+      process.execPath,
+      ["--input-type=module", "--eval", retrieveSource],
+      {
+        cwd: root,
+        env: { ...env, MODEL_ROUTER_STATE_DIR: tornStateDir },
+        encoding: "utf8",
+      },
+    );
+    assert.deepEqual(Buffer.from(retrieved, "base64"), exact);
+
+    unlinkSync(path.join(retainedDir, ".retention-key"));
+    assert.throws(
+      runAging,
+      (error) => error.status !== 0 && error.stdout?.length === 0,
+    );
+    assert.equal(existsSync(path.join(retainedDir, ".retention-key")), false);
+    assert.equal(
+      readdirSync(retainedDir).filter((name) => name.endsWith(".result")).length,
+      1,
+    );
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+    if (tornStateDir) rmSync(tornStateDir, { recursive: true, force: true });
+  }
+});
+
+test("orphan retention stages count toward the hard file cap", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "aging-stage-cap-"));
+  const retentionDir = path.join(stateDir, "retained-tool-results");
+  mkdirSync(retentionDir, { recursive: true, mode: 0o700 });
+  for (const suffix of ["a".repeat(32), "b".repeat(32)]) {
+    writeFileSync(path.join(retentionDir, `.orphan.result.stage.${suffix}`), "orphan", {
+      mode: 0o600,
+    });
+  }
+  const agingUrl = pathToFileURL(path.join(root, "src", "tool-result-aging.mjs")).href;
+  const retentionUrl = pathToFileURL(path.join(root, "src", "tool-result-retention.mjs")).href;
+  const source = [
+    `import { ageToolResults } from ${JSON.stringify(agingUrl)};`,
+    `import { retainToolResult, toolResultRetentionContext } from ${JSON.stringify(retentionUrl)};`,
+    `const value = "stage cap row\\n".repeat(3000);`,
+    `const input = [{ type: "function_call", call_id: "stage-cap", name: "exec_command", arguments: JSON.stringify({ cmd: "npm test" }) }, { type: "function_call_output", call_id: "stage-cap", output: value }, { type: "message", role: "assistant", content: "acted" }];`,
+    `const result = ageToolResults(input, { frontier: 0, retain: retainToolResult, retentionContext: toolResultRetentionContext("routed", "deepseek/deepseek-v4-pro") });`,
+    `process.stdout.write(JSON.stringify({ aged: result.stats.toolResultsAged, failures: result.stats.toolResultRetentionFailures, unchanged: result.input === input }));`,
+  ].join("\n");
+  try {
+    const result = JSON.parse(execFileSync(
+      process.execPath,
+      ["--input-type=module", "--eval", source],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          MODEL_ROUTER_STATE_DIR: stateDir,
+          MODEL_ROUTER_TOOL_RESULT_RETENTION_MAX_FILES: "2",
+        },
+        encoding: "utf8",
+      },
+    ));
+    assert.deepEqual(result, { aged: 0, failures: 1, unchanged: true });
+    assert.equal(readdirSync(retentionDir).filter((name) => name.endsWith(".result")).length, 0);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "a retry re-syncs final key and result names after publication fsync failures",
+  { skip: process.platform === "win32" },
+  () => {
+    const stateDir = mkdtempSync(path.join(os.tmpdir(), "aging-publication-fsync-"));
+    const retentionUrl = pathToFileURL(path.join(root, "src", "tool-result-retention.mjs")).href;
+    const runRetain = (callId, value, failingDirectorySyncs = [], retrieveAfter = true) => {
+      const source = [
+        `import fs from "node:fs";`,
+        `import { syncBuiltinESMExports } from "node:module";`,
+        `const failing = new Set(${JSON.stringify(failingDirectorySyncs)});`,
+        `const realFsync = fs.fsyncSync.bind(fs);`,
+        `let directorySync = 0;`,
+        `fs.fsyncSync = (descriptor) => { if (fs.fstatSync(descriptor).isDirectory()) { directorySync += 1; if (failing.has(directorySync)) { const error = new Error("injected directory fsync failure"); error.code = "EIO"; throw error; } } return realFsync(descriptor); };`,
+        `syncBuiltinESMExports();`,
+        `const retention = await import(${JSON.stringify(`${retentionUrl}?fault=`)} + Math.random());`,
+        `const bytes = Buffer.from(${JSON.stringify(value.toString("base64"))}, "base64");`,
+        `const digest = ${JSON.stringify(createHash("sha256").update(value).digest("hex"))};`,
+        `try {`,
+        `  const metadata = { expectedDigest: digest, callId: ${JSON.stringify(callId)}, outputType: "function_call_output", context: retention.toolResultRetentionContext("routed", "deepseek/deepseek-v4-pro") };`,
+        `  const stored = retention.retainToolResult(bytes, metadata);`,
+        retrieveAfter
+          ? `  const recovered = retention.retrieveToolResult(stored.handle, digest, bytes.length, metadata.callId, metadata.outputType, metadata.context); process.stdout.write(recovered.toString("base64"));`
+          : `  process.stdout.write(stored.handle);`,
+        `} catch (error) { process.exitCode = 23; }`,
+      ].join("\n");
+      return execFileSync(process.execPath, ["--input-type=module", "--eval", source], {
+        cwd: root,
+        env: { ...process.env, MODEL_ROUTER_STATE_DIR: stateDir },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    };
+    const retentionDir = path.join(stateDir, "retained-tool-results");
+    const first = Buffer.from("key publication retry bytes", "utf8");
+    const second = Buffer.from("result publication retry bytes", "utf8");
+    try {
+      assert.throws(
+        () => runRetain("key-sync", first, [1, 2]),
+        (error) => error.status === 23,
+      );
+      assert.equal(statSync(path.join(retentionDir, ".retention-key")).size, 32);
+      assert.equal(readdirSync(retentionDir).filter((name) => name.endsWith(".result")).length, 0);
+      const publishedKey = readFileSync(path.join(retentionDir, ".retention-key"));
+      assert.throws(
+        () => runRetain("key-sync", first, [1, 2], false),
+        (error) => error.status === 23,
+        "retry must fail closed when it cannot re-sync the existing key name",
+      );
+      assert.deepEqual(readFileSync(path.join(retentionDir, ".retention-key")), publishedKey);
+      assert.equal(
+        readdirSync(retentionDir).filter((name) => name.endsWith(".result")).length,
+        0,
+        "key retry must fail before publishing any result",
+      );
+      assert.deepEqual(Buffer.from(runRetain("key-sync", first), "base64"), first);
+
+      assert.throws(
+        () => runRetain("result-sync", second, [2, 3]),
+        (error) => error.status === 23,
+      );
+      assert.equal(readdirSync(retentionDir).filter((name) => name.endsWith(".result")).length, 2);
+      assert.throws(
+        () => runRetain("result-sync", second, [2], false),
+        (error) => error.status === 23,
+        "retain itself must fail closed when it cannot re-sync the existing result name",
+      );
+      assert.deepEqual(Buffer.from(runRetain("result-sync", second), "base64"), second);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "retention rejects a symlinked state path before touching its target",
+  { skip: process.platform === "win32" },
+  () => {
+    const testRoot = mkdtempSync(path.join(os.tmpdir(), "aging-symlink-state-"));
+    const external = path.join(testRoot, "external");
+    const linkedState = path.join(testRoot, "linked-state");
+    mkdirSync(external, { mode: 0o755 });
+    symlinkSync(external, linkedState, "dir");
+    const retentionUrl = pathToFileURL(path.join(root, "src", "tool-result-retention.mjs")).href;
+    const source = [
+      `import { createHash } from "node:crypto";`,
+      `import { retainToolResult, toolResultRetentionContext } from ${JSON.stringify(retentionUrl)};`,
+      `const bytes = Buffer.from("private bytes");`,
+      `retainToolResult(bytes, { expectedDigest: createHash("sha256").update(bytes).digest("hex"), callId: "symlink-call", outputType: "function_call_output", context: toolResultRetentionContext("routed", "deepseek/deepseek-v4-pro") });`,
+    ].join("\n");
+    try {
+      assert.throws(
+        () => execFileSync(
+          process.execPath,
+          ["--input-type=module", "--eval", source],
+          {
+            cwd: root,
+            env: { ...process.env, MODEL_ROUTER_STATE_DIR: linkedState },
+            stdio: "pipe",
+          },
+        ),
+        (error) => error.status !== 0,
+      );
+      assert.equal(statSync(external).mode & 0o777, 0o755);
+      assert.equal(existsSync(path.join(external, "retained-tool-results")), false);
+    } finally {
+      rmSync(testRoot, { recursive: true, force: true });
+    }
+  },
+);
 
 test("picker all accepts the documented show/hide flag position", () => {
   assert.deepEqual(pickerCommandArgs(["picker", "all", "show"]), [

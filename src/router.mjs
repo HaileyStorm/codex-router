@@ -90,6 +90,10 @@ import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
 import { installedNativeVisionEngines } from "./vision-engines.mjs";
 import { ageToolResults } from "./tool-result-aging.mjs";
 import {
+  retainToolResult,
+  toolResultRetentionContext,
+} from "./tool-result-retention.mjs";
+import {
   nativeToolResultAgingEnabled,
   toolResultAgingEnabled,
 } from "./tool-result-aging-state.mjs";
@@ -98,6 +102,18 @@ import { nativeSessionHeaders } from "./codex-native-session.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
 
 installStableFetchTransport();
+
+function optionalToolResultRetentionContext(enabled, kind, model) {
+  if (!enabled) return undefined;
+  try {
+    return toolResultRetentionContext(kind, model);
+  } catch {
+    // Invalid or unbindable provenance must preserve the original request.
+    // Retention is optional and may never turn an otherwise forwardable native
+    // or routed request into a router-local error.
+    return undefined;
+  }
+}
 
 const LISTEN_HOST =
   process.env.CODEX_ROUTER_HOST || process.env.KIMI_ROUTER_HOST || "127.0.0.1";
@@ -1506,7 +1522,17 @@ async function summarize(request, payload, route, signal) {
   // is cached by ciphertext, so a conversation whose turns already resolved
   // costs nothing extra here.
   const normalized = await normalizeRoutedAgentInput(request, originalInput, signal);
-  const aged = ageToolResults(normalized, { enabled: toolResultAgingEnabled() });
+  const agingEnabled = toolResultAgingEnabled();
+  const retentionContext = optionalToolResultRetentionContext(
+    agingEnabled,
+    "routed",
+    route.slug,
+  );
+  const aged = ageToolResults(normalized, {
+    enabled: agingEnabled && retentionContext !== undefined,
+    retain: retainToolResult,
+    retentionContext,
+  });
   const bridged = await bridgeVisionInput(
     aged.input,
     route,
@@ -1867,7 +1893,17 @@ async function handleResponses(request, response, requestUrl) {
         payload.input,
         controller.signal,
       );
-      const aged = ageToolResults(normalized, { enabled: toolResultAgingEnabled() });
+      const agingEnabled = toolResultAgingEnabled();
+      const retentionContext = optionalToolResultRetentionContext(
+        agingEnabled,
+        "routed",
+        route.slug,
+      );
+      const aged = ageToolResults(normalized, {
+        enabled: agingEnabled && retentionContext !== undefined,
+        retain: retainToolResult,
+        retentionContext,
+      });
       toolResultAging = aged.stats;
       const input = await bridgeVisionInput(
         aged.input,
@@ -1961,8 +1997,16 @@ async function handleResponses(request, response, requestUrl) {
         // exempt: compactV1 keeps its chaining, and a summary should read the
         // true content rather than a receipt.
         if (!compactV1) {
+          const agingEnabled = nativeToolResultAgingEnabled();
+          const retentionContext = optionalToolResultRetentionContext(
+            agingEnabled,
+            "native",
+            requestedModel,
+          );
           const aged = ageToolResults(native.input, {
-            enabled: nativeToolResultAgingEnabled(),
+            enabled: agingEnabled && retentionContext !== undefined,
+            retain: retainToolResult,
+            retentionContext,
           });
           native.input = aged.input;
           toolResultAging = aged.stats;

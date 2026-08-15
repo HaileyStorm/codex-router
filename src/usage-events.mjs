@@ -130,6 +130,9 @@ export function recordUsageEvent({
   // two: compare it against the eligibility floor.
   toolResultsEvaluated,
   toolResultBytesLargest,
+  toolResultRetentionFailures,
+  toolResultRetentionDegradedReason,
+  toolResultRetentionHealthy,
   at = Date.now(),
 }) {
   const event = {
@@ -188,6 +191,18 @@ export function recordUsageEvent({
     ...(safeTokenCount(toolResultBytesLargest) !== undefined
       ? { toolResultBytesLargest: safeTokenCount(toolResultBytesLargest) }
       : {}),
+    ...(safeTokenCount(toolResultRetentionFailures)
+      ? { toolResultRetentionFailures: safeTokenCount(toolResultRetentionFailures) }
+      : {}),
+    ...(
+      safeTokenCount(toolResultRetentionFailures) &&
+      ["capacity", "storage"].includes(toolResultRetentionDegradedReason)
+        ? { toolResultRetentionDegradedReason }
+        : {}
+    ),
+    ...(typeof toolResultRetentionHealthy === "boolean"
+      ? { toolResultRetentionHealthy }
+      : {}),
   };
   try {
     mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
@@ -244,6 +259,10 @@ export function toolResultAgingTotals({ now = Date.now() } = {}) {
     resultsAged: 0,
     bytesSaved: 0,
     estimatedTokensSaved: 0,
+    retentionFailures: 0,
+    backendDegraded: false,
+    degradedReason: undefined,
+    lastRetentionAttemptHealthy: undefined,
     firstAt: undefined,
     lastAt: undefined,
     ranges: Object.fromEntries(
@@ -257,7 +276,10 @@ export function toolResultAgingTotals({ now = Date.now() } = {}) {
     for (const line of usageEventLines()) {
       // Pre-filter: aging stats and cache telemetry are both rare fields.
       const hasAging =
-        line.includes('"toolResultsAged"') || line.includes('"toolResultsEvaluated"');
+        line.includes('"toolResultsAged"') ||
+        line.includes('"toolResultsEvaluated"') ||
+        line.includes('"toolResultRetentionFailures"') ||
+        line.includes('"toolResultRetentionHealthy"');
       const hasCache = line.includes('"cachedInputTokens"');
       if (!hasAging && !hasCache) continue;
       let event;
@@ -274,6 +296,22 @@ export function toolResultAgingTotals({ now = Date.now() } = {}) {
         if (largest > totals.largestResultBytes) totals.largestResultBytes = largest;
       }
       const resultsAged = safeTokenCount(event?.toolResultsAged);
+      const retentionFailures = safeTokenCount(event?.toolResultRetentionFailures) ?? 0;
+      if (typeof event.toolResultRetentionHealthy === "boolean") {
+        totals.lastRetentionAttemptHealthy = event.toolResultRetentionHealthy;
+      }
+      if (retentionFailures > 0) {
+        totals.retentionFailures += retentionFailures;
+        totals.backendDegraded = true;
+        if (event.toolResultRetentionDegradedReason === "storage") {
+          totals.degradedReason = "storage";
+        } else if (
+          totals.degradedReason !== "storage" &&
+          event.toolResultRetentionDegradedReason === "capacity"
+        ) {
+          totals.degradedReason = "capacity";
+        }
+      }
       if (resultsAged) {
         totals.requests += 1;
         totals.resultsAged += resultsAged;

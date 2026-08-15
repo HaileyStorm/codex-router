@@ -809,12 +809,35 @@ function startPanel() {
   function renderToolResultAgingSetting() {
     const aging = state.snapshot?.targets?.codex?.modelSettings?.toolResultAging;
     const overridden = aging?.environmentOverride === true;
-    elements.toolResultAgingSwitch.checked = aging?.enabled !== false;
-    elements.toolResultAgingSwitch.disabled = state.toolResultAgingBusy || overridden;
-    elements.toolResultAgingSwitchLabel.title = overridden
+    const readOnlyPanel = state.platform?.shell === "web";
+    const confirmed = aging !== undefined;
+    const degradedReason = aging?.stats?.degradedReason;
+    const degradationKey = degradedReason && aging?.stats?.lastRetentionAttemptHealthy === true
+      ? "models.toolAgingDegradedPrior"
+      : degradedReason === "capacity"
+      ? "models.toolAgingDegradedCapacity"
+      : degradedReason === "storage"
+      ? "models.toolAgingDegradedStorage"
+      : undefined;
+    elements.toolResultAgingSwitch.checked = aging?.enabled === true;
+    elements.toolResultAgingSwitch.disabled =
+      state.toolResultAgingBusy || overridden || readOnlyPanel || !confirmed;
+    elements.toolResultAgingSwitchLabel.title = !confirmed
+      ? t("models.toolAgingLoading")
+      : degradationKey
+      ? t(degradationKey)
+      : readOnlyPanel
+      ? t("models.toolAgingReadOnly")
+      : overridden
       ? t("models.toolAgingForcedOff")
       : t("models.toolAgingNextRequest");
-    elements.toolResultAgingNote.textContent = overridden
+    elements.toolResultAgingNote.textContent = !confirmed
+      ? t("models.toolAgingLoading")
+      : degradationKey
+      ? t(degradationKey)
+      : readOnlyPanel
+      ? t("models.toolAgingReadOnly")
+      : overridden
       ? t("models.toolAgingEnvironment")
       : `${toolResultAgingSavingsLine(aging?.stats)}${t("models.toolAgingNote")}`;
   }
@@ -1824,6 +1847,16 @@ function startPanel() {
   }
 
   async function handleToolResultAgingToggle() {
+    const aging = state.snapshot?.targets?.codex?.modelSettings?.toolResultAging;
+    if (
+      !state.platform ||
+      !aging ||
+      aging.environmentOverride === true ||
+      state.platform.shell === "web"
+    ) {
+      renderToolResultAgingSetting();
+      return;
+    }
     const enabled = elements.toolResultAgingSwitch.checked;
     state.toolResultAgingBusy = true;
     renderToolResultAgingSetting();

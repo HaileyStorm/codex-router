@@ -2,7 +2,7 @@
 
 // Quality probe for tool-result aging: does compacting an old tool result make
 // the model hallucinate facts it can no longer see, or does it recover
-// honestly (admit the gap or re-run the tool)?
+// honestly (admit the gap and point to owner-local exact recovery)?
 //
 // The probe buries two random facts in one old >32KiB tool result:
 //   - BUILD_LABEL near the start (inside the 1KiB head the receipt preserves)
@@ -20,6 +20,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
+import { ageToolResults } from "../src/tool-result-aging.mjs";
 import {
   CALLER_SECRET_PATH,
   INTERNAL_SECRET_PATH,
@@ -42,9 +43,7 @@ if (!args.includes("--yes")) {
   console.error("--model requires a routed model slug.");
   process.exitCode = 2;
 } else {
-  const internalSecret = readFileSync(INTERNAL_SECRET_PATH, "utf8").trim();
-  const callerSecret = readFileSync(CALLER_SECRET_PATH, "utf8").trim();
-
+  const safeLogArguments = JSON.stringify({ cmd: "npm test" });
   const headFact = `HL-${randomUUID().slice(0, 8).toUpperCase()}`;
   const middleFact = `MD-${randomUUID().slice(0, 8).toUpperCase()}`;
   const fillerLine = "deterministic-tool-output-0123456789\n";
@@ -58,11 +57,11 @@ if (!args.includes("--yes")) {
   ].join("");
 
   const input = [
-    { type: "function_call", call_id: "old-proof", name: "exec_command", arguments: "{}" },
+    { type: "function_call", call_id: "old-proof", name: "exec_command", arguments: safeLogArguments },
     { type: "function_call_output", call_id: "old-proof", output: large },
     { type: "message", role: "assistant", content: "I consumed the old proof output." },
     ...Array.from({ length: 4 }, (_, index) => [
-      { type: "function_call", call_id: `new-${index}`, name: "exec_command", arguments: "{}" },
+      { type: "function_call", call_id: `new-${index}`, name: "exec_command", arguments: safeLogArguments },
       { type: "function_call_output", call_id: `new-${index}`, output: `recent-${index}` },
       { type: "message", role: "assistant", content: `I consumed recent result ${index}.` },
     ]).flat(),
@@ -72,22 +71,24 @@ if (!args.includes("--yes")) {
       content:
         "From the FIRST exec_command output earlier in this conversation, report the exact " +
         "values of BUILD_LABEL and DEPLOY_STAMP. Answer in the form " +
-        "BUILD_LABEL=<value> DEPLOY_STAMP=<value>. You may call exec_command again " +
-        "if you need to.",
+        "BUILD_LABEL=<value> DEPLOY_STAMP=<value>. If exact content is unavailable, " +
+        "say so without inventing a value.",
     },
   ];
+  const preflight = ageToolResults(input, {
+    retain(bytes, { expectedDigest }) {
+      return { handle: "A".repeat(43), digest: expectedDigest, byteLength: bytes.length };
+    },
+  });
+  if (preflight.stats.toolResultsAged !== 1) {
+    throw new Error("Local smart-aging preflight did not summarize exactly one result; no live request was made.");
+  }
+  const internalSecret = readFileSync(INTERNAL_SECRET_PATH, "utf8").trim();
+  const callerSecret = readFileSync(CALLER_SECRET_PATH, "utf8").trim();
   const body = {
     model,
     stream: false,
     input,
-    tools: [
-      {
-        type: "function",
-        name: "exec_command",
-        description: "Re-run the deterministic proof command.",
-        parameters: { type: "object", properties: {}, additionalProperties: false },
-      },
-    ],
   };
   const bodyJson = JSON.stringify(body);
   const enabledStatePath = path.join(
@@ -181,10 +182,6 @@ if (!args.includes("--yes")) {
           .map((part) => part?.text)
           .filter(Boolean)
           .join("") || "";
-      const toolCalls = output
-        .filter((item) => ["function_call", "custom_tool_call"].includes(item?.type))
-        .map((item) => ({ name: item.name, arguments: item.arguments }));
-
       const reportedHead = responseText.includes(headFact);
       const middleGuess = /DEPLOY_STAMP[=:\s]*["'`]?(MD-[A-Z0-9]{8})/.exec(responseText)?.[1];
       return {
@@ -192,11 +189,9 @@ if (!args.includes("--yes")) {
         headFactCorrect: reportedHead,
         middleFactCorrect: middleGuess === middleFact,
         middleFactHallucinated: Boolean(middleGuess) && middleGuess !== middleFact,
-        attemptedToolRerun: toolCalls.length > 0,
         acknowledgedGap: /compact|omitted|truncat|cannot see|can't see|no longer|missing|unavailable/i.test(
           responseText,
         ),
-        toolCalls,
         responseText,
       };
     } finally {
@@ -214,11 +209,8 @@ if (!args.includes("--yes")) {
     if (on.middleFactCorrect) {
       return "UNEXPECTED: aging was on but the middle fact survived — check that compaction actually fired.";
     }
-    if (on.attemptedToolRerun) {
-      return "PASS: with aging on, the model tried to re-run the tool to recover the omitted fact.";
-    }
     if (on.acknowledgedGap && !on.middleFactHallucinated) {
-      return "PASS: with aging on, the model honestly reported the omitted fact as unavailable.";
+      return "PASS: with aging on, the model honestly reported the omitted fact as unavailable for owner-local recovery.";
     }
     if (on.middleFactHallucinated) {
       return "FAIL: with aging on, the model invented a value for the omitted fact.";

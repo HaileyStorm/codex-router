@@ -2,6 +2,13 @@
 
 This report separates provider-reported evidence from replay estimates.
 
+The measurements below are historical provenance for the earlier mechanical
+aging policy. The current default-on smart policy is deliberately more
+conservative: it keeps structured, critical, exact, unknown, and ambiguous
+outputs full and summarizes only allowlisted repetitive observational logs.
+Re-running the scripts therefore measures the current classifier and should not
+be expected to reproduce these historical byte/token reductions.
+
 ## Live provider A/B
 
 Run on 2026-08-12 from commit `60100aa835fe3a0d6856b0b414223c84db672efa`

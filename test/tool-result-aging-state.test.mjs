@@ -22,18 +22,18 @@ function forgetState() {
   delete process.env.CODEX_ROUTER_TOOL_RESULT_AGING;
 }
 
-// Compaction rewrites what the model sees mid-conversation, so it is opted
-// into rather than discovered after the fact.
-test("tool-result aging defaults off until it is configured", () => {
+// Routed compaction defaults on, while explicit state and the native path keep
+// their independent compatibility duties.
+test("routed tool-result aging defaults on while native remains off", () => {
   forgetState();
   assert.deepEqual(readToolResultAgingSettings(), {
     version: 1,
-    enabled: false,
+    enabled: true,
     nativeEnabled: false,
     defaulted: true,
   });
   assert.equal(toolResultAgingSnapshot().configured, false);
-  assert.equal(toolResultAgingEnabled(), false);
+  assert.equal(toolResultAgingEnabled(), true);
   assert.equal(nativeToolResultAgingEnabled(), false);
 });
 
@@ -56,9 +56,8 @@ test("native aging is a separate opt-in that survives the routed toggle", () => 
   forgetState();
   setNativeToolResultAgingEnabled(true);
   assert.equal(nativeToolResultAgingEnabled(), true);
-  // The routed default must not be disturbed by opting the native path in --
-  // it stays at whatever it was, which on a fresh state is off.
-  assert.equal(toolResultAgingEnabled(), false);
+  // The routed default must not be disturbed by opting the native path in.
+  assert.equal(toolResultAgingEnabled(), true);
 
   // Flipping the routed flag must not silently reset the native choice.
   setToolResultAgingEnabled(false);
@@ -90,6 +89,8 @@ test("environment kill switch overrides the saved setting", () => {
   assert.equal(toolResultAgingEnabled(), false);
   assert.equal(nativeToolResultAgingEnabled(), false);
   assert.equal(toolResultAgingSnapshot().environmentOverride, true);
+  assert.equal(toolResultAgingSnapshot().enabled, false);
+  assert.equal(toolResultAgingSnapshot().nativeEnabled, false);
   delete process.env.CODEX_ROUTER_TOOL_RESULT_AGING;
   setNativeToolResultAgingEnabled(false);
 });
@@ -104,6 +105,10 @@ test("snapshot reports zeroed savings stats before any usage is recorded", () =>
     resultsAged: 0,
     bytesSaved: 0,
     estimatedTokensSaved: 0,
+    retentionFailures: 0,
+    backendDegraded: false,
+    degradedReason: undefined,
+    lastRetentionAttemptHealthy: undefined,
     firstAt: undefined,
     lastAt: undefined,
     ranges: {

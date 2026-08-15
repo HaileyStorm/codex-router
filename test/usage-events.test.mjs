@@ -71,6 +71,10 @@ test("tool-result aging totals aggregate savings across recorded events", async 
       resultsAged: 0,
       bytesSaved: 0,
       estimatedTokensSaved: 0,
+      retentionFailures: 0,
+      backendDegraded: false,
+      degradedReason: undefined,
+      lastRetentionAttemptHealthy: undefined,
       firstAt: undefined,
       lastAt: undefined,
       ranges: {
@@ -106,22 +110,55 @@ test("tool-result aging totals aggregate savings across recorded events", async 
       toolResultsAged: 1,
       toolResultBytesSaved: 25_000,
     });
+    usage.recordUsageEvent({
+      model: "grok-oauth/grok-4.5",
+      provider: "grok-oauth",
+      status: 200,
+      durationMs: 100,
+      toolResultRetentionFailures: 2,
+      toolResultRetentionDegradedReason: "capacity",
+    });
+    usage.recordUsageEvent({
+      model: "grok-oauth/grok-4.5",
+      provider: "grok-oauth",
+      status: 200,
+      durationMs: 100,
+      toolResultRetentionFailures: 1,
+      toolResultRetentionDegradedReason: "storage",
+    });
+    const degraded = usage.toolResultAgingTotals();
+    assert.equal(degraded.retentionFailures, 3);
+    assert.equal(degraded.backendDegraded, true);
+    assert.equal(degraded.degradedReason, "storage");
+    usage.recordUsageEvent({
+      model: "grok-oauth/grok-4.5",
+      provider: "grok-oauth",
+      status: 200,
+      durationMs: 100,
+      toolResultsAged: 1,
+      toolResultBytesSaved: 5_000,
+      toolResultRetentionHealthy: true,
+    });
     const totals = usage.toolResultAgingTotals();
-    assert.equal(totals.requests, 2);
-    assert.equal(totals.resultsAged, 3);
-    assert.equal(totals.bytesSaved, 100_000);
-    assert.equal(totals.estimatedTokensSaved, 25_000);
+    assert.equal(totals.requests, 3);
+    assert.equal(totals.resultsAged, 4);
+    assert.equal(totals.bytesSaved, 105_000);
+    assert.equal(totals.estimatedTokensSaved, 26_250);
+    assert.equal(totals.retentionFailures, 3);
+    assert.equal(totals.backendDegraded, true, "a distinct success cannot clear unresolved corruption");
+    assert.equal(totals.degradedReason, "storage");
+    assert.equal(totals.lastRetentionAttemptHealthy, true);
     assert.ok(typeof totals.firstAt === "string");
     assert.ok(typeof totals.lastAt === "string");
     assert.ok(Date.parse(totals.lastAt) >= Date.parse(totals.firstAt));
-    // Both aged events landed within the current hour/day, so the newest
+    // All three aged events landed within the current hour/day, so the newest
     // bucket of every range holds the whole series.
     for (const [key, size] of [["24h", 24], ["7d", 7], ["30d", 30]]) {
       const range = totals.ranges[key];
       assert.equal(range.buckets.length, size);
-      assert.equal(range.buckets.at(-1), 25_000);
-      assert.equal(range.savedTokens, 25_000);
-      assert.equal(range.requests, 2);
+      assert.equal(range.buckets.at(-1), 26_250);
+      assert.equal(range.savedTokens, 26_250);
+      assert.equal(range.requests, 3);
       // The first event reported cache telemetry and carried aging; the
       // others reported none, so only the aged side has a measured rate.
       assert.equal(range.cache.agedTurns, 1);

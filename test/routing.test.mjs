@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -509,9 +510,14 @@ test("native tool-result aging is opt-in and rewrites only consumed old results"
 
   // A conversation whose first tool result is large, already acted on, and
   // outside the four-newest frontier — exactly the shape aging compacts.
-  const bigOutput = "x".repeat(40_000);
+  const bigOutput = "native test output\n".repeat(3_000);
   const agableInput = [
-    { type: "function_call", call_id: "call-old", name: "shell", arguments: "{}" },
+    {
+      type: "function_call",
+      call_id: "call-old",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "npm test" }),
+    },
     { type: "function_call_output", call_id: "call-old", output: bigOutput },
     {
       type: "message",
@@ -524,29 +530,37 @@ test("native tool-result aging is opt-in and rewrites only consumed old results"
       output: `small result ${n}`,
     })),
   ];
-  const send = async (routerPort) =>
+  const send = async (routerPort, model = "gpt-5.6-sol") =>
     fetch(`${routerBase(routerPort)}/responses`, {
       method: "POST",
       headers: {
         Authorization: "Bearer CODEX_CALLER_SECRET",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model: "gpt-5.6-sol", input: agableInput }),
+      body: JSON.stringify({ model, input: agableInput }),
     });
 
   // Default state: the native path forwards the blob untouched.
+  const defaultStateDir = mkdtempSync(path.join(os.tmpdir(), "native-aging-default-state-"));
   const defaultPort = await openPort();
   const defaultRouter = run("router.mjs", {
     CODEX_ROUTER_PORT: String(defaultPort),
     CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
     CODEX_ROUTER_QUIET: "1",
+    MODEL_ROUTER_STATE_DIR: defaultStateDir,
   });
   try {
     await waitFor(`${routerBase(defaultPort)}/models`, defaultRouter);
     assert.equal((await send(defaultPort)).status, 200);
     assert.equal(nativeRequests.at(-1).body.input[1].output, bigOutput);
+    assert.equal((await send(defaultPort, "")).status, 200);
+    assert.equal(nativeRequests.at(-1).body.model, "");
+    assert.equal((await send(defaultPort, "x".repeat(513))).status, 200);
+    assert.equal(nativeRequests.at(-1).body.model, "x".repeat(513));
+    assert.equal(existsSync(path.join(defaultStateDir, "retained-tool-results")), false);
   } finally {
     await stopChild(defaultRouter);
+    rmSync(defaultStateDir, { recursive: true, force: true });
   }
 
   // Opted in: the blob becomes a receipt, the newest results stay intact,
@@ -566,9 +580,20 @@ test("native tool-result aging is opt-in and rewrites only consumed old results"
   });
   try {
     await waitFor(`${routerBase(agingPort)}/models`, agingRouter);
+    assert.equal((await send(agingPort, "")).status, 200);
+    assert.equal(nativeRequests.at(-1).body.model, "");
+    assert.equal(nativeRequests.at(-1).body.input[1].output, bigOutput);
+    assert.equal((await send(agingPort, "x".repeat(513))).status, 200);
+    assert.equal(nativeRequests.at(-1).body.model, "x".repeat(513));
+    assert.equal(nativeRequests.at(-1).body.input[1].output, bigOutput);
+    assert.equal(
+      existsSync(path.join(stateDir, "retained-tool-results")),
+      false,
+      "unbindable native provenance must not initialize retention state",
+    );
     assert.equal((await send(agingPort)).status, 200);
     const forwarded = nativeRequests.at(-1).body.input;
-    assert.match(forwarded[1].output, /^\[Older tool result compacted by Codex Router/);
+    assert.match(forwarded[1].output, /^\[Older tool result smart summary v2/);
     assert.match(forwarded[1].output, /sha256:[0-9a-f]{64}/);
     assert.equal(forwarded.at(-1).output, "small result 4");
     // The usage event is appended after the response is relayed; give the
@@ -3794,8 +3819,9 @@ async function waitForStderr(child, pattern) {
 // attempted?", which is what made issue #95 slow to diagnose.
 test("routed compaction records usage and logs on success and on failure", async () => {
   let failing = false;
+  const gatewayBodies = [];
   const gateway = await mockServer(async (request, response) => {
-    await bodyJson(request);
+    gatewayBodies.push(await bodyJson(request));
     if (failing) {
       json(response, 502, { error: { message: "provider refused the compaction" } });
       return;
@@ -3825,6 +3851,32 @@ test("routed compaction records usage and logs on success and on failure", async
     model: "deepseek/deepseek-v4-pro",
     input: [
       { type: "message", role: "user", content: [{ type: "input_text", text: "keep me" }] },
+      {
+        type: "function_call",
+        call_id: "compact-old",
+        name: "exec_command",
+        arguments: JSON.stringify({ cmd: "npm test" }),
+      },
+      {
+        type: "function_call_output",
+        call_id: "compact-old",
+        output: "compaction test row\n".repeat(3_000),
+      },
+      { type: "message", role: "assistant", content: "used old build log" },
+      ...Array.from({ length: 4 }, (_, index) => [
+        {
+          type: "function_call",
+          call_id: `compact-new-${index}`,
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "npm test" }),
+        },
+        {
+          type: "function_call_output",
+          call_id: `compact-new-${index}`,
+          output: `small ${index}`,
+        },
+        { type: "message", role: "assistant", content: `used ${index}` },
+      ]).flat(),
     ],
   });
 
@@ -3837,6 +3889,7 @@ test("routed compaction records usage and logs on success and on failure", async
       body,
     });
     assert.equal(ok.status, 200, await ok.text());
+    assert.match(gatewayBodies[0].input[2].output, /Older tool result smart summary v2/);
     const [success] = await waitForUsageEvents(stateDir, 1, router);
     assert.equal(success.model, "deepseek/deepseek-v4-pro");
     assert.equal(success.provider, "deepseek");
@@ -4191,12 +4244,7 @@ test("router ages consumed large tool results but preserves the newest result fr
     json(response, 200, { output: [{ type: "message", role: "assistant", content: "ok" }] });
   });
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-tool-result-aging-"));
-  // Aging is opt-in, so this test states the setting it is exercising rather
-  // than relying on a default.
-  writeFileSync(
-    path.join(stateDir, "tool-result-aging.json"),
-    JSON.stringify({ version: 1, enabled: true, nativeEnabled: false }),
-  );
+  // No saved setting: routed traffic receives the default-on policy.
   const routerPort = await openPort();
   const router = run("router.mjs", {
     CODEX_ROUTER_PORT: String(routerPort),
@@ -4206,11 +4254,21 @@ test("router ages consumed large tool results but preserves the newest result fr
   });
   const large = `old-head\n${"old-middle\n".repeat(4_000)}old-tail`;
   const input = [
-    { type: "function_call", call_id: "old", name: "exec_command", arguments: "{}" },
+    {
+      type: "function_call",
+      call_id: "old",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "npm test" }),
+    },
     { type: "function_call_output", call_id: "old", output: large },
     { type: "message", role: "assistant", content: "I acted on the old result." },
     ...Array.from({ length: 4 }, (_, index) => [
-      { type: "function_call", call_id: `new-${index}`, name: "exec_command", arguments: "{}" },
+      {
+        type: "function_call",
+        call_id: `new-${index}`,
+        name: "exec_command",
+        arguments: JSON.stringify({ cmd: "npm test" }),
+      },
       {
         type: "function_call_output",
         call_id: `new-${index}`,
@@ -4232,7 +4290,7 @@ test("router ages consumed large tool results but preserves the newest result fr
     });
     assert.equal(response.status, 200, await response.text());
     const forwarded = gatewayBodies[0].input;
-    assert.match(forwarded[1].output, /Older tool result compacted by Codex Router/);
+    assert.match(forwarded[1].output, /Older tool result smart summary v2/);
     assert.match(forwarded[1].output, /old-head/);
     assert.match(forwarded[1].output, /old-tail/);
     for (let index = 0; index < 4; index += 1) {
@@ -4242,6 +4300,30 @@ test("router ages consumed large tool results but preserves the newest result fr
     const [event] = await waitForUsageEvents(stateDir, 1, router);
     assert.equal(event.toolResultsAged, 1);
     assert.ok(event.toolResultBytesSaved > 30_000);
+
+    // Replaying the same source under a different routed provider keeps a
+    // stable model-visible receipt while storing a distinct route-bound blob.
+    // No capability, path, or executable recovery command crosses the provider
+    // boundary.
+    const providerSwitch = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "grok-api/grok-4.5", stream: false, input }),
+    });
+    assert.equal(providerSwitch.status, 200, await providerSwitch.text());
+    assert.equal(gatewayBodies[1].input[1].output, forwarded[1].output);
+    assert.doesNotMatch(
+      gatewayBodies[1].input[1].output,
+      /tool-result-aging retrieve|retained-tool-results|\.result|\.\/bin\/control/i,
+    );
+    assert.equal(
+      readdirSync(path.join(stateDir, "retained-tool-results"))
+        .filter((name) => name.endsWith(".result")).length,
+      2,
+    );
 
     // Settings are read for each routed request, so a UI toggle takes effect
     // without restarting the router or interrupting a running Codex task.
@@ -4259,7 +4341,7 @@ test("router ages consumed large tool results but preserves the newest result fr
       body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", stream: false, input }),
     });
     assert.equal(exactResponse.status, 200, await exactResponse.text());
-    assert.equal(gatewayBodies[1].input[1].output, large);
+    assert.equal(gatewayBodies[2].input[1].output, large);
   } finally {
     await stopChild(router);
     await closeServer(gateway.server);
@@ -4280,9 +4362,14 @@ test("tool-result aging kill switch forwards the same large output", async () =>
     CODEX_ROUTER_TOOL_RESULT_AGING: "0",
     CODEX_ROUTER_QUIET: "1",
   });
-  const large = "x".repeat(40_000);
+  const large = "kill-switch log\n".repeat(3_000);
   const input = [
-    { type: "function_call", call_id: "old", name: "exec_command", arguments: "{}" },
+    {
+      type: "function_call",
+      call_id: "old",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "npm test" }),
+    },
     { type: "function_call_output", call_id: "old", output: large },
     { type: "message", role: "assistant", content: "acted" },
   ];

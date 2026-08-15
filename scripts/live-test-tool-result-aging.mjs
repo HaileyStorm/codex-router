@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
+import { ageToolResults } from "../src/tool-result-aging.mjs";
 import {
   CALLER_SECRET_PATH,
   INTERNAL_SECRET_PATH,
@@ -31,20 +32,29 @@ if (!args.includes("--yes")) {
   console.error("--model requires a routed model slug.");
   process.exitCode = 2;
 } else {
-  const internalSecret = readFileSync(INTERNAL_SECRET_PATH, "utf8").trim();
-  const callerSecret = readFileSync(CALLER_SECRET_PATH, "utf8").trim();
+  const safeLogArguments = JSON.stringify({ cmd: "npm test" });
   const large = `BEGIN_PROOF\n${"deterministic-tool-output-0123456789\n".repeat(1_800)}END_PROOF`;
   const input = [
-    { type: "function_call", call_id: "old-proof", name: "exec_command", arguments: "{}" },
+    { type: "function_call", call_id: "old-proof", name: "exec_command", arguments: safeLogArguments },
     { type: "function_call_output", call_id: "old-proof", output: large },
     { type: "message", role: "assistant", content: "I consumed the old proof output." },
     ...Array.from({ length: 4 }, (_, index) => [
-      { type: "function_call", call_id: `new-${index}`, name: "exec_command", arguments: "{}" },
+      { type: "function_call", call_id: `new-${index}`, name: "exec_command", arguments: safeLogArguments },
       { type: "function_call_output", call_id: `new-${index}`, output: `recent-${index}` },
       { type: "message", role: "assistant", content: `I consumed recent result ${index}.` },
     ]).flat(),
     { type: "message", role: "user", content: "Reply with exactly OK." },
   ];
+  const preflight = ageToolResults(input, {
+    retain(bytes, { expectedDigest }) {
+      return { handle: "A".repeat(43), digest: expectedDigest, byteLength: bytes.length };
+    },
+  });
+  if (preflight.stats.toolResultsAged !== 1) {
+    throw new Error("Local smart-aging preflight did not summarize exactly one result; no live request was made.");
+  }
+  const internalSecret = readFileSync(INTERNAL_SECRET_PATH, "utf8").trim();
+  const callerSecret = readFileSync(CALLER_SECRET_PATH, "utf8").trim();
   const body = { model, stream: false, input };
   const bodyJson = JSON.stringify(body);
   const enabledStatePath = path.join(

@@ -12,17 +12,12 @@ export const TOOL_RESULT_AGING_STATE_PATH =
   process.env.MODEL_ROUTER_TOOL_RESULT_AGING_STATE ||
   path.join(STATE_DIR, "tool-result-aging.json");
 
-// Both paths default off. Compaction rewrites tool results the model already
-// acted on: it saves real context, but it is a change to what the model sees
-// mid-conversation, and its savings figures are still being validated against
-// provider-billed tokens. That is an experiment to opt into, not a default to
-// discover after it has already altered a session. The structural rule from
-// the vision bridge applies here too -- an absent file means nobody has
-// answered and the current default applies, while a stored value is the
-// operator's own answer and is kept verbatim, so turning this on survives any
-// later change of default.
+// Routed external models default on; native OpenAI traffic remains separately
+// off. An absent file means nobody has answered and receives the current
+// routed default. A stored value is the operator's explicit answer and is kept
+// verbatim, so a saved off choice is never re-defaulted by a later release.
 function defaultSettings() {
-  return { version: 1, enabled: false, nativeEnabled: false, defaulted: true };
+  return { version: 1, enabled: true, nativeEnabled: false, defaulted: true };
 }
 
 function disabledSettings() {
@@ -89,9 +84,9 @@ export function toolResultAgingSnapshot() {
   return {
     ...settings,
     enabled: environmentOverride ? false : settings.enabled,
+    nativeEnabled: environmentOverride ? false : settings.nativeEnabled,
     configured: existsSync(TOOL_RESULT_AGING_STATE_PATH),
     environmentOverride,
-    path: TOOL_RESULT_AGING_STATE_PATH,
     // Cumulative savings derived from recorded usage events, so every status
     // surface (CLI, desktop, tray) can show what the feature actually bought.
     stats: toolResultAgingTotals(),

@@ -600,19 +600,55 @@ on the loopback socket and bytes produced after decompression. The defaults are
 respectively when a deliberately larger local workload requires it.
 
 For routed external models, old textual tool results larger than 32 KiB are
-compacted after the model has acted on them. The four newest tool results stay
-intact, and each compacted result keeps a hash, head/tail evidence, and an exact
-rerun instruction.
+eligible for smart compaction after the model has acted on them. The four newest
+tool results stay intact. Structured data, errors and failures, patch/file
+outputs, control-sensitive text, and ambiguous non-repetitive bodies stay full;
+only demonstrably repetitive bulk output is replaced by a deterministic summary
+with hash and head/tail evidence. Before a receipt is created, the exact text
+bytes are synchronously retained in the router's owner-private local state and
+verified by digest and read-back. The classifier is local and deterministic and
+never makes another provider or model call.
 
-This is **off by default.** It rewrites what the model sees mid-conversation,
-so it is opted into rather than discovered after it has already altered a
-session. Turning it on is remembered: a stored answer is kept verbatim and is
-never re-defaulted by a later release.
+This is **on by default for routed external models.** An explicit saved off
+choice is kept verbatim and is never re-defaulted by a later release.
 
 Toggle **Compact old tool results** in the router Settings;
 the next external-model request sees the change without restarting Codex or the
 router. The equivalent CLI commands are `./bin/control tool-result-aging on`,
 `off`, and `status`.
+
+Exact retained bytes are available only through the owner-local control plane;
+receipts sent to a model contain no path, capability, or executable retrieval
+command. From a verified router checkout, the owner supplies an absolute
+destination inside the router's private `retrieved-tool-results` state
+directory. On macOS/Linux, run the checkout's verified `./bin/control
+tool-result-aging retrieve SHA256 BYTES CALL_ID OUTPUT_TYPE ROUTE_KIND MODEL_SLUG ABSOLUTE_DESTINATION`;
+on Windows, run `node .\src\control.mjs tool-result-aging retrieve SHA256 BYTES
+CALL_ID OUTPUT_TYPE ROUTE_KIND MODEL_SLUG ABSOLUTE_DESTINATION`. `OUTPUT_TYPE`
+is `function_call_output` or `custom_tool_call_output`; `ROUTE_KIND` is
+`routed` or `native`. Retrieval makes no network
+request, never prints result bytes to the terminal, creates the destination
+owner-private and exclusively, and fails closed unless the owner-private HMAC
+capability derived from the digest, byte length, call ID, output type, route
+kind, and model slug resolves to byte-identical content. Existing destinations and destinations
+outside that private directory are refused.
+
+Retention is bounded to 64 MiB per result, 512 retained results, and 512 MiB
+total. These bounds can only be lowered with the corresponding
+`MODEL_ROUTER_TOOL_RESULT_RETENTION_MAX_*` environment variables. Existing
+receipts are never evicted automatically; once a bound is reached, new results
+pass through unchanged. Turning aging off also leaves existing retained results
+available. This slice deliberately provides no deletion command: automatically
+invalidating an existing receipt is less safe than passing new results through
+unchanged once the bounded store is full. The aging toggle never deletes.
+
+This is an owner-local same-OS-user boundary, not a sandbox against an agent
+that already has unrestricted access to that user's files and processes. A
+receipt's model-visible digest, length, call ID, and output type are sufficient
+inputs for the owner-local control command once its route kind and model are
+also known; the HMAC supplies integrity and route binding, not user presence.
+The receipt withholds the HMAC handle, path, and recovery command from routed
+providers, and switching providers creates a distinct route-bound record.
 
 Native OpenAI traffic is unchanged by default. `./bin/control
 tool-result-aging native on` extends the same compaction to native GPT models;
@@ -1406,4 +1442,3 @@ References: [Kimi Code CLI OAuth](https://www.kimi.com/help/kimi-code/cli-gettin
 and [opencodex](https://github.com/lidge-jun/opencodex).
 
 MIT licensed. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
-

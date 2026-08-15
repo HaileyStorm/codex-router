@@ -874,7 +874,16 @@ async function handleSubagents(action, value, flag, rest = []) {
   process.stdout.write(`${JSON.stringify(subagentSettingsSnapshot())}\n`);
 }
 
-async function handleToolResultAging(action, nativeAction) {
+async function handleToolResultAging(
+  action,
+  value,
+  extra,
+  callId,
+  outputType,
+  routeKind,
+  routeModel,
+  destination,
+) {
   const {
     setNativeToolResultAgingEnabled,
     setToolResultAgingEnabled,
@@ -885,16 +894,57 @@ async function handleToolResultAging(action, nativeAction) {
     process.stdout.write(`${JSON.stringify(toolResultAgingSnapshot())}\n`);
     return;
   }
-  if (desired === "native") {
-    if (nativeAction !== "on" && nativeAction !== "off") {
-      throw new Error("Usage: control tool-result-aging status|on|off|native <on|off>");
+  if (desired === "retrieve") {
+    if (
+      !value ||
+      !extra ||
+      !callId ||
+      !outputType ||
+      !routeKind ||
+      !routeModel ||
+      !destination
+    ) {
+      throw new Error(
+        "Usage: control tool-result-aging retrieve <sha256> <bytes> <call-id> <output-type> <routed|native> <model-slug> <absolute-destination>",
+      );
     }
-    setNativeToolResultAgingEnabled(nativeAction === "on");
+    const { saveRetrievedToolResult, toolResultRetentionContext } = await import(
+      "./tool-result-retention.mjs"
+    );
+    try {
+      process.stdout.write(
+        `${JSON.stringify(
+          saveRetrievedToolResult(
+            value,
+            extra,
+            callId,
+            outputType,
+            toolResultRetentionContext(routeKind, routeModel),
+            destination,
+          ),
+        )}\n`,
+      );
+    } catch {
+      // Do not let a filesystem exception disclose a state path, derived HMAC
+      // handle, or nested cause through the owner-facing control boundary.
+      throw new Error("Retained tool-result retrieval failed.");
+    }
+    return;
+  }
+  if (desired === "native") {
+    if (value !== "on" && value !== "off") {
+      throw new Error(
+        "Usage: control tool-result-aging status|on|off|native <on|off>|retrieve <sha256> <bytes> <call-id> <output-type> <routed|native> <model-slug> <absolute-destination>",
+      );
+    }
+    setNativeToolResultAgingEnabled(value === "on");
     process.stdout.write(`${JSON.stringify(toolResultAgingSnapshot())}\n`);
     return;
   }
   if (desired !== "on" && desired !== "off") {
-    throw new Error("Usage: control tool-result-aging status|on|off|native <on|off>");
+    throw new Error(
+      "Usage: control tool-result-aging status|on|off|native <on|off>|retrieve <sha256> <bytes> <call-id> <output-type> <routed|native> <model-slug> <absolute-destination>",
+    );
   }
   setToolResultAgingEnabled(desired === "on");
   process.stdout.write(`${JSON.stringify(toolResultAgingSnapshot())}\n`);
@@ -1920,7 +1970,16 @@ if (args.includes("--probe")) {
 } else if (args[0] === "subagents") {
   await handleSubagents(args[1], args[2], args[3], args.slice(2));
 } else if (args[0] === "tool-result-aging") {
-  await handleToolResultAging(args[1], args[2]);
+  await handleToolResultAging(
+    args[1],
+    args[2],
+    args[3],
+    args[4],
+    args[5],
+    args[6],
+    args[7],
+    args[8],
+  );
 } else if (args[0] === "local-models") {
   await handleLocalModels(args[1], args[2], ...args.slice(3));
 } else if (args[0] === "vision-bridge") {

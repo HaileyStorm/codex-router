@@ -17,7 +17,18 @@ if (!path) {
 
   function measure(label) {
     const beforeBytes = Buffer.byteLength(JSON.stringify(input), "utf8");
-    const result = ageToolResults(input);
+    // This offline estimator never forwards its receipts. Supply a stable
+    // synthetic retention record so the receipt size matches the live path
+    // without writing the inspected rollout's private output into router state.
+    const result = ageToolResults(input, {
+      retain(bytes, { expectedDigest }) {
+        return {
+          handle: "A".repeat(43),
+          digest: expectedDigest,
+          byteLength: bytes.length,
+        };
+      },
+    });
     const afterBytes = Buffer.byteLength(JSON.stringify(result.input), "utf8");
     const bytesSaved = beforeBytes - afterBytes;
     return {

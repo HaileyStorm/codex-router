@@ -53,6 +53,11 @@ test("the panel serves the shared UI with the bridge injected", async () => {
     assert.match(body, /window\.__TAURI__/);
     assert.match(body, /fetch\("\.\/invoke"/);
     assert.match(body, /data-tab="connections"/);
+    assert.match(
+      body,
+      /id="tool-result-aging-switch" type="checkbox" disabled/,
+      "the aging toggle must start disabled until the backend confirms state",
+    );
     // Framing and sniffing are closed off even though the route is gated.
     assert.match(response.headers.get("content-security-policy"), /frame-ancestors 'none'/);
     assert.equal(response.headers.get("x-content-type-options"), "nosniff");
@@ -74,6 +79,12 @@ test("the panel serves each asset the UI loads", async () => {
       assert.equal(response.status, 200, `${asset} did not serve`);
       assert.match(response.headers.get("content-type"), pattern, asset);
     }
+    const app = await (await fetch(url("/panel/app.js"))).text();
+    assert.match(
+      app,
+      /lastRetentionAttemptHealthy === true[\s\S]*toolAgingDegradedPrior/,
+      "a later successful attempt must not be described as a current global outage",
+    );
   } finally {
     await close();
   }
@@ -205,6 +216,11 @@ test("the panel renders and answers in a real browser", { skip: browserSkip }, a
     assert.equal(
       await page.evaluate(() => document.querySelector("button.tab.is-active")?.dataset.tab),
       "connections",
+    );
+    assert.equal(
+      await page.locator("#tool-result-aging-switch").isDisabled(),
+      true,
+      "the read-only browser panel must never expose an actionable aging toggle",
     );
     assert.deepEqual(failures, [], `browser reported: ${failures.join(", ")}`);
   } finally {

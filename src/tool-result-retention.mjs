@@ -12,6 +12,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   unlinkSync,
@@ -83,33 +84,62 @@ function normalizedRealPath(value) {
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-// The canonical form of a path whose deepest components may not exist yet:
-// resolve the longest existing prefix, then re-append what is still missing.
-//
-// Refusing every symlink between the filesystem root and the store treats the
-// operating system's own layout as an attack. `/var` is a symlink to
-// `/private/var` on stock macOS, so every path under `os.tmpdir()` traverses
-// one; container bind mounts and symlinked home directories are equally
-// ordinary. Canonicalizing first keeps the guarantee that actually matters --
-// the directory written to is the directory that was validated, and we own it
-// -- while the per-component walk below still refuses a link planted inside
-// the store after canonicalization.
-function canonicalExistingPath(directory) {
+function trustedSystemLink(link, parent) {
+  if (process.platform === "win32" || typeof process.getuid !== "function") return false;
+  // Stock macOS resolves /var through a root-owned link in the root-owned,
+  // non-writable filesystem root. Accept only that class of immutable
+  // operating-system layout. User-owned links, links in writable parents, and
+  // Windows reparse points remain fail-closed.
+  return link.uid === 0 && parent.uid === 0 && (parent.mode & 0o022) === 0;
+}
+
+const PATH_IO = Object.freeze({
+  exists: existsSync,
+  lstat: lstatSync,
+  readlink: readlinkSync,
+});
+
+// Canonicalize existing components while proving that every lexical link is
+// an immutable system-layout link. Missing suffixes are re-appended beneath
+// the already-validated canonical prefix.
+function canonicalExistingPath(directory, seenLinks = new Set(), io = PATH_IO) {
   const resolved = path.resolve(directory);
-  const missing = [];
-  let current = resolved;
-  for (;;) {
+  const root = path.parse(resolved).root;
+  const parts = resolved.slice(root.length).split(path.sep).filter(Boolean);
+  let current = root;
+  for (let index = 0; index < parts.length; index += 1) {
+    const candidate = path.join(current, parts[index]);
     try {
-      return path.join(realpathSync.native(current), ...missing);
+      const stat = io.lstat(candidate);
+      if (stat.isSymbolicLink()) {
+        const parent = io.lstat(current);
+        if (!trustedSystemLink(stat, parent)) {
+          throw new Error("Retained-result storage path traverses an untrusted link.");
+        }
+        const linkKey = normalizedRealPath(candidate);
+        if (seenLinks.has(linkKey)) {
+          throw new Error("Retained-result storage path contains a link cycle.");
+        }
+        const nextSeen = new Set(seenLinks);
+        nextSeen.add(linkKey);
+        const target = path.resolve(path.dirname(candidate), io.readlink(candidate));
+        current = canonicalExistingPath(target, nextSeen, io);
+        if (!io.exists(current)) {
+          throw new Error("Retained-result storage path contains a dangling link.");
+        }
+      } else {
+        current = candidate;
+      }
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
-      const parent = path.dirname(current);
-      // A root that does not resolve has nothing left to walk up to.
-      if (parent === current) return resolved;
-      missing.unshift(path.basename(current));
-      current = parent;
+      return path.join(current, ...parts.slice(index));
     }
   }
+  return current;
+}
+
+export function resolveRetentionPathForTests(directory, io) {
+  return canonicalExistingPath(directory, new Set(), io);
 }
 
 function ensureDirectoryPathWithoutLinks(directory) {
@@ -136,9 +166,8 @@ function assertPlainOwnedDirectory(directory) {
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error("Retained-result storage is not a plain directory.");
   }
-  // Compared against the canonical form rather than the literal one: what has
-  // to hold is that this path resolves where it resolved when it was checked,
-  // not that the operating system placed it behind no symlink at all.
+  // A lexical path may traverse only the immutable system-layout links that
+  // canonicalExistingPath accepted above.
   if (
     normalizedRealPath(realpathSync.native(directory)) !==
     normalizedRealPath(canonicalExistingPath(directory))

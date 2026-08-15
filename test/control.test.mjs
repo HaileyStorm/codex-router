@@ -21,6 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { pickerCommandArgs } from "../src/control-args.mjs";
 import { privateFileIsProtected, protectPrivateFile } from "../src/file-security.mjs";
+import { resolveRetentionPathForTests } from "../src/tool-result-retention.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -727,15 +728,9 @@ test(
 );
 
 test(
-  "retention still works when the operating system puts the store behind its own symlink",
+  "retention rejects a user-created intermediate link without touching its target",
   { skip: process.platform === "win32" },
   () => {
-    // The counterpart to the test above: a link the operator did not plant is
-    // not an attack. `/var` is a symlink to `/private/var` on stock macOS, so
-    // every path under os.tmpdir() traverses one, as do container bind mounts
-    // and symlinked home directories. Refusing those left retention
-    // permanently degraded on machines where nothing was wrong -- and, because
-    // it fails to the original result, silently so.
     const testRoot = mkdtempSync(path.join(os.tmpdir(), "aging-oslink-state-"));
     const real = path.join(testRoot, "real");
     const viaLink = path.join(testRoot, "link", "state");
@@ -750,19 +745,114 @@ test(
       `if (!handle) throw new Error("retention returned no handle");`,
     ].join("\n");
     try {
-      execFileSync(process.execPath, ["--input-type=module", "--eval", source], {
-        cwd: root,
-        env: { ...process.env, MODEL_ROUTER_STATE_DIR: viaLink },
-        stdio: "pipe",
-      });
-      // Written through the link, into the real directory behind it.
-      assert.equal(
-        existsSync(path.join(real, "state", "retained-tool-results")),
-        true,
+      assert.throws(
+        () => execFileSync(process.execPath, ["--input-type=module", "--eval", source], {
+          cwd: root,
+          env: { ...process.env, MODEL_ROUTER_STATE_DIR: viaLink },
+          stdio: "pipe",
+        }),
+        (error) => error.status !== 0,
       );
+      assert.equal(existsSync(path.join(real, "state", "retained-tool-results")), false);
     } finally {
       rmSync(testRoot, { recursive: true, force: true });
     }
+  },
+);
+
+test(
+  "retention works through the operating system's canonical temp layout",
+  { skip: process.platform === "win32" },
+  () => {
+    // On stock macOS os.tmpdir() traverses the root-owned /var -> /private/var
+    // layout. Linux normally exercises the same path without a link.
+    const testRoot = mkdtempSync(path.join(os.tmpdir(), "aging-system-layout-"));
+    const state = path.join(testRoot, "state");
+    const retentionUrl = pathToFileURL(path.join(root, "src", "tool-result-retention.mjs")).href;
+    const source = [
+      `import { createHash } from "node:crypto";`,
+      `import { retainToolResult, toolResultRetentionContext } from ${JSON.stringify(retentionUrl)};`,
+      `const bytes = Buffer.from("private bytes");`,
+      `const handle = retainToolResult(bytes, { expectedDigest: createHash("sha256").update(bytes).digest("hex"), callId: "system-layout-call", outputType: "function_call_output", context: toolResultRetentionContext("routed", "deepseek/deepseek-v4-pro") });`,
+      `if (!handle) throw new Error("retention returned no handle");`,
+    ].join("\n");
+    try {
+      execFileSync(process.execPath, ["--input-type=module", "--eval", source], {
+        cwd: root,
+        env: { ...process.env, MODEL_ROUTER_STATE_DIR: state },
+        stdio: "pipe",
+      });
+      assert.equal(existsSync(path.join(state, "retained-tool-results")), true);
+    } finally {
+      rmSync(testRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "trusted system-link resolution rejects nested untrusted, cyclic, and dangling targets",
+  { skip: process.platform === "win32" || typeof process.getuid !== "function" },
+  () => {
+    const rootDirectory = { uid: 0, mode: 0o040755, isSymbolicLink: () => false };
+    const trustedLink = { uid: 0, mode: 0o120777, isSymbolicLink: () => true };
+    const untrustedLink = {
+      uid: process.getuid(),
+      mode: 0o120777,
+      isSymbolicLink: () => true,
+    };
+    const missing = () => {
+      const error = new Error("missing");
+      error.code = "ENOENT";
+      throw error;
+    };
+    const fixture = (entries, links) => ({
+      exists: (value) => entries.has(value),
+      lstat: (value) => entries.get(value) || missing(),
+      readlink: (value) => links.get(value) || missing(),
+    });
+
+    assert.throws(
+      () => resolveRetentionPathForTests(
+        "/trusted/nested/state",
+        fixture(
+          new Map([
+            ["/", rootDirectory],
+            ["/trusted", trustedLink],
+            ["/safe", rootDirectory],
+            ["/safe/nested", untrustedLink],
+            ["/target", rootDirectory],
+          ]),
+          new Map([["/trusted", "/safe"], ["/safe/nested", "/target"]]),
+        ),
+      ),
+      /untrusted link/,
+    );
+
+    assert.throws(
+      () => resolveRetentionPathForTests(
+        "/cycle-a/state",
+        fixture(
+          new Map([
+            ["/", rootDirectory],
+            ["/cycle-a", trustedLink],
+            ["/cycle-b", trustedLink],
+          ]),
+          new Map([["/cycle-a", "/cycle-b"], ["/cycle-b", "/cycle-a"]]),
+        ),
+      ),
+      /link cycle/,
+    );
+
+    assert.throws(
+      () => resolveRetentionPathForTests(
+        "/dangling/state",
+        fixture(
+          new Map([["/", rootDirectory], ["/dangling", trustedLink]]),
+          new Map([["/dangling", "/missing"]]),
+        ),
+      ),
+      /dangling link/,
+    );
   },
 );
 

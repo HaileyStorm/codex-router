@@ -205,26 +205,18 @@ function deterministicRepetitionSummary(value, call) {
   };
 }
 
-function resultReceipt(value, summary, bytes, digest, toolName) {
+function resultReceipt(value, summary, bytes, digest) {
   const head = safeHead(value);
   const tail = safeTail(value);
   const middle = value.slice(head.length, value.length - tail.length);
   const omittedBytes = Buffer.byteLength(middle, "utf8");
   const omittedNewlines = (middle.match(/\n/gu) || []).length;
-  // The recovery instruction is the whole reason compaction is safe to run:
-  // the A/B that graduated this feature measured models re-running the tool
-  // instead of guessing when a compacted fact was asked for. Describing the
-  // owner-private retention here instead told the model about bytes it has no
-  // way to reach, which invites it to claim a recovery it cannot perform --
-  // and cost more context than the sentence it replaced.
-  const recovery = toolName
-    ? `Repeat the preceding ${toolName} call with the same arguments`
-    : "Repeat the preceding tool call with the same arguments";
   return [
     `[Older tool result smart summary v2 after the model acted on it: ${bytes} bytes, sha256:${digest}.`,
     `Deterministic summary: ${summary.text}`,
     `Omitted middle: ${omittedBytes} UTF-8 bytes across ${omittedNewlines} newline boundaries.`,
-    `${recovery} if exact or omitted content is needed. The original result remains in Codex; only this routed copy was compacted.]`,
+    `Exact original bytes were verified and retained owner-locally before this compacted result was substituted; content digest sha256:${digest}. The digest is not a retrieval handle.`,
+    "Do not repeat the tool call to recover omitted content. If exact content is needed, ask the owner; retrieval currently requires the router's owner-local CLI with full provenance and an explicit private destination. No command, path, or capability is sent to the model.]",
     "",
     "--- beginning of original result ---",
     head,
@@ -340,7 +332,7 @@ export function ageToolResults(
     const summary = deterministicRepetitionSummary(value, calls[0]);
     if (!summary) continue;
     const digest = createHash("sha256").update(value, "utf8").digest("hex");
-    const receipt = resultReceipt(value, summary, size, digest, calls[0].name);
+    const receipt = resultReceipt(value, summary, size, digest);
     // Decide whether the smart summary is worthwhile before retaining. This
     // avoids a durable unreferenced blob when a Unicode-heavy preview cannot
     // meet the minimum 80% savings gate.

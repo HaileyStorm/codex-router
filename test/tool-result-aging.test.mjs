@@ -65,16 +65,15 @@ test("ages a large consumed result while preserving its call pairing and recover
   assert.equal(result.stats.toolResultsAged, 1);
   assert.ok(result.stats.toolResultBytesSaved > 40_000);
   assert.equal(result.input[1].call_id, "old");
-  assert.doesNotMatch(result.input[1].output, /\.\/bin\/control|retrieve\s/i);
-  // The receipt names the recovery the model can actually perform. Describing
-  // the owner-private retention instead pointed it at bytes it has no way to
-  // reach, which is how a model ends up claiming it re-read something it did
-  // not; the graduation A/B measured re-running the tool, not retrieval.
-  assert.match(
+  assert.doesNotMatch(
     result.input[1].output,
-    /Repeat the preceding exec_command call with the same arguments/,
+    /\.\/bin\/control|tool-result-aging\s+retrieve|retained-tool-results|\.result\b/i,
   );
-  assert.doesNotMatch(result.input[1].output, /owner-priv|Owner-local|Retrieval is/i);
+  assert.match(result.input[1].output, /retained owner-locally/);
+  assert.match(result.input[1].output, /digest is not a retrieval handle/);
+  assert.match(result.input[1].output, /Do not repeat the tool call/);
+  assert.match(result.input[1].output, /retrieval currently requires the router's owner-local CLI/);
+  assert.doesNotMatch(result.input[1].output, /Repeat the preceding|remains in Codex/i);
   assert.match(result.input[1].output, /HEAD/);
   assert.match(result.input[1].output, /TAIL/);
   assert.match(

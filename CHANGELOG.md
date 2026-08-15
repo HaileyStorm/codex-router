@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **A credential-free install mode for lifecycle validation.** (#224)
+  `install.sh --no-provider --no-discovery` (PowerShell: `-NoProvider
+  -NoDiscovery`) installs the router idle: an explicit empty provider
+  selection, no credential prompts, and a persisted discovery kill-switch
+  honored by every credential reader — provider key files, the macOS
+  Keychain, other CLIs' OAuth and session files, Codex's `auth.json`, and the
+  `codex login status` probe all stay untouched. Codex traffic gets a local
+  `503 router_idle_no_provider` instead of provider or native forwarding, the
+  doctor reports the idle state at warn and exits 0, and a new `stop`
+  subcommand completes the install → start → status → doctor → stop →
+  uninstall loop. Re-running setup without the flags leaves idle mode. As
+  part of this, an explicitly empty provider selection now passes
+  `ensure-configured` as idle, which also un-breaks `bin/update` for anyone
+  who had hidden their last provider by hand.
+- **Uninstalling the last client integration now removes the background
+  service.** Whether Codex still counted as installed was keyed on the cached
+  native catalog, a file uninstall deliberately retains — so the service, its
+  LaunchAgent, and its listening ports survived every codex uninstall. The
+  installed-state witness is now the managed block in `config.toml`, which
+  enable writes and disable removes; `bin/disable` of the last client retires
+  the service too, matching what the Windows wrapper always did, and
+  `bin/enable` reinstalls it on the way back.
+
 - **Switching a model on as a subagent now researches it instead of ignoring
   it.** Only six registry-proven models could ever be spawned as native v2
   children; everything else the operator enabled was a silent no-show, and

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
 import { openPort } from "./port-pool.mjs";
-import { stopChild } from "./process-helpers.mjs";
+import { STARTUP_TIMEOUT_MS, stopChild } from "./process-helpers.mjs";
 
 // `test/vision-bridge.test.mjs` proves the bridge's parts in isolation. This
 // file measures the whole path: a real router process, a real routed turn, and
@@ -58,10 +58,9 @@ const TRANSCRIPT = [
   "(nothing)",
 ].join("\n");
 
-// Long enough for the concurrent multi-image and overlapping-turn tests to
-// distinguish shared reads from serialized ones, short enough to keep them quick.
+// Long enough for the overlapping-turn tests to distinguish shared reads from
+// serialized ones, short enough to keep them quick.
 const VISION_DELAY_MS = 200;
-const STARTUP_WAIT_TIMEOUT_MS = 10_000;
 const STARTUP_FETCH_TIMEOUT_MS = 2_000;
 const ROUTED_TURN_TIMEOUT_MS = 60_000;
 
@@ -106,7 +105,10 @@ async function closeServer(server) {
 // The gateway every routed turn terminates at, plus the operator's own vision
 // model on `/vision/v1`. One process, two counters, so a turn that reads an
 // image and a turn that does not are told apart by numbers rather than by logs.
-async function bridgeUpstreams({ visionDelayMs = VISION_DELAY_MS } = {}) {
+async function bridgeUpstreams({
+  visionDelayMs = VISION_DELAY_MS,
+  beforeVisionResponse,
+} = {}) {
   const state = {
     visionRequests: [],
     gatewayRequests: [],
@@ -121,6 +123,7 @@ async function bridgeUpstreams({ visionDelayMs = VISION_DELAY_MS } = {}) {
     if (request.url === "/vision/v1/chat/completions") {
       const body = await bodyJson(request);
       state.visionRequests.push(body);
+      await beforeVisionResponse?.();
       if (visionDelayMs) {
         await new Promise((resolve) => setTimeout(resolve, visionDelayMs));
       }
@@ -183,7 +186,7 @@ function run(env) {
 }
 
 async function waitFor(url, child) {
-  const deadline = Date.now() + STARTUP_WAIT_TIMEOUT_MS;
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (true) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
@@ -662,15 +665,55 @@ test("the evidence cache is keyed on the image and on the question pasted with i
 // overlaps the routed turn -- that has not started yet, so the operator waits
 // for all of it. Reads therefore run together, bounded by
 // `VISION_READ_CONCURRENCY` so a whole album does not arrive at a rate-limited
-// account as one burst. The wait is the slowest read, not the sum of them.
+// account as one burst. Prove that overlap directly: wall-clock comparisons are
+// scheduler-sensitive on a busy Windows host.
 test("images in one turn are read together, not one after another", async (t) => {
-  const upstreams = await bridgeUpstreams();
+  let entered = 0;
+  let released = 0;
+  let enteredAtFirstRelease = null;
+  let releaseVisionRequests;
+  const releaseGate = new Promise((resolve) => {
+    releaseVisionRequests = resolve;
+  });
+  let markAllEntered;
+  let rejectAllEntered;
+  const allEntered = new Promise((resolve, reject) => {
+    markAllEntered = resolve;
+    rejectAllEntered = reject;
+  });
+  let barrierSettled = false;
+  let barrierTimer;
+
+  const upstreams = await bridgeUpstreams({
+    visionDelayMs: 0,
+    async beforeVisionResponse() {
+      entered += 1;
+      if (entered === 3 && !barrierSettled) {
+        barrierSettled = true;
+        clearTimeout(barrierTimer);
+        markAllEntered();
+        releaseVisionRequests();
+      }
+      await releaseGate;
+      if (released === 0) enteredAtFirstRelease = entered;
+      released += 1;
+    },
+  });
   t.after(() => closeServer(upstreams.server));
   const router = await startBridgedRouter(upstreams);
+  let pendingTurn;
 
   try {
     const images = [IMAGE_A, IMAGE_B, IMAGE_C];
-    const result = await turn(router.port, {
+    barrierTimer = setTimeout(() => {
+      if (barrierSettled) return;
+      barrierSettled = true;
+      releaseVisionRequests();
+      rejectAllEntered(
+        new Error(`only ${entered} of 3 vision requests entered before the overlap deadline`),
+      );
+    }, STARTUP_TIMEOUT_MS);
+    pendingTurn = turn(router.port, {
       model: TEXT_MODEL,
       stream: false,
       input: [
@@ -683,14 +726,27 @@ test("images in one turn are read together, not one after another", async (t) =>
           ],
         },
       ],
-    });
+    }, STARTUP_TIMEOUT_MS);
+    await Promise.race([
+      allEntered,
+      pendingTurn.then(
+        () => {
+          throw new Error("routed turn completed before all 3 vision requests entered");
+        },
+        (error) => {
+          throw new Error("routed turn failed before all 3 vision requests entered", {
+            cause: error,
+          });
+        },
+      ),
+    ]);
+    const result = await pendingTurn;
     assert.equal(result.status, 200);
     assert.equal(upstreams.state.visionRequests.length, 3);
-    report(`3 images in one turn: ${result.ms.toFixed(0)}ms for 3 x ${VISION_DELAY_MS}ms reads`);
-    assert.ok(
-      result.ms < VISION_DELAY_MS * 2.5,
-      `3 reads finished in ${result.ms.toFixed(0)}ms, which is no better than serial`,
-    );
+    assert.equal(entered, 3);
+    assert.equal(released, 3);
+    assert.equal(enteredAtFirstRelease, 3);
+    report(`3 images in one turn overlapped; elapsed ${result.ms.toFixed(0)}ms`);
     const evidence = textParts(upstreams.state.gatewayRequests.at(-1).input).filter((text) =>
       text.includes("<<<IMAGE EVIDENCE"),
     );
@@ -699,6 +755,9 @@ test("images in one turn are read together, not one after another", async (t) =>
     assert.ok(evidence[0].startsWith("[Image 1 "));
     assert.ok(evidence[2].startsWith("[Image 3 "));
   } finally {
+    clearTimeout(barrierTimer);
+    releaseVisionRequests();
+    await pendingTurn?.catch(() => {});
     await router.stop();
   }
 });

@@ -299,14 +299,34 @@ test("a taken port exits with a named cause and a distinguishable code", async (
   const router = run({ CODEX_ROUTER_PORT: String(takenPort) });
 
   try {
-    const exitCode = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("router never exited")), 10_000);
-      router.once("exit", (code) => {
+    const termination = await new Promise((resolve, reject) => {
+      let timer;
+      const finish = (result) => {
         clearTimeout(timer);
-        resolve(code);
-      });
+        router.removeListener("exit", onExit);
+        resolve(result);
+      };
+      const onExit = (code, signal) => {
+        finish({ code, signal });
+      };
+
+      // Listen before checking the child state: the port failure can make this
+      // process exit between spawn() returning and this assertion starting.
+      router.once("exit", onExit);
+      if (router.exitCode !== null || router.signalCode !== null) {
+        finish({ code: router.exitCode, signal: router.signalCode });
+        return;
+      }
+
+      timer = setTimeout(
+        () => {
+          router.removeListener("exit", onExit);
+          reject(new Error(`router never exited: ${router.testErrors()}`));
+        },
+        STARTUP_TIMEOUT_MS,
+      );
     });
-    assert.equal(exitCode, 98);
+    assert.deepEqual(termination, { code: 98, signal: null });
     assert.match(router.testErrors(), /cannot listen: 127\.0\.0\.1:\d+ is already in use/);
   } finally {
     await stopChild(router);

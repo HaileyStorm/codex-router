@@ -40,7 +40,7 @@ const STAGE_FILE_PATTERN = /^\.(.+)\.stage\.([0-9a-f]{32})$/u;
 const NO_FOLLOW = constants.O_NOFOLLOW || 0;
 const RETENTION_REASONS = new Set(["capacity", "storage"]);
 const LOCK_WAIT_WORD = new Int32Array(new SharedArrayBuffer(4));
-const LOCK_WAIT_TIMEOUT_MS = process.platform === "win32" ? 15_000 : 1_000;
+const LOCK_WAIT_TIMEOUT_MS = process.platform === "win32" ? 60_000 : 1_000;
 const LOCK_WAIT_POLL_MS = process.platform === "win32" ? 25 : 10;
 
 function retentionFailure(reason, message, cause) {
@@ -233,8 +233,9 @@ function lockRetentionDirectory() {
       if (error?.code !== "ELOCKED" || remaining <= 0) throw error;
       // proper-lockfile deliberately rejects retry configuration for its sync
       // API. Windows owner-only ACL verification invokes PowerShell several
-      // times inside one repair, so its normal contention window is longer
-      // than POSIX fsync-only publication. Both deadlines remain bounded.
+      // times inside one repair. Under full-suite CPU contention that guarded
+      // repair can legitimately exceed 15 seconds, so Windows shares the
+      // bounded 60-second startup budget while POSIX remains fsync-only.
       Atomics.wait(
         LOCK_WAIT_WORD,
         0,

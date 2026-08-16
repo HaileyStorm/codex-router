@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { freePort } from "./port-pool.mjs";
+import { STARTUP_TIMEOUT_MS } from "./process-helpers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -54,8 +55,11 @@ async function portIsClosed(port) {
 // produced the correct result (16.3 s, under the fork storm above). It stays
 // meaningful because start.mjs self-limits every wait -- 30 s per forwarder,
 // 300 s for the gateway -- so the only silence this can catch is the gateway's,
-// and it reports it 270 s sooner than start.mjs would.
-const STARTUP_STALL_MS = 30_000;
+// and reports it at least 240 s sooner than start.mjs would.
+// The shared Windows readiness budget is larger because a full suite can starve
+// process launch for more than 30 s; other platforms retain the proven 30 s
+// progress watchdog rather than inheriting their much shorter readiness bound.
+const STARTUP_STALL_MS = Math.max(30_000, STARTUP_TIMEOUT_MS);
 
 test("startup source avoids forced process exit after child cleanup", () => {
   const source = readFileSync(path.join(root, "src", "start.mjs"), "utf8");

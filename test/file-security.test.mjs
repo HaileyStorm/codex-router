@@ -25,7 +25,7 @@ test("private JSON state uses one owner-only atomic writer", () => {
 });
 
 test(
-  "Windows private paths reject extra grants and restore an exact owner ACL",
+  "Windows private paths accept split owner grants and reject every foreign grant",
   { skip: process.platform !== "win32" },
   () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "codex-router-acl-"));
@@ -34,6 +34,29 @@ test(
     try {
       for (const candidate of [directory, target]) {
         protectPrivateFile(candidate);
+        assert.equal(privateFileIsProtected(candidate), true);
+        execFileSync(
+          "powershell.exe",
+          [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            [
+              "$target = $env:CODEX_ROUTER_TEST_PRIVATE_PATH",
+              "$isDirectory = [IO.Directory]::Exists($target)",
+              "$acl = if ($isDirectory) { [IO.Directory]::GetAccessControl($target) } else { [IO.File]::GetAccessControl($target) }",
+              "$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User",
+              "$rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, [Security.AccessControl.FileSystemRights]::Read, [Security.AccessControl.InheritanceFlags]::None, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)",
+              "[void]$acl.AddAccessRule($rule)",
+              "if ($isDirectory) { [IO.Directory]::SetAccessControl($target, $acl) } else { [IO.File]::SetAccessControl($target, $acl) }",
+            ].join("; "),
+          ],
+          {
+            env: { ...process.env, CODEX_ROUTER_TEST_PRIVATE_PATH: candidate },
+            stdio: "ignore",
+          },
+        );
         assert.equal(privateFileIsProtected(candidate), true);
         execFileSync(
           "icacls.exe",

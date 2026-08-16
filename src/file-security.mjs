@@ -78,9 +78,10 @@ export function privateFileIsProtected(target) {
     "$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User",
     "$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])",
     "$rules = @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))",
-    "$exact = $acl.AreAccessRulesProtected -and $owner -eq $sid -and $rules.Count -eq 1",
-    "$expectedInheritance = if ($isDirectory) { [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [Security.AccessControl.InheritanceFlags]::None }",
-    "if ($exact) { $rule = $rules[0]; $exact = $rule.IdentityReference -eq $sid -and $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and -not $rule.IsInherited -and $rule.FileSystemRights -eq [Security.AccessControl.FileSystemRights]::FullControl -and $rule.InheritanceFlags -eq $expectedInheritance -and $rule.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None }",
+    "$exact = $acl.AreAccessRulesProtected -and $owner -eq $sid -and $rules.Count -ge 1",
+    "$combinedRights = [Security.AccessControl.FileSystemRights]0",
+    "if ($exact) { foreach ($rule in $rules) { if ($rule.IdentityReference -ne $sid -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $rule.IsInherited) { $exact = $false; break }; $combinedRights = $combinedRights -bor $rule.FileSystemRights } }",
+    "if ($exact) { $exact = ($combinedRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl }",
     "[Console]::Out.Write($exact.ToString())",
   ].join("; ");
   try {

@@ -6,15 +6,12 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { openPort } from "./port-pool.mjs";
+import { STARTUP_TIMEOUT_MS, stopChild } from "./process-helpers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const internalKey = "test-kimi-internal-service-key-with-sufficient-length";
 
-async function stop(child) {
-  if (child.exitCode !== null) return;
-  child.kill("SIGTERM");
-  await new Promise((resolve) => child.once("exit", resolve));
-}
+const STARTUP_FETCH_TIMEOUT_MS = 2_000;
 
 test("Kimi OAuth forwarder returns an actionable 401 when login is required", async () => {
   const home = mkdtempSync(path.join(os.tmpdir(), "kimi-oauth-forwarder-"));
@@ -36,7 +33,9 @@ test("Kimi OAuth forwarder returns an actionable 401 when login is required", as
   });
   child.stderr.setEncoding("utf8");
   let errors = "";
+  let childError = null;
   child.stderr.on("data", (chunk) => { errors += chunk; });
+  child.on("error", (error) => { childError ??= error; });
   const base = `http://127.0.0.1:${port}`;
   const headers = {
     Authorization: `Bearer ${internalKey}`,
@@ -44,12 +43,25 @@ test("Kimi OAuth forwarder returns an actionable 401 when login is required", as
   };
 
   try {
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + STARTUP_TIMEOUT_MS;
     let ready = false;
     while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(`forwarder exited: ${errors}`);
+      if (childError) {
+        throw new Error(`forwarder failed to start: ${childError.message}`, { cause: childError });
+      }
+      if (child.exitCode !== null || child.signalCode !== null) {
+        const termination = child.exitCode !== null
+          ? `exit ${child.exitCode}`
+          : `signal ${child.signalCode}`;
+        throw new Error(`forwarder terminated (${termination}): ${errors}`);
+      }
       try {
-        const health = await fetch(`${base}/health`, { headers });
+        const health = await fetch(`${base}/health`, {
+          headers,
+          signal: AbortSignal.timeout(
+            Math.min(STARTUP_FETCH_TIMEOUT_MS, Math.max(1, deadline - Date.now())),
+          ),
+        });
         if (health.ok) {
           ready = true;
           break;
@@ -68,7 +80,7 @@ test("Kimi OAuth forwarder returns an actionable 401 when login is required", as
     assert.equal(body.error.type, "authentication_error");
     assert.match(body.error.message, /kimi login/);
   } finally {
-    await stop(child);
+    await stopChild(child, { description: "Kimi OAuth forwarder test child" });
     unlinkSync(devicePath);
     rmdirSync(home);
   }

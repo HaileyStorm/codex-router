@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { openPort } from "./port-pool.mjs";
+import { STARTUP_TIMEOUT_MS, stopChild } from "./process-helpers.mjs";
 
 import {
   hostedSearchEnabledFor,
@@ -55,7 +56,7 @@ function startForwarder(port, backendPort, authPath) {
 const auth = { Authorization: `Bearer ${INTERNAL_KEY}`, "Content-Type": "application/json" };
 
 async function waitHealth(base, child) {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`exited: ${child.testErrors()}`);
     try {
@@ -65,12 +66,6 @@ async function waitHealth(base, child) {
     await new Promise((r) => setTimeout(r, 40));
   }
   throw new Error(`health timeout: ${child.testErrors()}`);
-}
-
-async function stop(child) {
-  if (child.exitCode !== null) return;
-  child.kill("SIGTERM");
-  await new Promise((r) => child.once("exit", r));
 }
 
 function writeSession(dir) {
@@ -239,7 +234,7 @@ test("translates Chat Completions to Grok Responses and back (text + tools)", as
       [{ type: "web_search" }, { type: "x_search" }],
     );
   } finally {
-    await stop(child);
+    await stopChild(child);
     await new Promise((r) => backend.server.close(r));
     rmSync(dir, { recursive: true, force: true });
   }
@@ -260,7 +255,7 @@ test("returns 401 when the Grok session is missing", async () => {
     });
     assert.equal(resp.status, 401);
   } finally {
-    await stop(child);
+    await stopChild(child);
     await new Promise((r) => backend.server.close(r));
     rmSync(dir, { recursive: true, force: true });
   }

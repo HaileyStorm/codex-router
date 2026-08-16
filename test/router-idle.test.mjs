@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
 import { openPort } from "./port-pool.mjs";
+import { STARTUP_TIMEOUT_MS, stopChild } from "./process-helpers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const INTERNAL_KEY = "test-internal-service-key-with-sufficient-length";
@@ -71,7 +72,7 @@ function run(env) {
 }
 
 async function waitFor(url, child) {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`Child exited early (${child.exitCode}): ${child.testErrors()}`);
@@ -85,14 +86,6 @@ async function waitFor(url, child) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Timed out waiting for ${url}: ${child.testErrors()}`);
-}
-
-async function stopChild(child) {
-  if (child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGTERM");
-    await new Promise((resolve) => child.once("exit", resolve));
-  }
-  rmSync(child.testRoot, { recursive: true, force: true });
 }
 
 function post(port, pathname, body) {
@@ -143,6 +136,7 @@ test("an idle --no-discovery router answers locally and never calls the native b
     assert.deepEqual(native.hits, [], "an idle router reached for the native base");
   } finally {
     await stopChild(child);
+    rmSync(child.testRoot, { recursive: true, force: true });
     gateway.server.close();
     native.server.close();
   }
@@ -165,6 +159,7 @@ test("hiding every provider without --no-discovery keeps native passthrough work
     assert.equal(native.hits.length, 1, "the native turn never reached the native base");
   } finally {
     await stopChild(child);
+    rmSync(child.testRoot, { recursive: true, force: true });
     gateway.server.close();
     native.server.close();
   }

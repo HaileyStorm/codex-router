@@ -9,6 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
+import { STARTUP_TIMEOUT_MS, stopChild } from "./process-helpers.mjs";
 
 // End-to-end proof of the namespace relay through the REAL router: a routed
 // request carrying the client's namespace toolset must reach the (mock)
@@ -93,7 +94,7 @@ function run(script, env) {
 }
 
 async function waitFor(url, child, headers = {}) {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`Child exited early (${child.exitCode}): ${child.testErrors()}`);
@@ -107,12 +108,6 @@ async function waitFor(url, child, headers = {}) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Timed out waiting for ${url}: ${child.testErrors()}`);
-}
-
-async function stopChild(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
-  await new Promise((resolve) => child.once("exit", resolve));
 }
 
 async function closeServer(server) {

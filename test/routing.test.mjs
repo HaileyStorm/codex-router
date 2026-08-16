@@ -18,6 +18,7 @@ import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
 import { openPort } from "./port-pool.mjs";
+import { stopChild } from "./process-helpers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const INTERNAL_KEY = "test-internal-service-key-with-sufficient-length";
@@ -101,12 +102,6 @@ async function waitFor(url, child, headers = {}) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Timed out waiting for ${url}: ${child.testErrors()}`);
-}
-
-async function stopChild(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
-  await new Promise((resolve) => child.once("exit", resolve));
 }
 
 async function closeServer(server) {

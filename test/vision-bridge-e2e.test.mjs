@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
 import { openPort } from "./port-pool.mjs";
+import { stopChild } from "./process-helpers.mjs";
 
 // `test/vision-bridge.test.mjs` proves the bridge's parts in isolation. This
 // file measures the whole path: a real router process, a real routed turn, and
@@ -193,12 +194,6 @@ async function waitFor(url, child) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Timed out waiting for ${url}: ${child.testErrors()}`);
-}
-
-async function stopChild(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
-  await new Promise((resolve) => child.once("exit", resolve));
 }
 
 // The bridge pinned to a local engine: no credential, no registry entry, no

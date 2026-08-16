@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -56,6 +56,12 @@ async function portIsClosed(port) {
 // 300 s for the gateway -- so the only silence this can catch is the gateway's,
 // and it reports it 270 s sooner than start.mjs would.
 const STARTUP_STALL_MS = 30_000;
+
+test("startup source avoids forced process exit after child cleanup", () => {
+  const source = readFileSync(path.join(root, "src", "start.mjs"), "utf8");
+  assert.match(source, /^process\.exitCode = exitCode;$/m);
+  assert.doesNotMatch(source, /^process\.exit\(exitCode\);$/m);
+});
 
 // Fails only if the child produces no output at all for STARTUP_STALL_MS and
 // has not exited. Resolves as soon as it exits, however long that takes.

@@ -285,4 +285,4 @@ try {
   stopChildren();
   await Promise.all(children.map((child) => waitForExit(child, "child")));
 }
-process.exit(exitCode);
+process.exitCode = exitCode;

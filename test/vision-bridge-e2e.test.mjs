@@ -61,6 +61,9 @@ const TRANSCRIPT = [
 // Long enough for the concurrent multi-image and overlapping-turn tests to
 // distinguish shared reads from serialized ones, short enough to keep them quick.
 const VISION_DELAY_MS = 200;
+const STARTUP_WAIT_TIMEOUT_MS = 10_000;
+const STARTUP_FETCH_TIMEOUT_MS = 2_000;
+const ROUTED_TURN_TIMEOUT_MS = 60_000;
 
 const REPORT = process.env.VISION_E2E_REPORT === "1";
 
@@ -180,20 +183,48 @@ function run(env) {
 }
 
 async function waitFor(url, child) {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`Child exited early (${child.exitCode}): ${child.testErrors()}`);
+  const deadline = Date.now() + STARTUP_WAIT_TIMEOUT_MS;
+  while (true) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      const termination = child.exitCode !== null
+        ? `exit ${child.exitCode}`
+        : `signal ${child.signalCode}`;
+      throw new Error(`Child exited early (${termination}): ${child.testErrors()}`);
     }
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(Math.min(STARTUP_FETCH_TIMEOUT_MS, remainingMs)),
+      });
       if (response.ok) return;
     } catch {
       // Not bound yet.
     }
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    const sleepMs = Math.min(25, deadline - Date.now());
+    if (sleepMs > 0) await new Promise((resolve) => setTimeout(resolve, sleepMs));
   }
   throw new Error(`Timed out waiting for ${url}: ${child.testErrors()}`);
+}
+
+async function cleanupBridgedRouter(child, stateDir) {
+  const errors = [];
+  if (child) {
+    try {
+      await stopChild(child);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  try {
+    rmSync(stateDir, { recursive: true, force: true });
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "vision e2e router cleanup failed");
+  }
 }
 
 // The bridge pinned to a local engine: no credential, no registry entry, no
@@ -211,25 +242,41 @@ async function startBridgedRouter(upstreams, { enabled = true, engine = "local" 
       baseUrl: `http://127.0.0.1:${upstreams.port}/vision/v1`,
     },
   });
-  const routerPort = await openPort();
-  const child = run({
-    CODEX_ROUTER_PORT: String(routerPort),
-    MODEL_ROUTER_STATE_DIR: stateDir,
-    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${upstreams.port}/v1`,
-    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${upstreams.port}/health`,
-    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${upstreams.port}/health`,
-    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${upstreams.port}/health`,
-  });
-  await waitFor(`${routerBase(routerPort)}/models`, child);
-  return {
-    child,
-    port: routerPort,
-    stateDir,
-    async stop() {
-      await stopChild(child);
-      rmSync(stateDir, { recursive: true, force: true });
-    },
-  };
+  let child;
+  try {
+    const routerPort = await openPort();
+    child = run({
+      CODEX_ROUTER_PORT: String(routerPort),
+      MODEL_ROUTER_STATE_DIR: stateDir,
+      CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${upstreams.port}/v1`,
+      CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${upstreams.port}/health`,
+      CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${upstreams.port}/health`,
+      CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${upstreams.port}/health`,
+    });
+    await waitFor(`${routerBase(routerPort)}/models`, child);
+    return {
+      child,
+      port: routerPort,
+      stateDir,
+      async stop() {
+        await cleanupBridgedRouter(child, stateDir);
+      },
+    };
+  } catch (error) {
+    try {
+      await cleanupBridgedRouter(child, stateDir);
+    } catch (cleanupError) {
+      const cleanupErrors = cleanupError instanceof AggregateError
+        ? cleanupError.errors
+        : [cleanupError];
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        "vision e2e router startup failed and cleanup failed",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 function textTurn({ model = TEXT_MODEL, question, history = [] } = {}) {
@@ -261,16 +308,76 @@ function imageTurn({ model = TEXT_MODEL, question, image = IMAGE_A, history = []
   };
 }
 
-async function turn(port, body) {
+async function turn(port, body, timeoutMs = ROUTED_TURN_TIMEOUT_MS, { onResponse } = {}) {
   const startedAt = performance.now();
-  const response = await fetch(`${routerBase(port)}/responses`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: "Bearer CALLER" },
-    body: JSON.stringify(body),
-  });
-  const payload = await response.json();
-  return { status: response.status, payload, ms: performance.now() - startedAt };
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    const response = await fetch(`${routerBase(port)}/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer CALLER" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    onResponse?.(response);
+    const payload = await response.json();
+    return { status: response.status, payload, ms: performance.now() - startedAt };
+  } catch (error) {
+    if (error?.name === "TimeoutError" || (error?.name === "AbortError" && signal.aborted)) {
+      throw new Error(
+        `vision e2e routed turn timed out after ${timeoutMs}ms`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
+
+test("a routed turn timeout also bounds response body consumption", async (t) => {
+  let markResponseReceived;
+  const responseReceived = new Promise((resolve) => {
+    markResponseReceived = resolve;
+  });
+  let stalledResponse;
+  const upstream = await mockServer((_request, response) => {
+    stalledResponse = response;
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.flushHeaders();
+    response.write('{"status":"');
+  });
+  t.after(async () => {
+    stalledResponse?.destroy();
+    await closeServer(upstream.server);
+  });
+
+  const timeoutMs = 1_000;
+  const pendingTurn = turn(
+    upstream.port,
+    { model: TEXT_MODEL, input: [] },
+    timeoutMs,
+    { onResponse: markResponseReceived },
+  );
+  await Promise.race([
+    responseReceived,
+    pendingTurn.then(
+      () => {
+        throw new Error("vision e2e routed turn completed before response body consumption began");
+      },
+      (error) => {
+        throw new Error("vision e2e routed turn failed before response body consumption began", {
+          cause: error,
+        });
+      },
+    ),
+  ]);
+  await assert.rejects(
+    pendingTurn,
+    (error) => {
+      assert.equal(error.message, `vision e2e routed turn timed out after ${timeoutMs}ms`);
+      assert.ok(["AbortError", "TimeoutError"].includes(error.cause?.name));
+      return true;
+    },
+  );
+});
 
 function textParts(input) {
   const parts = [];
@@ -292,8 +399,9 @@ function imageParts(input) {
   return parts;
 }
 
-test("one image is bought once per question asked, never once per turn", async () => {
+test("one image is bought once per question asked, never once per turn", async (t) => {
   const upstreams = await bridgeUpstreams({ visionDelayMs: 0 });
+  t.after(() => closeServer(upstreams.server));
   const router = await startBridgedRouter(upstreams);
 
   try {
@@ -364,14 +472,14 @@ test("one image is bought once per question asked, never once per turn", async (
     assert.match(instructions, /## Summary/);
   } finally {
     await router.stop();
-    await closeServer(upstreams.server);
   }
 });
 
 // A read that fails must leave the turn answerable. The alternative is a
 // dead turn or, worse, a model inventing an answer about an image it never got.
-test("a failed vision read degrades to a stated failure and the turn still completes", async () => {
+test("a failed vision read degrades to a stated failure and the turn still completes", async (t) => {
   const upstreams = await bridgeUpstreams({ visionDelayMs: 0 });
+  t.after(() => closeServer(upstreams.server));
   upstreams.state.visionStatus = 500;
   const router = await startBridgedRouter(upstreams);
 
@@ -415,15 +523,15 @@ test("a failed vision read degrades to a stated failure and the turn still compl
     );
   } finally {
     await router.stop();
-    await closeServer(upstreams.server);
   }
 });
 
 // A bridge that fires for a model which already reads images is a silent
 // double bill: the operator pays the engine for something the model was going
 // to do anyway.
-test("a model that declares image input is never sent through the bridge", async () => {
+test("a model that declares image input is never sent through the bridge", async (t) => {
   const upstreams = await bridgeUpstreams({ visionDelayMs: 0 });
+  t.after(() => closeServer(upstreams.server));
   const router = await startBridgedRouter(upstreams);
 
   try {
@@ -446,7 +554,6 @@ test("a model that declares image input is never sent through the bridge", async
     assert.deepEqual(images[0], { type: "input_image", image_url: IMAGE_A });
   } finally {
     await router.stop();
-    await closeServer(upstreams.server);
   }
 });
 
@@ -461,8 +568,9 @@ test("a model that declares image input is never sent through the bridge", async
 // has to reach the engine, and the first answer has to still be in front of the
 // model. This is the failure that sent a model to a public image host for an
 // answer the reader could have given.
-test("a follow-up question about a pasted image reaches the engine, once", async () => {
+test("a follow-up question about a pasted image reaches the engine, once", async (t) => {
   const upstreams = await bridgeUpstreams({ visionDelayMs: 0 });
+  t.after(() => closeServer(upstreams.server));
   const router = await startBridgedRouter(upstreams);
 
   try {
@@ -501,12 +609,12 @@ test("a follow-up question about a pasted image reaches the engine, once", async
     assert.equal(upstreams.state.visionRequests.length, 2);
   } finally {
     await router.stop();
-    await closeServer(upstreams.server);
   }
 });
 
-test("the evidence cache is keyed on the image and on the question pasted with it", async () => {
+test("the evidence cache is keyed on the image and on the question pasted with it", async (t) => {
   const upstreams = await bridgeUpstreams({ visionDelayMs: 0 });
+  t.after(() => closeServer(upstreams.server));
   const router = await startBridgedRouter(upstreams);
 
   try {
@@ -547,7 +655,6 @@ test("the evidence cache is keyed on the image and on the question pasted with i
     assert.equal(new Set(transcribe).size, 1);
   } finally {
     await router.stop();
-    await closeServer(upstreams.server);
   }
 });
 
@@ -556,8 +663,9 @@ test("the evidence cache is keyed on the image and on the question pasted with i
 // for all of it. Reads therefore run together, bounded by
 // `VISION_READ_CONCURRENCY` so a whole album does not arrive at a rate-limited
 // account as one burst. The wait is the slowest read, not the sum of them.
-test("images in one turn are read together, not one after another", async () => {
+test("images in one turn are read together, not one after another", async (t) => {
   const upstreams = await bridgeUpstreams();
+  t.after(() => closeServer(upstreams.server));
   const router = await startBridgedRouter(upstreams);
 
   try {
@@ -592,7 +700,6 @@ test("images in one turn are read together, not one after another", async () => 
     assert.ok(evidence[2].startsWith("[Image 3 "));
   } finally {
     await router.stop();
-    await closeServer(upstreams.server);
   }
 });
 
@@ -601,8 +708,9 @@ test("images in one turn are read together, not one after another", async () => 
 // serve, because it only knows about reads that have already finished. Asking
 // the same thing now waits on the read already in flight; asking something
 // different is a different transcript and is bought as one.
-test("overlapping turns share a read only when they ask the same thing", async () => {
+test("overlapping turns share a read only when they ask the same thing", async (t) => {
   const upstreams = await bridgeUpstreams();
+  t.after(() => closeServer(upstreams.server));
   const router = await startBridgedRouter(upstreams);
 
   try {
@@ -636,15 +744,15 @@ test("overlapping turns share a read only when they ask the same thing", async (
     assert.equal(upstreams.state.visionRequests.length, 3);
   } finally {
     await router.stop();
-    await closeServer(upstreams.server);
   }
 });
 
 // A pin is a picker entry the operator chose. When it stops resolving -- the
 // provider was disabled, the model left the registry -- the bridge is still on,
 // but the only thing the turn can say is the message written for "off".
-test("a pinned engine that no longer resolves is reported as the bridge being off", async () => {
+test("a pinned engine that no longer resolves is reported as the bridge being off", async (t) => {
   const upstreams = await bridgeUpstreams({ visionDelayMs: 0 });
+  t.after(() => closeServer(upstreams.server));
   const router = await startBridgedRouter(upstreams, { engine: "no-such-provider/no-such-model" });
 
   try {
@@ -660,15 +768,15 @@ test("a pinned engine that no longer resolves is reported as the bridge being of
     assert.match(stated, /vision bridge is off or has no enabled vision model/);
   } finally {
     await router.stop();
-    await closeServer(upstreams.server);
   }
 });
 
 // A local engine is pinned, so it resolves whether or not the operator's server
 // is running. When it is not, the reason the routed model is given is whatever
 // the transport called it.
-test("an unreachable local engine degrades with the transport's own wording", async () => {
+test("an unreachable local engine degrades with the transport's own wording", async (t) => {
   const upstreams = await bridgeUpstreams({ visionDelayMs: 0 });
+  t.after(() => closeServer(upstreams.server));
   const deadPort = await openPort();
   const stateDir = stateDirectory({
     version: 1,
@@ -700,9 +808,7 @@ test("an unreachable local engine degrades with the transport's own wording", as
     assert.match(stated, /Image 1 could not be read/);
     assert.match(stated, /fetch failed/);
   } finally {
-    await stopChild(child);
-    rmSync(stateDir, { recursive: true, force: true });
-    await closeServer(upstreams.server);
+    await cleanupBridgedRouter(child, stateDir);
   }
 });
 
@@ -710,8 +816,9 @@ test("an unreachable local engine degrades with the transport's own wording", as
 // bridge off, Codex is not told the model reads images -- but a client that
 // attaches one anyway must get a stated failure rather than an opaque provider
 // 400 from an image part the model cannot parse.
-test("with the bridge off an attached image is replaced by a stated failure", async () => {
+test("with the bridge off an attached image is replaced by a stated failure", async (t) => {
   const upstreams = await bridgeUpstreams({ visionDelayMs: 0 });
+  t.after(() => closeServer(upstreams.server));
   const router = await startBridgedRouter(upstreams, { enabled: false });
 
   try {
@@ -730,6 +837,5 @@ test("with the bridge off an attached image is replaced by a stated failure", as
     assert.match(stated, /vision bridge is off or has no enabled vision model/);
   } finally {
     await router.stop();
-    await closeServer(upstreams.server);
   }
 });

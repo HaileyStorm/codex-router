@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import {
   existsSync,
   mkdtempSync,
@@ -8,18 +9,125 @@ import {
   writeFileSync,
 } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { PassThrough } from "node:stream";
+import nodeTest from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
 import { openPort } from "./port-pool.mjs";
+import { STARTUP_TIMEOUT_MS, stopChild } from "./process-helpers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const INTERNAL_KEY = "test-internal-service-key-with-sufficient-length";
 const CALLER_KEY = "test-router-caller-capability-with-sufficient-length";
-const STARTUP_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 5_000;
+const STARTUP_FETCH_TIMEOUT_MS = 2_000;
+const SERVER_CLOSE_TIMEOUT_MS = 2_000;
+const ACQUISITION_TIMEOUT_MS = 2_000;
+const CHILD_SPAWN_OUTCOME_TIMEOUT_MS = 2_000;
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((currentResolve) => {
+    resolve = currentResolve;
+  });
+  return { promise, resolve };
+}
+
+async function boundedOutcome(promise, timeoutMs, description) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${description} did not settle within ${timeoutMs}ms`)),
+          Math.max(0, timeoutMs),
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function throwCollected(errors, message) {
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, message);
+}
+
+async function preservePrimaryAndCleanup(body, cleanup) {
+  const errors = [];
+  let result;
+  try {
+    result = await body();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await cleanup();
+  } catch (error) {
+    errors.push(error);
+  }
+  throwCollected(errors, "empty-completion test and cleanup both failed");
+  return result;
+}
+
+function createLifecycle() {
+  let closing = false;
+  let childReservation;
+  let serverReservation;
+  let cleanupPromise;
+  const startCleanup = () => {
+    if (!cleanupPromise) {
+      closing = true;
+      cleanupPromise = performLifecycleCleanup(childReservation, serverReservation);
+    }
+    return cleanupPromise;
+  };
+  return {
+    reserveChild() {
+      if (closing) throw new Error("test lifecycle is closing; router creation refused");
+      if (childReservation) throw new Error("test lifecycle already reserved a router child");
+      const reservation = { child: null };
+      childReservation = reservation;
+      return {
+        activate(child) {
+          reservation.child = child;
+        },
+      };
+    },
+    reserveServer() {
+      if (closing) throw new Error("test lifecycle is closing; gateway creation refused");
+      if (serverReservation) throw new Error("test lifecycle already reserved a gateway");
+      const outcome = deferred();
+      const reservation = { server: null, outcome: outcome.promise };
+      serverReservation = reservation;
+      return {
+        track(server) {
+          reservation.server = server;
+        },
+        ready() {
+          outcome.resolve({ status: "ready" });
+        },
+        fail(error) {
+          outcome.resolve({ status: "error", error });
+        },
+      };
+    },
+    cleanupEarly: () => startCleanup().catch(() => {}),
+    finishCleanup: startCleanup,
+  };
+}
+
+function test(name, body) {
+  return nodeTest(name, async () => {
+    const lifecycle = createLifecycle();
+    return preservePrimaryAndCleanup(() => body(lifecycle), lifecycle.finishCleanup);
+  });
+}
 
 // An attempt that never proves it was generating. The guard holds all of it, so
 // the router can swap it for a retry the client never sees.
@@ -273,8 +381,9 @@ const CONTENT_SSE_METERED = [
   "",
 ].join("\n");
 
-async function mockServer(handler) {
+async function mockServer(handler, { lifecycleReservation } = {}) {
   const server = http.createServer(handler);
+  lifecycleReservation?.track(server);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -282,29 +391,61 @@ async function mockServer(handler) {
   return { server, port: server.address().port };
 }
 
-function run(env) {
-  const stateDir = mkdtempSync(path.join(os.tmpdir(), "empty-completion-router-state-"));
-  const child = spawn(process.execPath, [path.join(root, "src", "router.mjs")], {
-    cwd: root,
-    env: {
-      ...process.env,
-      MODEL_ROUTER_STATE_DIR: stateDir,
-      CODEX_ROUTER_CALLER_KEY: CALLER_KEY,
-      CODEX_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
-      KIMI_INTERNAL_KEY: INTERNAL_KEY,
-      CODEX_ROUTER_SHOW_ALL_MODELS: "1",
-      CODEX_ROUTER_QUIET: "1",
-      ...env,
-    },
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+function run(env, { lifecycle, spawnProcess = spawn } = {}) {
+  const lifecycleReservation = lifecycle?.reserveChild();
+  let stateDir;
+  try {
+    stateDir = mkdtempSync(path.join(os.tmpdir(), "empty-completion-router-state-"));
+  } catch (error) {
+    throw error;
+  }
+  let child;
+  try {
+    child = spawnProcess(process.execPath, [path.join(root, "src", "router.mjs")], {
+      cwd: root,
+      env: {
+        ...process.env,
+        MODEL_ROUTER_STATE_DIR: stateDir,
+        CODEX_ROUTER_CALLER_KEY: CALLER_KEY,
+        CODEX_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
+        KIMI_INTERNAL_KEY: INTERNAL_KEY,
+        CODEX_ROUTER_SHOW_ALL_MODELS: "1",
+        CODEX_ROUTER_QUIET: "1",
+        ...env,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+  } catch (error) {
+    try {
+      rmSync(stateDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "empty-completion router spawn failed and state cleanup failed",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   child.stderr.setEncoding("utf8");
   let errors = "";
+  let childError = null;
+  const spawnOutcome = deferred();
   child.stderr.on("data", (chunk) => {
     errors += chunk;
   });
+  child.once("spawn", () => {
+    spawnOutcome.resolve({ status: "spawn" });
+  });
+  child.on("error", (error) => {
+    childError ??= error;
+    spawnOutcome.resolve({ status: "error", error });
+  });
   child.testErrors = () => errors;
+  child.testChildError = () => childError;
+  child.testSpawnOutcome = () => spawnOutcome.promise;
   child.stateDir = stateDir;
+  lifecycleReservation?.activate(child);
   return child;
 }
 
@@ -338,29 +479,183 @@ async function waitForLog(child, pattern) {
 
 async function waitFor(url, child) {
   const deadline = Date.now() + STARTUP_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`Child exited early (${child.exitCode}): ${child.testErrors()}`);
+  while (true) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    const childError = child.testChildError?.();
+    if (childError) {
+      throw new Error(`Child failed to start: ${childError.message}`, { cause: childError });
+    }
+    if (child.exitCode !== null || child.signalCode !== null) {
+      const termination = child.exitCode !== null
+        ? `exit ${child.exitCode}`
+        : `signal ${child.signalCode}`;
+      throw new Error(`Child exited early (${termination}): ${child.testErrors()}`);
     }
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(Math.min(STARTUP_FETCH_TIMEOUT_MS, remainingMs)),
+      });
       if (response.ok) return;
     } catch {
       // Not bound yet.
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const sleepMs = Math.min(50, deadline - Date.now());
+    if (sleepMs > 0) await new Promise((resolve) => setTimeout(resolve, sleepMs));
   }
   throw new Error(`Timed out waiting for ${url}: ${child.testErrors()}`);
 }
 
-async function stopChild(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
-  await new Promise((resolve) => child.once("exit", resolve));
+async function performLifecycleCleanup(childReservation, serverReservation) {
+  const errors = [];
+  let server;
+  if (serverReservation) {
+    try {
+      const outcome = await boundedOutcome(
+        serverReservation.outcome,
+        ACQUISITION_TIMEOUT_MS,
+        "gateway acquisition",
+      );
+      server = serverReservation.server;
+      if (outcome.status === "error" && !server?.listening) server = null;
+    } catch (error) {
+      errors.push(error);
+      server = serverReservation.server;
+    }
+  }
+
+  try {
+    await performRouterCleanup(childReservation?.child, server);
+  } catch (error) {
+    errors.push(error);
+  }
+
+  throwCollected(errors, "empty-completion lifecycle cleanup failed");
 }
 
-async function closeServer(server) {
-  await new Promise((resolve) => server.close(resolve));
+async function performRouterCleanup(
+  child,
+  server,
+  {
+    childGracefulTimeoutMs = 2_000,
+    childForceTimeoutMs = 2_000,
+    serverGracefulTimeoutMs = SERVER_CLOSE_TIMEOUT_MS,
+    serverForceTimeoutMs = SERVER_CLOSE_TIMEOUT_MS,
+  } = {},
+) {
+  const errors = [];
+  let stopped = !child;
+  if (child) {
+    let spawnOutcome;
+    try {
+      spawnOutcome = await boundedOutcome(
+        child.testSpawnOutcome?.() ?? Promise.resolve({
+          status: child.pid == null ? "unknown" : "spawn",
+        }),
+        CHILD_SPAWN_OUTCOME_TIMEOUT_MS,
+        "router child spawn outcome",
+      );
+    } catch (error) {
+      if (child.pid == null) {
+        errors.push(new Error(
+          `router child spawn outcome is unknown; state retained at ${child.stateDir}`,
+          { cause: error },
+        ));
+      } else {
+        spawnOutcome = { status: "spawn" };
+      }
+    }
+
+    const preSpawnFailure = spawnOutcome?.status === "error" && child.pid == null;
+    if (preSpawnFailure) {
+      // An asynchronous spawn failure with no PID proves there is no process
+      // that could still be using the just-created state directory.
+      stopped = true;
+    } else if (spawnOutcome?.status === "spawn" || child.pid != null) {
+      try {
+        await stopChild(child, {
+          gracefulTimeoutMs: childGracefulTimeoutMs,
+          forceTimeoutMs: childForceTimeoutMs,
+          description: "empty-completion test router",
+        });
+        stopped = true;
+      } catch (error) {
+        // Preserve the directory when the exact child could still be using it;
+        // stopChild's bounded TERM/KILL diagnostic is the primary failure.
+        errors.push(
+          new Error(`empty-completion router did not stop; state retained at ${child.stateDir}`, {
+            cause: error,
+          }),
+        );
+      }
+    } else if (errors.length === 0) {
+      errors.push(new Error(
+        `router child spawn outcome is unknown; state retained at ${child.stateDir}`,
+      ));
+    }
+  }
+
+  if (stopped && child?.stateDir) {
+    try {
+      rmSync(child.stateDir, { recursive: true, force: true });
+    } catch (error) {
+      errors.push(new Error(`failed to remove empty-completion state at ${child.stateDir}`, {
+        cause: error,
+      }));
+    }
+  }
+
+  if (server) {
+    try {
+      await closeServer(server, {
+        gracefulTimeoutMs: serverGracefulTimeoutMs,
+        forceTimeoutMs: serverForceTimeoutMs,
+      });
+    } catch (error) {
+      errors.push(new Error("failed to close empty-completion gateway", { cause: error }));
+    }
+  }
+
+  throwCollected(errors, "empty-completion router cleanup failed");
+}
+
+async function closeServer(
+  server,
+  {
+    gracefulTimeoutMs = SERVER_CLOSE_TIMEOUT_MS,
+    forceTimeoutMs = SERVER_CLOSE_TIMEOUT_MS,
+  } = {},
+) {
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    let forceTimer;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(gracefulTimer);
+      clearTimeout(forceTimer);
+      if (error) reject(error);
+      else resolve();
+    };
+    const gracefulTimer = setTimeout(() => {
+      forceTimer = setTimeout(
+        () => finish(new Error("test server did not close after its connections were destroyed")),
+        Math.max(0, forceTimeoutMs),
+      );
+      try {
+        // This is scoped to connections accepted by this exact test server.
+        server.closeAllConnections();
+      } catch (error) {
+        finish(error);
+      }
+    }, Math.max(0, gracefulTimeoutMs));
+
+    try {
+      server.close((error) => finish(error));
+    } catch (error) {
+      finish(error);
+    }
+  });
 }
 
 function readRouted(port, body) {
@@ -400,19 +695,27 @@ function readRouted(port, body) {
   });
 }
 
-function gateway(handler) {
-  return mockServer((request, response) => {
-    if (request.method === "GET" && request.url === "/health") {
-      const payload = Buffer.from(JSON.stringify({ ok: true }), "utf8");
-      response.writeHead(200, {
-        "Content-Type": "application/json",
-        "Content-Length": String(payload.length),
-      });
-      response.end(payload);
-      return;
-    }
-    handler(request, response);
-  });
+async function gateway(handler, { createServer = mockServer, lifecycle } = {}) {
+  const lifecycleReservation = lifecycle?.reserveServer();
+  try {
+    const result = await createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/health") {
+        const payload = Buffer.from(JSON.stringify({ ok: true }), "utf8");
+        response.writeHead(200, {
+          "Content-Type": "application/json",
+          "Content-Length": String(payload.length),
+        });
+        response.end(payload);
+        return;
+      }
+      handler(request, response);
+    }, { lifecycleReservation });
+    lifecycleReservation?.ready();
+    return result;
+  } catch (error) {
+    lifecycleReservation?.fail(error);
+    throw error;
+  }
 }
 
 function routerEnv(gatewayPort, routerPort) {
@@ -431,10 +734,285 @@ const TURN_BODY = {
   stream: true,
 };
 
+test("router cleanup removes its run-owned state directory", async (lifecycle) => {
+  const gw = await gateway((_request, response) => {
+    response.writeHead(404);
+    response.end();
+  }, { lifecycle });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+  } finally {
+    await lifecycle.cleanupEarly();
+  }
+
+  assert.equal(existsSync(router.stateDir), false);
+});
+
+nodeTest("an asynchronous spawn failure is surfaced and its unused state is removed", async () => {
+  const lifecycle = createLifecycle();
+  const spawnFailure = Object.assign(new Error("injected asynchronous spawn failure"), {
+    code: "ENOENT",
+  });
+  const router = run({}, {
+    lifecycle,
+    spawnProcess() {
+      const child = new EventEmitter();
+      child.stderr = new PassThrough();
+      child.exitCode = null;
+      child.signalCode = null;
+      child.pid = undefined;
+      child.kill = () => {
+        throw new Error("a child that never spawned must not be signalled");
+      };
+      queueMicrotask(() => child.emit("error", spawnFailure));
+      return child;
+    },
+  });
+  const cleanup = lifecycle.finishCleanup();
+
+  try {
+    await assert.rejects(
+      waitFor("http://127.0.0.1:1/models", router),
+      (error) => {
+        assert.equal(error.cause, spawnFailure);
+        assert.match(error.message, /Child failed to start: injected asynchronous spawn failure/);
+        return true;
+      },
+    );
+  } finally {
+    await cleanup;
+  }
+
+  assert.equal(existsSync(router.stateDir), false);
+});
+
+nodeTest("server close callback errors are propagated", async () => {
+  const callbackError = new Error("injected server close callback failure");
+  let destroyed = false;
+  const server = {
+    close(callback) {
+      queueMicrotask(() => callback(callbackError));
+    },
+    closeAllConnections() {
+      destroyed = true;
+    },
+  };
+
+  await assert.rejects(closeServer(server), (error) => error === callbackError);
+  assert.equal(destroyed, false);
+});
+
+nodeTest("a stubborn child retains state while an active owned socket is destroyed", async () => {
+  let requestArrived;
+  const arrived = new Promise((resolve) => {
+    requestArrived = resolve;
+  });
+  let acceptedSocket;
+  const upstream = await mockServer((_request, _response) => requestArrived());
+  upstream.server.on("connection", (socket) => {
+    acceptedSocket = socket;
+  });
+  const client = net.createConnection(upstream.port, "127.0.0.1");
+  client.on("error", () => {});
+  await new Promise((resolve) => client.once("connect", resolve));
+  client.write("GET /stubborn HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  await arrived;
+
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "empty-completion-router-state-"));
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.pid = 42;
+  child.stateDir = stateDir;
+  child.testChildError = () => null;
+  child.testSpawnOutcome = () => Promise.resolve({ status: "spawn" });
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    return false;
+  };
+
+  try {
+    await assert.rejects(
+      performRouterCleanup(child, upstream.server, {
+        childGracefulTimeoutMs: 0,
+        childForceTimeoutMs: 0,
+        serverGracefulTimeoutMs: 10,
+        serverForceTimeoutMs: 100,
+      }),
+      (error) => {
+        assert.match(error.message, /state retained/);
+        assert.match(error.cause?.message || "", /SIGTERM.*SIGKILL/s);
+        return true;
+      },
+    );
+    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(existsSync(stateDir), true);
+    assert.equal(acceptedSocket.destroyed, true);
+    assert.equal(upstream.server.listening, false);
+  } finally {
+    client.destroy();
+    upstream.server.closeAllConnections();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+nodeTest("primary and cleanup failures are retained together", async () => {
+  const primary = new Error("injected primary failure");
+  const cleanup = new Error("injected cleanup failure");
+
+  await assert.rejects(
+    preservePrimaryAndCleanup(
+      async () => {
+        throw primary;
+      },
+      async () => {
+        throw cleanup;
+      },
+    ),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [primary, cleanup]);
+      return true;
+    },
+  );
+});
+
+nodeTest("duplicate and late acquisitions create no extra listener, process, or state", async () => {
+  const lifecycle = createLifecycle();
+  let spawnCalls = 0;
+  let duplicateGatewayCalls = 0;
+  let gatewayServer;
+  let router;
+
+  try {
+    const gw = await gateway((_request, response) => {
+      response.writeHead(404);
+      response.end();
+    }, { lifecycle });
+    gatewayServer = gw.server;
+    router = run({}, {
+      lifecycle,
+      spawnProcess() {
+        spawnCalls += 1;
+        const child = new EventEmitter();
+        child.stderr = new PassThrough();
+        child.exitCode = null;
+        child.signalCode = null;
+        child.pid = 4242;
+        child.kill = (signal) => {
+          child.signalCode = signal;
+          child.emit("exit", null, signal);
+          return true;
+        };
+        queueMicrotask(() => child.emit("spawn"));
+        return child;
+      },
+    });
+
+    await assert.rejects(
+      gateway(() => {}, {
+        lifecycle,
+        createServer() {
+          duplicateGatewayCalls += 1;
+        },
+      }),
+      /already reserved a gateway/,
+    );
+    assert.throws(
+      () => run({}, { lifecycle, spawnProcess: () => { spawnCalls += 1; } }),
+      /already reserved a router child/,
+    );
+  } finally {
+    await lifecycle.finishCleanup();
+  }
+
+  assert.throws(
+    () => run({}, { lifecycle, spawnProcess: () => { spawnCalls += 1; } }),
+    /lifecycle is closing; router creation refused/,
+  );
+  await assert.rejects(
+    gateway(() => {}, {
+      lifecycle,
+      createServer() {
+        duplicateGatewayCalls += 1;
+      },
+    }),
+    /lifecycle is closing; gateway creation refused/,
+  );
+  assert.equal(spawnCalls, 1);
+  assert.equal(duplicateGatewayCalls, 0);
+  assert.equal(gatewayServer.listening, false);
+  assert.equal(existsSync(router.stateDir), false);
+});
+
+nodeTest("cleanup awaits an already-reserved gateway acquisition before closing it", async () => {
+  const lifecycle = createLifecycle();
+  const releaseAcquisition = deferred();
+  let observedListen;
+  let gatewayServer;
+
+  const acquisition = gateway(() => {}, {
+    lifecycle,
+    async createServer(handler, { lifecycleReservation }) {
+      const server = http.createServer(handler);
+      gatewayServer = server;
+      lifecycleReservation.track(server);
+      const listening = new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      observedListen = listening.then(
+        () => ({ status: "listening" }),
+        (error) => ({ status: "error", error }),
+      );
+      await listening;
+      await releaseAcquisition.promise;
+      return { server, port: server.address().port };
+    },
+  });
+  const observedAcquisition = acquisition.then(
+    (value) => ({ status: "fulfilled", value }),
+    (error) => ({ status: "rejected", error }),
+  );
+
+  try {
+    const listening = await boundedOutcome(
+      observedListen,
+      ACQUISITION_TIMEOUT_MS,
+      "gateway listen outcome",
+    );
+    if (listening.status === "error") throw listening.error;
+    const cleanup = lifecycle.finishCleanup();
+    releaseAcquisition.resolve();
+    const acquired = await boundedOutcome(
+      observedAcquisition,
+      ACQUISITION_TIMEOUT_MS,
+      "gateway acquisition",
+    );
+    if (acquired.status === "rejected") throw acquired.error;
+    await cleanup;
+    assert.equal(gatewayServer.listening, false);
+  } finally {
+    releaseAcquisition.resolve();
+    await Promise.allSettled([
+      boundedOutcome(
+        observedAcquisition,
+        ACQUISITION_TIMEOUT_MS,
+        "gateway acquisition settlement",
+      ),
+      lifecycle.finishCleanup(),
+    ]);
+  }
+});
+
 // An empty completion used to reach the client as a clean 200 the app
 // recorded as a successful turn with no content. The router must retry the
 // identical request once and only surface the retry's completion.
-test("an empty completion is retried once and the retry's content reaches the client", async () => {
+test("an empty completion is retried once and the retry's content reaches the client", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
@@ -444,9 +1022,9 @@ test("an empty completion is retried once and the retry's content reaches the cl
     });
     response.write(posts === 1 ? EMPTY_SSE : CONTENT_SSE);
     response.end();
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -479,8 +1057,7 @@ test("an empty completion is retried once and the retry's content reaches the cl
     assert.equal(event.emptyCompletionRetried, true);
     assert.equal(event.emptyCompletion, undefined);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
@@ -490,7 +1067,7 @@ test("an empty completion is retried once and the retry's content reaches the cl
 // the prologue for this case is what used to cost every reasoning turn seconds
 // of dead air, and the silent rescue it bought landed on roughly one routed
 // turn in a thousand.
-test("a reasoning turn that ends empty is relayed and stated, never retried", async () => {
+test("a reasoning turn that ends empty is relayed and stated, never retried", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
@@ -499,9 +1076,9 @@ test("a reasoning turn that ends empty is relayed and stated, never retried", as
       "X-Upstream-Attempt": posts === 1 ? "first" : "retry",
     });
     response.end(posts === 1 ? REASONING_EMPTY_SSE : CONTENT_SSE);
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -525,23 +1102,22 @@ test("a reasoning turn that ends empty is relayed and stated, never retried", as
     assert.equal(event.emptyCompletionUnrepairable, true);
     assert.equal(event.emptyCompletionRetried, undefined);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
 // If the retry is also empty, the client must see a stated error instead of a
 // second silent success, and the meter must call it a failure.
-test("a double-empty completion surfaces an error and meters 502", async () => {
+test("a double-empty completion surfaces an error and meters 502", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
     response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
     response.write(EMPTY_SSE);
     response.end();
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -561,15 +1137,14 @@ test("a double-empty completion surfaces an error and meters 502", async () => {
     const health = await fetch(`http://127.0.0.1:${routerPort}/health`);
     assert.equal((await health.json()).activity.state, "error");
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
 // The retry can fail outright. The first attempt is still fully buffered, so
 // replace its staged head with one deterministic router error and never relay
 // the upstream's internal body.
-test("a retry that fails upstream states the failure instead of relaying its body", async () => {
+test("a retry that fails upstream states the failure instead of relaying its body", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
@@ -581,9 +1156,9 @@ test("a retry that fails upstream states the failure instead of relaying its bod
     const body = JSON.stringify({ error: { message: "upstream exploded", type: "server_error" } });
     response.writeHead(500, { "Content-Type": "application/json" });
     response.end(body);
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -603,22 +1178,21 @@ test("a retry that fails upstream states the failure instead of relaying its bod
     assert.equal(event.emptyCompletion, true);
     assert.equal(event.emptyCompletionRetried, true);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
 // Both attempts were sent and both were billed. A meter that reports only the
 // retry understates a retried turn by an entire prompt.
-test("a retried turn meters the tokens of both attempts", async () => {
+test("a retried turn meters the tokens of both attempts", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
     response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
     response.end(posts === 1 ? EMPTY_SSE_METERED : CONTENT_SSE_METERED);
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -634,20 +1208,19 @@ test("a retried turn meters the tokens of both attempts", async () => {
     assert.equal(event.outputTokens, 5);
     assert.equal(event.totalTokens, 205);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
-test("a retry that crosses the guard byte budget records the release", async () => {
+test("a retry that crosses the guard byte budget records the release", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(posts === 1 ? EMPTY_SSE : BUDGET_RELEASE_EMPTY_SSE);
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -663,12 +1236,11 @@ test("a retry that crosses the guard byte budget records the release", async () 
     assert.equal(event.emptyCompletionRetried, true);
     assert.equal(event.emptyCompletionGuardReleased, true);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
-test("a retry tool call uses the normal namespace response transform", async () => {
+test("a retry tool call uses the normal namespace response transform", async (lifecycle) => {
   let posts = 0;
   const toolCall = [
     "event: response.created",
@@ -691,9 +1263,9 @@ test("a retry tool call uses the normal namespace response transform", async () 
     posts += 1;
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(posts === 1 ? EMPTY_SSE : toolCall);
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -714,12 +1286,11 @@ test("a retry tool call uses the normal namespace response transform", async () 
     assert.doesNotMatch(result.body, /collaboration__spawn_agent|r-empty|thinking/);
     assert.equal(posts, 2);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
-test("multiline SSE content on the retry is not misclassified as empty", async () => {
+test("multiline SSE content on the retry is not misclassified as empty", async (lifecycle) => {
   let posts = 0;
   const multiline = [
     "event: response.created",
@@ -739,9 +1310,9 @@ test("multiline SSE content on the retry is not misclassified as empty", async (
     posts += 1;
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(posts === 1 ? EMPTY_SSE : multiline);
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -751,13 +1322,12 @@ test("multiline SSE content on the retry is not misclassified as empty", async (
     assert.doesNotMatch(result.body, /r-empty|thinking/);
     assert.equal(posts, 2);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
 for (const retryKind of ["json", "bodyless"]) {
-  test(`a successful ${retryKind} retry becomes a deterministic protocol error`, async () => {
+  test(`a successful ${retryKind} retry becomes a deterministic protocol error`, async (lifecycle) => {
     let posts = 0;
     const gw = await gateway((_request, response) => {
       posts += 1;
@@ -779,9 +1349,9 @@ for (const retryKind of ["json", "bodyless"]) {
         "X-Upstream-Attempt": "retry",
       });
       response.end(JSON.stringify({ secret: "must not enter the client response" }));
-    });
+    }, { lifecycle });
     const routerPort = await openPort();
-    const router = run(routerEnv(gw.port, routerPort));
+    const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
     try {
       await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -793,13 +1363,12 @@ for (const retryKind of ["json", "bodyless"]) {
       assert.equal(result.headers["x-upstream-attempt"], undefined);
       assert.equal(posts, 2);
     } finally {
-      await stopChild(router);
-      await closeServer(gw.server);
+      await lifecycle.cleanupEarly();
     }
   });
 }
 
-test("an incompatible JSON retry still contributes its reported usage", async () => {
+test("an incompatible JSON retry still contributes its reported usage", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
@@ -821,9 +1390,9 @@ test("an incompatible JSON retry still contributes its reported usage", async ()
         },
       }),
     );
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -838,12 +1407,11 @@ test("an incompatible JSON retry still contributes its reported usage", async ()
     assert.equal(event.cachedInputTokens, 140);
     assert.equal(event.emptyCompletionRetried, true);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
-test("a transport-failed retry keeps first-attempt usage, cache, and markers", async () => {
+test("a transport-failed retry keeps first-attempt usage, cache, and markers", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
@@ -853,9 +1421,9 @@ test("a transport-failed retry keeps first-attempt usage, cache, and markers", a
       return;
     }
     response.socket.destroy();
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -877,8 +1445,7 @@ test("a transport-failed retry keeps first-attempt usage, cache, and markers", a
       /timing .*status=502 .*cached_tokens=60/,
     );
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
@@ -888,15 +1455,15 @@ for (const [name, body, expected] of [
   ["completed refusal output", REFUSAL_OUTPUT_SSE, /I cannot help with that/],
   ["chat-completions refusal", CHAT_REFUSAL_SSE, /I cannot help with that/],
 ]) {
-  test(`valid ${name} is content and is never retried`, async () => {
+  test(`valid ${name} is content and is never retried`, async (lifecycle) => {
     let posts = 0;
     const gw = await gateway((_request, response) => {
       posts += 1;
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       response.end(body);
-    });
+    }, { lifecycle });
     const routerPort = await openPort();
-    const router = run(routerEnv(gw.port, routerPort));
+    const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
     try {
       await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -910,13 +1477,12 @@ for (const [name, body, expected] of [
       assert.equal(event.emptyCompletion, undefined);
       assert.equal(event.emptyCompletionRetried, undefined);
     } finally {
-      await stopChild(router);
-      await closeServer(gw.server);
+      await lifecycle.cleanupEarly();
     }
   });
 }
 
-test("a headerless first attempt preserves guard, usage, and namespace transforms", async () => {
+test("a headerless first attempt preserves guard, usage, and namespace transforms", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
@@ -935,9 +1501,9 @@ test("a headerless first attempt preserves guard, usage, and namespace transform
       setImmediate(writeNext);
     };
     writeNext();
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -964,12 +1530,11 @@ test("a headerless first attempt preserves guard, usage, and namespace transform
     assert.equal(event.cachedInputTokens, 7);
     assert.equal(event.emptyCompletionRetried, undefined);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
-test("a client cancel during the retry meters and logs status zero", async () => {
+test("a client cancel during the retry meters and logs status zero", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
@@ -989,9 +1554,9 @@ test("a client cancel during the retry meters and logs status zero", async () =>
         "",
       ].join("\n"),
     );
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -1028,12 +1593,11 @@ test("a client cancel during the retry meters and logs status zero", async () =>
     const health = await fetch(`http://127.0.0.1:${routerPort}/health`).then((r) => r.json());
     assert.equal(health.activity.state, "idle");
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
-test("a client cancel while an incompatible retry body stalls is not a protocol error", async () => {
+test("a client cancel while an incompatible retry body stalls is not a protocol error", async (lifecycle) => {
   let posts = 0;
   let retryBodyStartedResolve;
   const retryBodyStarted = new Promise((resolve) => {
@@ -1049,9 +1613,9 @@ test("a client cancel while an incompatible retry body stalls is not a protocol 
     response.writeHead(200, { "Content-Type": "application/json" });
     response.write('{"id":"stalled-retry","usage":');
     retryBodyStartedResolve();
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -1088,12 +1652,11 @@ test("a client cancel while an incompatible retry body stalls is not a protocol 
     const health = await fetch(`http://127.0.0.1:${routerPort}/health`).then((r) => r.json());
     assert.equal(health.activity.state, "idle");
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
-test("a headerless SSE retry is relayed through the normal pipeline", async () => {
+test("a headerless SSE retry is relayed through the normal pipeline", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
@@ -1105,9 +1668,9 @@ test("a headerless SSE retry is relayed through the normal pipeline", async () =
     response.writeHead(200, { "X-Upstream-Attempt": "retry" });
     response.write(CONTENT_SSE.slice(0, 3));
     setImmediate(() => response.end(CONTENT_SSE.slice(3)));
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -1118,12 +1681,11 @@ test("a headerless SSE retry is relayed through the normal pipeline", async () =
     assert.equal(result.headers["x-upstream-attempt"], "retry");
     assert.equal(posts, 2);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
-test("a headerless non-SSE retry is still a deterministic protocol error", async () => {
+test("a headerless non-SSE retry is still a deterministic protocol error", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
@@ -1134,9 +1696,9 @@ test("a headerless non-SSE retry is still a deterministic protocol error", async
     }
     response.writeHead(200);
     response.end(JSON.stringify({ secret: "headerless json must not be relayed" }));
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -1146,26 +1708,25 @@ test("a headerless non-SSE retry is still a deterministic protocol error", async
     assert.doesNotMatch(result.body, /headerless json must not be relayed/);
     assert.equal(posts, 2);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
 // The retry re-sends the whole prompt. An operator who would rather pay once
 // can turn the guard off, and the router must then behave exactly as it did
 // before it existed: one attempt, terminal events relayed, no markers.
-test("the guard can be turned off and the turn relays exactly as before", async () => {
+test("the guard can be turned off and the turn relays exactly as before", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
     response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
     response.end(EMPTY_SSE);
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
   const router = run({
     ...routerEnv(gw.port, routerPort),
     CODEX_ROUTER_EMPTY_COMPLETION_RETRY: "0",
-  });
+  }, { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -1183,22 +1744,21 @@ test("the guard can be turned off and the turn relays exactly as before", async 
     assert.equal(event.emptyCompletion, undefined);
     assert.equal(event.emptyCompletionRetried, undefined);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });
 
 // A normal turn must be untouched: one upstream attempt, no retry, no markers.
-test("a content turn is not retried and carries no empty-completion markers", async () => {
+test("a content turn is not retried and carries no empty-completion markers", async (lifecycle) => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
     response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
     response.write(CONTENT_SSE);
     response.end();
-  });
+  }, { lifecycle });
   const routerPort = await openPort();
-  const router = run(routerEnv(gw.port, routerPort));
+  const router = run(routerEnv(gw.port, routerPort), { lifecycle });
 
   try {
     await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
@@ -1215,7 +1775,6 @@ test("a content turn is not retried and carries no empty-completion markers", as
     assert.equal(event.emptyCompletion, undefined);
     assert.equal(event.emptyCompletionRetried, undefined);
   } finally {
-    await stopChild(router);
-    await closeServer(gw.server);
+    await lifecycle.cleanupEarly();
   }
 });

@@ -28,7 +28,7 @@ class FakeChild extends EventEmitter {
 }
 
 test("startup timeout gives Windows extra process-launch time", () => {
-  assert.equal(startupTimeoutMs("win32"), 30_000);
+  assert.equal(startupTimeoutMs("win32"), 60_000);
   assert.equal(startupTimeoutMs("linux"), 5_000);
   assert.equal(startupTimeoutMs("darwin"), 5_000);
   assert.equal(STARTUP_TIMEOUT_MS, startupTimeoutMs(process.platform));

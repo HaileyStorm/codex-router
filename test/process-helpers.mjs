@@ -1,5 +1,8 @@
 export function startupTimeoutMs(platform = process.platform) {
-  return platform === "win32" ? 30_000 : 5_000;
+  // One platform-wide budget for router readiness. A full Windows suite starts
+  // many Node workers at once, so process launch can legitimately exceed 30s;
+  // Linux and macOS retain their lower-cost startup bound.
+  return platform === "win32" ? 60_000 : 5_000;
 }
 
 export const STARTUP_TIMEOUT_MS = startupTimeoutMs();

@@ -19,6 +19,7 @@ import { openPort } from "./port-pool.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const INTERNAL_KEY = "test-internal-service-key-with-sufficient-length";
 const CALLER_KEY = "test-router-caller-capability-with-sufficient-length";
+const STARTUP_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 5_000;
 
 // An attempt that never proves it was generating. The guard holds all of it, so
 // the router can swap it for a retry the client never sees.
@@ -336,7 +337,7 @@ async function waitForLog(child, pattern) {
 }
 
 async function waitFor(url, child) {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`Child exited early (${child.exitCode}): ${child.testErrors()}`);

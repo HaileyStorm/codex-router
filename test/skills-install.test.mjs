@@ -68,7 +68,10 @@ test("install copies every pack skill with its SKILL.md and the marker", () => {
       assert.equal(parsed.name, name);
       assert.match(parsed.token, /^[a-f0-9]{64}$/);
       assert.equal(typeof parsed.source.packageVersion, "string");
-      assert.equal(typeof parsed.source.commit, "string");
+      assert.ok(
+        parsed.source.commit === null || typeof parsed.source.commit === "string",
+        "source commit is nullable when the install is not inside a Git checkout",
+      );
     }
     const state = ownership(home);
     assert.equal(state.version, 1);

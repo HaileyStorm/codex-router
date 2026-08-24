@@ -1,14 +1,21 @@
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fstatSync,
+  lstatSync,
   mkdirSync,
+  openSync,
+  readSync,
   readFileSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { constants as fsConstants } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import {
@@ -16,7 +23,7 @@ import {
   readCliSessionCredential,
 } from "./cli-session-credential.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
-import { protectPrivateFile } from "./file-security.mjs";
+import { privateFileIsProtected, protectPrivateFile } from "./file-security.mjs";
 import { LEGACY_STATE_DIRS, STATE_DIR, TARGET } from "./paths.mjs";
 import { targetCli } from "./target-integration.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
@@ -27,13 +34,21 @@ import {
 
 export function apiProvider(providerId) {
   const provider = PROVIDERS.get(providerId);
-  if (!provider || provider.kind !== "openai-compatible" || provider.authMode === "anonymous") {
+  if (
+    !provider ||
+    provider.kind !== "openai-compatible" ||
+    provider.authMode === "anonymous" ||
+    provider.credential?.externalFile
+  ) {
     throw new Error(`Unknown API-key provider: ${providerId}`);
   }
   return provider;
 }
 
 export function primaryCredentialPath(provider) {
+  if (provider.credential?.externalFile) {
+    throw new Error(`Provider ${provider.id} reads an external owner credential and stores no copy.`);
+  }
   if (!provider.credential) {
     throw new Error(`Provider ${provider.id} stores no credential.`);
   }
@@ -43,7 +58,7 @@ export function primaryCredentialPath(provider) {
 export function credentialPaths(provider) {
   // A keyless provider stores nothing, so there is no file to look for and
   // nothing for a support bundle to redact.
-  if (!provider.credential) return [];
+  if (!provider.credential || provider.credential.externalFile) return [];
   const names = [provider.credential.file, ...(provider.credential.legacyFiles || [])];
   const candidates = names.flatMap((name) => [
     path.join(STATE_DIR, name),
@@ -136,6 +151,45 @@ function resolvedCredential(provider, value, source, persistent) {
   return { value, source, persistent };
 }
 
+function externalCredentialPath(provider) {
+  const descriptor = provider.credential?.externalFile;
+  return descriptor ? path.join(os.homedir(), ...descriptor.homeRelative) : undefined;
+}
+
+function readExternalCredential(provider) {
+  const target = externalCredentialPath(provider);
+  if (!target) return undefined;
+  let descriptor;
+  try {
+    if (lstatSync(target).isSymbolicLink()) return undefined;
+    descriptor = openSync(
+      target,
+      fsConstants.O_RDONLY | (fsConstants.O_CLOEXEC || 0) | (fsConstants.O_NOFOLLOW || 0),
+    );
+    const evidence = fstatSync(descriptor);
+    if (
+      !evidence.isFile() ||
+      (typeof process.getuid === "function" && evidence.uid !== process.getuid()) ||
+      (process.platform !== "win32" && (evidence.mode & 0o077) !== 0) ||
+      (process.platform === "win32" && !privateFileIsProtected(target)) ||
+      evidence.size < 16 ||
+      evidence.size > 4096
+    ) {
+      return undefined;
+    }
+    const buffer = Buffer.alloc(evidence.size + 1);
+    const length = readSync(descriptor, buffer, 0, buffer.length, 0);
+    if (length !== evidence.size) return undefined;
+    const value = buffer.subarray(0, length).toString("utf8").trim();
+    if (!value || /\s/.test(value)) return undefined;
+    return { value, source: "Threadspan owner token file", persistent: true };
+  } catch {
+    return undefined;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 export function resolveProviderCredential(providerOrId, options = {}) {
   const provider =
     typeof providerOrId === "string" ? PROVIDERS.get(providerOrId) : providerOrId;
@@ -160,6 +214,7 @@ export function resolveProviderCredential(providerOrId, options = {}) {
   // the anonymous and keyless returns, because those two read nothing -- and
   // before everything that does.
   if (discoveryDisabled()) return undefined;
+  if (provider.credential?.externalFile) return readExternalCredential(provider);
   if (!options.persistent) {
     for (const name of provider.credential.environment) {
       const value = process.env[name]?.trim();
@@ -202,6 +257,9 @@ export function resolveProviderCredential(providerOrId, options = {}) {
 export function credentialSetupHint(provider) {
   if (provider.authMode === "anonymous") return "No key needed; free models are rate limited by the provider.";
   if (provider.keyless) return "No key needed; it runs on this machine.";
+  if (provider.credential?.externalFile) {
+    return "Start Threadspan with its owner-only token file; Codex Router reads it in place and stores no copy.";
+  }
   const keyCommand = targetCli(`provider-key ${provider.id} set`);
   const session = cliSessionDescriptor(provider);
   return session

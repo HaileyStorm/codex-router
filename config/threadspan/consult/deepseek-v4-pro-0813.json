@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "consult/nous/deepseek/deepseek-v4-pro-0813",
+      "gatewayModel": "threadspan-consult-nous-deepseek-v4-pro-0813",
+      "upstreamModel": "consult/nous/deepseek/deepseek-v4-pro-0813",
+      "provider": "consult",
+      "listed": true,
+      "displayName": "Nous Consult · DeepSeek V4 Pro 0813",
+      "description": "Routes externally to a text consultation with DeepSeek V4 Pro 0813 through Nous Portal when selected in the native picker.",
+      "priority": 5,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        { "effort": "max", "description": "Maximum reasoning depth" }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 112000,
+      "inputModalities": ["text"],
+      "compHash": "threadspan-consult-nous-deepseek-v4-pro-0813-v1"
+    }
+  ]
+}

@@ -41,6 +41,12 @@ import { discoveryDisabled } from "./discovery-mode.mjs";
 import { readNativeAliases } from "./native-alias.mjs";
 import { readNativeRedirect } from "./native-redirect.mjs";
 import {
+  claimNativeRouteLease,
+  injectThreadspanMetadata,
+  isThreadspanRoute,
+  validateThreadspanMetadata,
+} from "./native-route-lease.mjs";
+import {
   canonicalProviderId,
   readProviderSelection,
   selectedConfiguredListedModels,
@@ -1793,6 +1799,18 @@ async function handleResponses(request, response, requestUrl) {
     let registeredRoute =
       MODEL_BY_SLUG.get(requestedModel) ??
       MODEL_BY_SLUG.get(readNativeAliases()[requestedModel]);
+    // These namespaces are external-routing authority, never native model
+    // names. A stale picker entry or version-skewed Threadspan slug must fail
+    // locally instead of falling through to native OpenAI or native redirect.
+    if (!registeredRoute && /^(?:consult|delegate|integrated)\//.test(requestedModel)) {
+      writeJson(response, 409, {
+        error: {
+          type: "unknown_external_model_route",
+          message: "The selected external model route is not registered in this router build.",
+        },
+      });
+      return;
+    }
     // An unregistered model on this endpoint is native GPT traffic -- Codex's
     // background agent sessions arrive here hardwired to a native slug no
     // matter which model the user picked. With the redirect opted in, send
@@ -1817,6 +1835,39 @@ async function handleResponses(request, response, requestUrl) {
         },
       });
       return;
+    }
+    // Selecting a Threadspan row in the native picker is transfer authority.
+    // Bind or advance its private lease before any normalization, gateway
+    // request, or provider credential read. Exact route/workspace/task/root
+    // identity keeps background and subagent traffic outside that authority.
+    if (isThreadspanRoute(route)) {
+      try {
+        validateThreadspanMetadata(payload);
+      } catch (error) {
+        writeJson(response, error?.status || 400, {
+          error: {
+            type: "threadspan_metadata_invalid",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+        return;
+      }
+      const claim = claimNativeRouteLease(route.slug, requestedModel, request.headers, payload);
+      if (!claim.ok) {
+        writeJson(response, claim.status, { error: claim.error });
+        return;
+      }
+      try {
+        injectThreadspanMetadata(payload, route, claim.lease);
+      } catch (error) {
+        writeJson(response, error?.status || 400, {
+          error: {
+            type: "threadspan_metadata_invalid",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+        return;
+      }
     }
     // Anything without a route from here on is native GPT traffic. An install
     // that merely hid every provider keeps its native passthrough -- that has

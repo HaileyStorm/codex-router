@@ -26,6 +26,7 @@ test("automatic selection-only setup exposes only configured providers", () => {
         encoding: "utf8",
         env: {
           ...process.env,
+          HOME: path.join(testRoot, "home"),
           CODEX_HOME: codexHome,
           CODEX_ROUTER_STATE_DIR: stateDir,
           KIMI_CODE_HOME: path.join(testRoot, "kimi-code"),
@@ -75,6 +76,7 @@ test("--no-provider --no-discovery writes an empty selection and the discovery m
         encoding: "utf8",
         env: {
           ...process.env,
+          HOME: path.join(testRoot, "home"),
           CODEX_HOME: codexHome,
           CODEX_ROUTER_STATE_DIR: stateDir,
           KIMI_CODE_HOME: path.join(testRoot, "kimi-code"),
@@ -123,6 +125,7 @@ test("re-running setup without the idle flags clears the discovery marker", () =
         encoding: "utf8",
         env: {
           ...process.env,
+          HOME: path.join(testRoot, "home"),
           CODEX_HOME: codexHome,
           CODEX_ROUTER_STATE_DIR: stateDir,
           KIMI_CODE_HOME: path.join(testRoot, "kimi-code"),
@@ -159,6 +162,7 @@ test("ensure-configured does not auto-select anonymous providers", () => {
         encoding: "utf8",
         env: {
           ...process.env,
+          HOME: path.join(testRoot, "home"),
           CODEX_HOME: path.join(testRoot, "codex"),
           CODEX_ROUTER_STATE_DIR: stateDir,
           KIMI_CODE_HOME: path.join(testRoot, "kimi-code"),
@@ -203,6 +207,7 @@ test("ensure-configured accepts an explicitly empty selection as idle", () => {
         encoding: "utf8",
         env: {
           ...process.env,
+          HOME: path.join(testRoot, "home"),
           CODEX_HOME: path.join(testRoot, "codex"),
           CODEX_ROUTER_STATE_DIR: stateDir,
           KIMI_CODE_HOME: path.join(testRoot, "kimi-code"),
@@ -233,6 +238,7 @@ test("configured setup mode also excludes anonymous providers by default", () =>
         encoding: "utf8",
         env: {
           ...process.env,
+          HOME: path.join(testRoot, "home"),
           CODEX_HOME: path.join(testRoot, "codex"),
           CODEX_ROUTER_STATE_DIR: stateDir,
           KIMI_CODE_HOME: path.join(testRoot, "kimi-code"),

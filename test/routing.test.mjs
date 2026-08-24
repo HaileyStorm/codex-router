@@ -724,6 +724,124 @@ test("router preserves native auth and isolates every external route", async () 
   }
 });
 
+test("Threadspan picker selection creates an exact lease with no fallback", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "threadspan-native-route-"));
+  const workspace = path.join(stateDir, "workspace");
+  const testHome = path.join(stateDir, "home");
+  const tokenDirectory = path.join(testHome, ".threadspan", "secrets");
+  mkdirSync(workspace);
+  mkdirSync(tokenDirectory, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    path.join(tokenDirectory, "main.token"),
+    "test-threadspan-owner-token-123456\n",
+    { mode: 0o600 },
+  );
+  const threadId = "01a035a2-f151-77c1-8c62-28e2b719599b";
+  const rootTurnId = "11a035a2-f151-77c1-8c62-28e2b719599b";
+  const turnId = "21a035a2-f151-77c1-8c62-28e2b719599b";
+  const gatewayRequests = [];
+  const nativeRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    if (request.method === "GET") return json(response, 200, { ok: true });
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, { id: "resp_external", object: "response", output: [] });
+  });
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push(await bodyJson(request));
+    json(response, 200, { id: "resp_native", object: "response", output: [] });
+  });
+  const routerPort = await openPort();
+  const routerEnv = {
+    CODEX_ROUTER_PORT: String(routerPort),
+    HOME: testHome,
+    CODEX_HOME: path.join(testHome, ".codex"),
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}`,
+    CODEX_ROUTER_QUIET: "1",
+  };
+  const router = run("router.mjs", routerEnv);
+  const route = "consult/grok-build/grok-4.6";
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Codex-Turn-Metadata": JSON.stringify({
+      turn: { thread_id: threadId, root_turn_id: rootTurnId, turn_id: turnId },
+      workspaces: { [workspace]: { git: null } },
+    }),
+  };
+  const body = {
+    model: route,
+    input: "external test",
+    metadata: { keep: "yes" },
+    client_metadata: { thread_id: threadId, root_turn_id: rootTurnId, turn_id: turnId },
+  };
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const stale = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ ...body, model: "consult/grok-build/stale-picker-model" }),
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json()).error.type, "unknown_external_model_route");
+    assert.equal(gatewayRequests.length, 0);
+    assert.equal(nativeRequests.length, 0);
+    const malformed = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ ...body, metadata: "not-an-object" }),
+    });
+    assert.equal(malformed.status, 400);
+    assert.equal(gatewayRequests.length, 0, "malformed metadata escaped the picker lease gate");
+
+    const external = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    assert.equal(external.status, 200, router.testErrors());
+    assert.equal(gatewayRequests.length, 1);
+    assert.equal(gatewayRequests[0].model, "threadspan-consult-grok-build-grok-4-6");
+    assert.equal(gatewayRequests[0].client_metadata, undefined);
+    assert.equal(gatewayRequests[0].metadata.keep, "yes");
+    assert.equal(gatewayRequests[0].metadata.cwd, workspace);
+    assert.equal(gatewayRequests[0].metadata.bridge_workspace, workspace);
+    assert.equal(gatewayRequests[0].metadata.bridge_thread_id, threadId);
+    assert.equal(gatewayRequests[0].metadata.bridge_reasoning_effort, "high");
+    assert.equal(gatewayRequests[0].metadata.bridge_allow_subagents, false);
+    assert.equal(gatewayRequests[0].metadata.bridge_allow_web_search, false);
+    assert.equal(gatewayRequests[0].metadata.bridge_automatic_takeover, false);
+    assert.equal(gatewayRequests[0].metadata.bridge_account_fallback, false);
+
+    const replay = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    assert.equal(replay.status, 409);
+    assert.equal(gatewayRequests.length, 1);
+    assert.equal(nativeRequests.length, 0, "an exhausted external lease fell back to native OpenAI");
+
+    const nativeResponse = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "native remains native" }),
+    });
+    assert.equal(nativeResponse.status, 200);
+    assert.equal(nativeRequests.length, 1);
+    assert.equal(nativeRequests[0].model, "gpt-5.6-sol");
+  } finally {
+    await stopChild(router);
+    await Promise.all([closeServer(gateway.server), closeServer(native.server)]);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("router permits a compressed context larger than the encoded request limit", async () => {
   let receivedInputLength = 0;
   const native = await mockServer(async (request, response) => {

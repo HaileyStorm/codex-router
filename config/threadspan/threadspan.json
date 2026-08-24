@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "threadspan",
+      "displayName": "Threadspan External Models",
+      "kind": "openai-compatible",
+      "ownedBy": "threadspan",
+      "protocol": "openai-responses",
+      "baseUrl": "http://127.0.0.1:8743/v1",
+      "credential": {
+        "environment": [],
+        "externalFile": {
+          "kind": "threadspan-owner-token",
+          "homeRelative": [".threadspan", "secrets", "main.token"]
+        },
+        "label": "Threadspan owner token"
+      }
+    },
+    {
+      "id": "consult",
+      "displayName": "Threadspan Consult",
+      "kind": "openai-compatible",
+      "ownedBy": "threadspan",
+      "variantOf": "threadspan",
+      "protocol": "openai-responses",
+      "baseUrl": "http://127.0.0.1:8743/v1",
+      "credential": {
+        "environment": [],
+        "externalFile": {
+          "kind": "threadspan-owner-token",
+          "homeRelative": [".threadspan", "secrets", "main.token"]
+        },
+        "label": "Threadspan owner token"
+      }
+    },
+    {
+      "id": "delegate",
+      "displayName": "Threadspan Delegate",
+      "kind": "openai-compatible",
+      "ownedBy": "threadspan",
+      "variantOf": "threadspan",
+      "protocol": "openai-responses",
+      "baseUrl": "http://127.0.0.1:8743/v1",
+      "credential": {
+        "environment": [],
+        "externalFile": {
+          "kind": "threadspan-owner-token",
+          "homeRelative": [".threadspan", "secrets", "main.token"]
+        },
+        "label": "Threadspan owner token"
+      }
+    },
+    {
+      "id": "integrated",
+      "displayName": "Threadspan Integrated Tools",
+      "kind": "openai-compatible",
+      "ownedBy": "threadspan",
+      "variantOf": "threadspan",
+      "protocol": "openai-responses",
+      "baseUrl": "http://127.0.0.1:8743/v1",
+      "credential": {
+        "environment": [],
+        "externalFile": {
+          "kind": "threadspan-owner-token",
+          "homeRelative": [".threadspan", "secrets", "main.token"]
+        },
+        "label": "Threadspan owner token"
+      }
+    }
+  ]
+}

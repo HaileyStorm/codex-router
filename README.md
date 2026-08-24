@@ -122,6 +122,10 @@ Linux installations support the Codex CLI.
 | Kimi K3 (China API) | `kimi-api-cn/kimi-k3` | Separately billed Moonshot **China** platform key |
 | DeepSeek V4 Flash (API) | `deepseek/deepseek-v4-flash` | DeepSeek API key |
 | DeepSeek V4 Pro (API) | `deepseek/deepseek-v4-pro` | DeepSeek API key |
+| Grok Build Agent · Grok 4.6 Fast | `delegate/grok-build/grok-4.6` | Existing local Threadspan owner session |
+| Grok Build Consult · Grok 4.6 Fast | `consult/grok-build/grok-4.6` | Existing local Threadspan owner session |
+| Nous Tools · DeepSeek V4 Flash/Pro | `integrated/nous/deepseek/deepseek-v4-{flash-0731,pro-0813}` | Existing local Threadspan owner session |
+| Nous Consult · DeepSeek V4 Flash/Pro | `consult/nous/deepseek/deepseek-v4-{flash-0731,pro-0813}` | Existing local Threadspan owner session |
 | Grok 4.5 (OAuth) | `grok-oauth/grok-4.5` | Official Grok CLI OAuth session |
 | Grok 4.5 (API) | `grok-api/grok-4.5` | Separately billed xAI API key |
 | Claude Opus 4.8 (API) | `anthropic-api/claude-opus-4.8` | Separately billed Anthropic API key |
@@ -175,6 +179,34 @@ subscription reused through the official CLI's session.)
 The Codex catalog is credential-aware. It includes models only from enabled
 external providers with a stored credential or valid OAuth session. Native GPT
 models are included only when `codex login status` confirms an OpenAI login.
+
+### Threadspan routes in the native picker
+
+The checked-in `threadspan` provider is a loopback-only integration for a
+separately running Threadspan service at `127.0.0.1:8743`. The router reads the
+owner-only `~/.threadspan/secrets/main.token` in place (regular file, current
+owner, mode 0600, bounded single-token content); it never copies or prints it.
+Selecting a clearly named Threadspan row in Codex's native model picker and
+pressing Send is the transfer authority; there is no separate authorization step.
+
+The first valid root request atomically creates a lease keyed to the exact
+route, resolved cwd, native task, and stable root-turn ID. Status and
+generation-safe recovery remain available:
+
+```sh
+node src/control.mjs native-lease status
+node src/control.mjs native-lease clear "$LEASE_ID" "$GENERATION"
+```
+
+Consult and Delegate consume one provider request. Integrated permits at most
+17 requests in the same root turn so Codex tool results can round-trip, with an
+aggregate maximum of 16 unique post-baseline tool-call outputs. Every
+request must match the selected model, resolved cwd, task ID, and stable
+root-turn ID; subagents, expired/locked leases, and mismatches fail
+locally without native-OpenAI fallback. The picker advertises a conservative
+128K context/112K compaction safety bound because Threadspan's live catalog did
+not report a context window; those numbers are client limits, not a claim about
+the backend model's maximum.
 
 Qwen is key-only. Alibaba discontinued the Qwen Code OAuth free tier on
 2026-04-15, so the Model Studio plan key is the sole Qwen surface; `qwen-plan`

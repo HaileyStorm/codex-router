@@ -126,6 +126,12 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "qwen-plan/qwen3.7-plus",
       "qwen-plan/qwen3.8-max-preview",
       "qwen-plan/qwen3.8-max",
+      "consult/nous/deepseek/deepseek-v4-flash-0731",
+      "consult/nous/deepseek/deepseek-v4-pro-0813",
+      "consult/grok-build/grok-4.6",
+      "delegate/grok-build/grok-4.6",
+      "integrated/nous/deepseek/deepseek-v4-flash-0731",
+      "integrated/nous/deepseek/deepseek-v4-pro-0813",
       "xiaomi-mimo/mimo-v2.5-pro",
       "xiaomi-mimo/mimo-v2.5",
       "zai-api/glm-4.7",
@@ -184,6 +190,19 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(PROVIDERS.get("commandcode").baseUrl, "https://api.commandcode.ai/provider/v1");
   assert.equal(PROVIDERS.get("commandcode-messages").baseUrl, "https://api.commandcode.ai/provider/v1");
   assert.equal(PROVIDERS.get("commandcode-messages").protocol, "anthropic");
+  assert.equal(PROVIDERS.get("threadspan").baseUrl, "http://127.0.0.1:8743/v1");
+  assert.equal(PROVIDERS.get("threadspan").protocol, "openai-responses");
+  assert.deepEqual(PROVIDERS.get("threadspan").credential.externalFile, {
+    kind: "threadspan-owner-token",
+    homeRelative: [".threadspan", "secrets", "main.token"],
+  });
+  for (const id of ["consult", "delegate", "integrated"]) {
+    assert.equal(PROVIDERS.get(id).variantOf, "threadspan");
+    assert.deepEqual(
+      PROVIDERS.get(id).credential.externalFile,
+      PROVIDERS.get("threadspan").credential.externalFile,
+    );
+  }
   // Xiaomi's direct API is OpenAI-compatible chat, not the Responses gateway.
   assert.equal(PROVIDERS.get("xiaomi-mimo").baseUrl, "https://api.xiaomimimo.com/v1");
   assert.equal(PROVIDERS.get("xiaomi-mimo").baseUrlEnv, "XIAOMI_MIMO_API_BASE_URL");

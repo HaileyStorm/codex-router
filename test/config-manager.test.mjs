@@ -180,6 +180,42 @@ approval_policy = "never"
   }
 });
 
+test("config manager preserves existing provider-task and Threadspan compatibility tables", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-provider-coexistence-"));
+  const configPath = path.join(codexHome, "config.toml");
+  const original = `model = "gpt-5.6-sol"
+model_provider = "openai"
+
+[model_providers.provider_task_proxy]
+name = "External task compatibility"
+base_url = "http://127.0.0.1:8743/v1"
+env_key = "THREADSPAN_TOKEN"
+wire_api = "responses"
+requires_openai_auth = false
+
+[model_providers.threadspan_bridge]
+name = "Threadspan bridge"
+base_url = "http://127.0.0.1:8743/v1"
+env_key = "THREADSPAN_TOKEN"
+wire_api = "responses"
+requires_openai_auth = false
+`;
+  writeFileSync(configPath, original, { mode: 0o600 });
+  try {
+    run("enable", codexHome);
+    const configured = readFileSync(configPath, "utf8");
+    for (const table of ["provider_task_proxy", "threadspan_bridge"]) {
+      assert.equal((configured.match(new RegExp(`\\[model_providers\\.${table}\\]`, "g")) || []).length, 1);
+    }
+    assert.match(configured, /\[model_providers\.provider_task_proxy\][\s\S]*?requires_openai_auth = false/);
+    assert.match(configured, /\[model_providers\.threadspan_bridge\][\s\S]*?requires_openai_auth = false/);
+    run("disable", codexHome);
+    assert.equal(readFileSync(configPath, "utf8"), original);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("config manager preserves a user-owned agent concurrency limit", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-agent-limit-"));
   const configPath = path.join(codexHome, "config.toml");

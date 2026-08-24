@@ -262,6 +262,12 @@ function run(command, commandArgs, options = {}) {
 
 function configureProvider(provider) {
   if (providerConfigured(provider)) return;
+  if (provider.credential?.externalFile) {
+    throw incomplete(
+      `${provider.displayName} is selected but Threadspan owner authentication is unavailable; ` +
+      "start Threadspan and restore its owner-only token file, then run setup again.",
+    );
+  }
   const session = cliSessionDescriptor(provider);
   if (!guided) {
     const setup =

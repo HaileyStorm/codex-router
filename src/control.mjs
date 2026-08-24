@@ -1899,6 +1899,37 @@ async function handleNativeRedirect(action, value) {
   process.stdout.write(`${JSON.stringify(setNativeRedirect(value))}\n`);
 }
 
+async function handleNativeLease(action, values) {
+  const {
+    clearNativeRouteLease,
+    nativeRouteLeaseStatus,
+  } = await import("./native-route-lease.mjs");
+  if (!action || action === "status") {
+    if (values.length) throw new Error("Usage: control native-lease status");
+    return { ok: true, ...nativeRouteLeaseStatus() };
+  }
+  if (action === "clear") {
+    if (values.length !== 2) throw new Error("Usage: control native-lease clear <lease-id> <generation>");
+    return { ok: true, ...clearNativeRouteLease(values[0], values[1]) };
+  }
+  throw new Error("Usage: control native-lease status|clear <lease-id> <generation>");
+}
+
+async function emitNativeLease(action, values) {
+  try {
+    process.stdout.write(`${JSON.stringify(await handleNativeLease(action, values))}\n`);
+  } catch (error) {
+    process.stdout.write(`${JSON.stringify({
+      ok: false,
+      error: {
+        type: "native_lease_error",
+        message: error instanceof Error ? error.message : String(error),
+      },
+    })}\n`);
+    process.exitCode = 1;
+  }
+}
+
 // One action for "give me a working harness": install the CLI if it is absent,
 // then publish the routed models into its own documents. Kept behind an
 // explicit subcommand rather than folded into `apply`, because it installs a
@@ -2009,6 +2040,8 @@ if (args.includes("--probe")) {
   handleService(args[1]);
 } else if (args[0] === "native-redirect") {
   await handleNativeRedirect(args[1], args[2]);
+} else if (args[0] === "native-lease") {
+  await emitNativeLease(args[1], args.slice(2));
 } else if (args[0] === "tray") {
   handleTray(args[1]);
 } else if (args[0] === "harness") {

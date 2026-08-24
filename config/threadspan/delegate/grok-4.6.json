@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "delegate/grok-build/grok-4.6",
+      "gatewayModel": "threadspan-delegate-grok-build-grok-4-6",
+      "upstreamModel": "delegate/grok-build/grok-4.6",
+      "provider": "delegate",
+      "listed": true,
+      "displayName": "Grok Build Agent · Grok 4.6 Fast",
+      "description": "Routes externally to Grok 4.6 Fast through Grok Build with provider-owned workspace tools when selected in the native picker.",
+      "priority": 0,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        { "effort": "high", "description": "Deep reasoning" }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 112000,
+      "inputModalities": ["text"],
+      "compHash": "threadspan-delegate-grok-build-grok-4-6-v1"
+    }
+  ]
+}

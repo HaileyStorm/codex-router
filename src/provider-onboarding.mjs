@@ -129,6 +129,18 @@ export function providerOnboardingSnapshot() {
       const configured = provider.keyless || provider.authMode === "anonymous"
         ? true
         : credentialStatus(provider, { persistent: true }).configured;
+      if (provider.credential?.externalFile) {
+        return {
+          id: provider.id,
+          displayName: provider.displayName,
+          kind: "api",
+          credentialLabel: credentialLabel(provider),
+          configured,
+          action: configured ? "ready" : "blocked",
+          setup:
+            "Start Threadspan and restore its owner-only token file; the router reads it in place and stores no copy.",
+        };
+      }
       const entry = {
         id: provider.id,
         displayName: provider.displayName,

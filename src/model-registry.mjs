@@ -159,6 +159,29 @@ function cliSessionProblem(provider) {
   return undefined;
 }
 
+function externalCredentialProblem(provider) {
+  const external = provider.credential?.externalFile;
+  if (external === undefined) return undefined;
+  if (!external || typeof external !== "object" || Array.isArray(external)) {
+    return `provider ${provider.id} has an invalid credential.externalFile`;
+  }
+  if (
+    external.kind !== "threadspan-owner-token" ||
+    !Array.isArray(external.homeRelative) ||
+    external.homeRelative.length !== 3 ||
+    external.homeRelative.some(
+      (part) => typeof part !== "string" || !part || part === ".." || part.includes("/") || part.includes("\\"),
+    ) ||
+    external.homeRelative.join("/") !== ".threadspan/secrets/main.token"
+  ) {
+    return `provider ${provider.id} external credential must be the fixed Threadspan owner-token path`;
+  }
+  if (provider.credential.file !== undefined || provider.credential.environment?.length) {
+    return `provider ${provider.id} external credential may not declare router-managed or environment sources`;
+  }
+  return undefined;
+}
+
 function loadRegistry() {
   const parsed = readRegistryDocument();
   if (!Array.isArray(parsed.providers) || !Array.isArray(parsed.models)) {
@@ -249,7 +272,9 @@ function loadRegistry() {
       if (
         !provider.keyless &&
         provider.authMode !== "anonymous" &&
-        (!provider.credential?.file || !Array.isArray(provider.credential.environment))
+        (!provider.credential ||
+          !Array.isArray(provider.credential.environment) ||
+          (!provider.credential.file && !provider.credential.externalFile))
       ) {
         fail(`provider ${provider.id} requires credential metadata`);
       }
@@ -261,6 +286,8 @@ function loadRegistry() {
       }
       const sessionProblem = cliSessionProblem(provider);
       if (sessionProblem) fail(sessionProblem);
+      const externalProblem = externalCredentialProblem(provider);
+      if (externalProblem) fail(externalProblem);
       // Some providers authenticate a credential their plan may still not
       // entitle to the API. The note says so everywhere a user connects, so
       // the first sign of it is not a 403 inside Codex.
@@ -303,6 +330,12 @@ function loadRegistry() {
     }
     if (provider.credential?.file !== parent.credential?.file) {
       fail(`variant provider ${provider.id} must share ${parent.id}'s credential file`);
+    }
+    if (
+      JSON.stringify(provider.credential?.externalFile ?? null) !==
+      JSON.stringify(parent.credential?.externalFile ?? null)
+    ) {
+      fail(`variant provider ${provider.id} must share ${parent.id}'s external credential`);
     }
     if (provider.authProfile !== parent.authProfile) {
       fail(`variant provider ${provider.id} must share ${parent.id}'s auth profile`);

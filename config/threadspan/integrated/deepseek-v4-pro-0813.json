@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "integrated/nous/deepseek/deepseek-v4-pro-0813",
+      "gatewayModel": "threadspan-integrated-nous-deepseek-v4-pro-0813",
+      "upstreamModel": "integrated/nous/deepseek/deepseek-v4-pro-0813",
+      "provider": "integrated",
+      "listed": true,
+      "displayName": "Nous Tools · DeepSeek V4 Pro 0813",
+      "description": "Routes externally to DeepSeek V4 Pro 0813 through Nous Portal with a bounded Codex-owned tool loop when selected in the native picker.",
+      "priority": 4,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        { "effort": "max", "description": "Maximum reasoning depth" }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 112000,
+      "inputModalities": ["text"],
+      "compHash": "threadspan-integrated-nous-deepseek-v4-pro-0813-v1"
+    }
+  ]
+}

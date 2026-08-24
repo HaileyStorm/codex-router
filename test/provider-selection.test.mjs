@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-selection-"));
+process.env.HOME = path.join(testRoot, "home");
 process.env.CODEX_HOME = path.join(testRoot, "codex");
 process.env.CODEX_ROUTER_STATE_DIR = path.join(testRoot, "state");
 process.env.KIMI_CODE_HOME = path.join(testRoot, "kimi-code");

@@ -24,6 +24,7 @@ import {
   routedCatalogConfigured,
   routedModel,
 } from "../src/catalog.mjs";
+import { MODEL_BY_SLUG } from "../src/model-registry.mjs";
 
 const template = {
   slug: "gpt-5.5",
@@ -150,6 +151,27 @@ test("routed models rewrite GPT identity text to the external model name", () =>
   assert.doesNotMatch(model.model_messages.instructions_template, /GPT-5/);
   assert.equal(model.model_messages.instructions_variables.personality_default, "");
   assert.equal(model.multi_agent_version, "v2");
+});
+
+test("Threadspan routes render as visible conservative native-picker entries", () => {
+  const slugs = [
+    "delegate/grok-build/grok-4.6",
+    "consult/grok-build/grok-4.6",
+    "integrated/nous/deepseek/deepseek-v4-flash-0731",
+    "consult/nous/deepseek/deepseek-v4-flash-0731",
+    "integrated/nous/deepseek/deepseek-v4-pro-0813",
+    "consult/nous/deepseek/deepseek-v4-pro-0813",
+  ];
+  for (const slug of slugs) {
+    const registry = MODEL_BY_SLUG.get(slug);
+    const picker = routedModel(template, registry);
+    assert.equal(picker.slug, slug);
+    assert.equal(picker.visibility, "list");
+    assert.equal(picker.context_window, 131072);
+    assert.equal(picker.auto_compact_token_limit, 112000);
+    assert.equal(picker.supports_search_tool, false);
+    assert.deepEqual(picker.input_modalities, ["text"]);
+  }
 });
 
 test("routed models are native v2 spawn-agent model overrides", () => {

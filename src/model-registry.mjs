@@ -542,10 +542,25 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     return `duplicate gateway model ${model.gatewayModel}`;
   }
   if (model.listed) {
-    for (const field of ["displayName", "description", "defaultEffort", "compHash"]) {
+    for (const field of ["displayName", "description", "defaultEffort"]) {
       if (typeof model[field] !== "string" || !model[field]) {
         return `listed model ${model.slug} is missing ${field}`;
       }
+    }
+    // compHash is a compatibility certificate for compacted history, not a
+    // model identity. Threadspan routes have no certified cross-provider
+    // compacted-history class, so omission deliberately leaves compatibility
+    // unknown and lets Codex rely on its independent context/downshift checks.
+    // Every other checked-in provider keeps the stronger established rule.
+    const compHashMayBeUnknown = provider.variantOf === "threadspan";
+    if (model.compHash === undefined && !compHashMayBeUnknown) {
+      return `listed model ${model.slug} is missing compHash`;
+    }
+    if (
+      model.compHash !== undefined &&
+      (typeof model.compHash !== "string" || !model.compHash)
+    ) {
+      return `listed model ${model.slug} has an invalid compHash`;
     }
     if (!Array.isArray(model.reasoningLevels) || model.reasoningLevels.length === 0) {
       return `listed model ${model.slug} requires reasoningLevels`;

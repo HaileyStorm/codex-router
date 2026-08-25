@@ -169,6 +169,11 @@ test("Threadspan routes render as visible conservative native-picker entries", (
     assert.equal(picker.visibility, "list");
     assert.equal(picker.context_window, 131072);
     assert.equal(picker.auto_compact_token_limit, 112000);
+    assert.equal(
+      picker.comp_hash,
+      undefined,
+      `${slug} leaves compacted-history compatibility uncertified`,
+    );
     assert.equal(picker.supports_search_tool, false);
     assert.deepEqual(picker.input_modalities, ["text"]);
   }

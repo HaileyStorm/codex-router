@@ -16,8 +16,7 @@
       ],
       "contextWindow": 131072,
       "autoCompact": 112000,
-      "inputModalities": ["text"],
-      "compHash": "threadspan-delegate-grok-build-grok-4-6-v1"
+      "inputModalities": ["text"]
     }
   ]
 }

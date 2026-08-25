@@ -16,8 +16,7 @@
       ],
       "contextWindow": 131072,
       "autoCompact": 112000,
-      "inputModalities": ["text"],
-      "compHash": "threadspan-consult-nous-deepseek-v4-flash-0731-v1"
+      "inputModalities": ["text"]
     }
   ]
 }

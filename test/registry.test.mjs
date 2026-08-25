@@ -203,6 +203,15 @@ test("provider registry exposes configured API and OAuth model families", () => 
       PROVIDERS.get("threadspan").credential.externalFile,
     );
   }
+  for (const model of LISTED_MODELS.filter(({ provider }) =>
+    ["consult", "delegate", "integrated"].includes(provider),
+  )) {
+    assert.equal(
+      model.compHash,
+      undefined,
+      `${model.slug} must not claim uncertified compacted-history compatibility`,
+    );
+  }
   // Xiaomi's direct API is OpenAI-compatible chat, not the Responses gateway.
   assert.equal(PROVIDERS.get("xiaomi-mimo").baseUrl, "https://api.xiaomimimo.com/v1");
   assert.equal(PROVIDERS.get("xiaomi-mimo").baseUrlEnv, "XIAOMI_MIMO_API_BASE_URL");
@@ -682,6 +691,41 @@ test("visionBridge may only be set to false", async () => {
     );
     assert.equal(result.status, 1);
     assert.match(result.stderr, /may only set visionBridge to false/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("only Threadspan listed models may omit compHash", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const nodePath = (await import("node:path")).default;
+  const { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(nodePath.join(tmpdir(), "registry-comp-hash-test-"));
+  const load = (mutate) => {
+    const registry = readRegistryDocument("config");
+    mutate(registry);
+    const registryPath = nodePath.join(dir, "providers.json");
+    writeFileSync(registryPath, JSON.stringify(registry));
+    return spawnSync(
+      process.execPath,
+      ["-e", "import('./src/model-registry.mjs').catch((e)=>{console.error(e.message);process.exit(1);})"],
+      { encoding: "utf8", env: { ...process.env, MODEL_ROUTER_REGISTRY: registryPath } },
+    );
+  };
+  try {
+    const missing = load((registry) => {
+      delete registry.models[0].compHash;
+    });
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /missing compHash/);
+
+    const invalidThreadspan = load((registry) => {
+      const model = registry.models.find(({ provider }) => provider === "delegate");
+      model.compHash = "";
+    });
+    assert.equal(invalidThreadspan.status, 1);
+    assert.match(invalidThreadspan.stderr, /invalid compHash/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

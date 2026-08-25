@@ -212,7 +212,12 @@ model, resolved cwd, task ID, and stable root-turn ID; subagents, expired/locked
 leases, and mismatches also fail locally. The picker advertises a conservative
 128K context/112K compaction safety bound because Threadspan's live catalog did
 not report a context window; those numbers are client limits, not a claim about
-the backend model's maximum.
+the backend model's maximum. Threadspan rows deliberately omit Codex's optional
+`comp_hash`: no cross-provider compacted-history compatibility class has been
+certified. Codex therefore compacts on real destination context pressure, not
+merely because the picker moved between GPT and Threadspan. A sufficiently long
+GPT thread can still compact once when moving into the smaller Threadspan
+window; moving back to a larger GPT window does not need a hash-only compact.
 
 Qwen is key-only. Alibaba discontinued the Qwen Code OAuth free tier on
 2026-04-15, so the Model Studio plan key is the sole Qwen surface; `qwen-plan`

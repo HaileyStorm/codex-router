@@ -16,8 +16,7 @@
       ],
       "contextWindow": 131072,
       "autoCompact": 112000,
-      "inputModalities": ["text"],
-      "compHash": "threadspan-integrated-nous-deepseek-v4-pro-0813-v1"
+      "inputModalities": ["text"]
     }
   ]
 }

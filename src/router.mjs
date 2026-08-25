@@ -1836,6 +1836,14 @@ async function handleResponses(request, response, requestUrl) {
       });
       return;
     }
+    // Compaction is its own retained dispatch lane. Classify it before the
+    // Threadspan picker claim so an automatic v1/v2 compact cannot consume the
+    // operator-selected response allowance or Integrated tool-result budget.
+    const compactV1 = /\/responses\/compact$/.test(requestUrl.pathname);
+    const compactV2 =
+      Array.isArray(payload.input) &&
+      payload.input.at(-1)?.type === "compaction_trigger";
+    const threadspanLane = compactV1 || compactV2 ? "compact" : "response";
     // Selecting a Threadspan row in the native picker is transfer authority.
     // Bind or advance its private lease before any normalization, gateway
     // request, or provider credential read. Exact route/workspace/task/root
@@ -1852,7 +1860,13 @@ async function handleResponses(request, response, requestUrl) {
         });
         return;
       }
-      const claim = claimNativeRouteLease(route.slug, requestedModel, request.headers, payload);
+      const claim = claimNativeRouteLease(
+        route.slug,
+        requestedModel,
+        request.headers,
+        payload,
+        threadspanLane,
+      );
       if (!claim.ok) {
         writeJson(response, claim.status, { error: claim.error });
         return;
@@ -1883,12 +1897,6 @@ async function handleResponses(request, response, requestUrl) {
       model: route?.slug || requestedModel || undefined,
       ...activityMetadataFromHeaders(request.headers),
     });
-    const compactV1 = /\/responses\/compact$/.test(requestUrl.pathname);
-    const compactV2 =
-      route &&
-      Array.isArray(payload.input) &&
-      payload.input.at(-1)?.type === "compaction_trigger";
-
     const controller = new AbortController();
     request.once("aborted", () => {
       clientGone = true;
@@ -2189,7 +2197,11 @@ async function handleResponses(request, response, requestUrl) {
         );
       }
       const guard =
-        route && EMPTY_COMPLETION_RETRY
+        // Threadspan leases meter exact provider dispatches (one for
+        // Consult/Delegate, 17 responses for Integrated). The generic rescue
+        // performs a second upstream dispatch behind one inbound claim, so it
+        // is deliberately unavailable on those picker-authorized routes.
+        route && EMPTY_COMPLETION_RETRY && !isThreadspanRoute(route)
           ? new EmptyCompletionGuard(contentType)
           : undefined;
       if (guard) transforms.push(guard);

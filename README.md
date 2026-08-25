@@ -198,12 +198,18 @@ node src/control.mjs native-lease status
 node src/control.mjs native-lease clear "$LEASE_ID" "$GENERATION"
 ```
 
-Consult and Delegate consume one provider request. Integrated permits at most
-17 requests in the same root turn so Codex tool results can round-trip, with an
-aggregate maximum of 16 unique post-baseline tool-call outputs. Every
-request must match the selected model, resolved cwd, task ID, and stable
-root-turn ID; subagents, expired/locked leases, and mismatches fail
-locally without native-OpenAI fallback. The picker advertises a conservative
+Each root has separate durable `compact` and `response` dispatch lanes. An
+automatic v1 or v2 compact consumes the one-dispatch compact lane only; it does
+not consume the selected response or its tool budget. Consult and Delegate
+consume one response dispatch. Integrated permits at most 17 response
+dispatches in the same root turn so Codex tool results can round-trip, with an
+aggregate maximum of 16 unique post-baseline tool-call outputs. A duplicate in
+either lane is retained and refused locally without provider or native-OpenAI
+fallback. Version-3 ledgers are migrated to explicit legacy provenance that
+blocks both lanes until generation-safe recovery, because the older record
+cannot prove which lane was dispatched. Every request must match the selected
+model, resolved cwd, task ID, and stable root-turn ID; subagents, expired/locked
+leases, and mismatches also fail locally. The picker advertises a conservative
 128K context/112K compaction safety bound because Threadspan's live catalog did
 not report a context window; those numbers are client limits, not a claim about
 the backend model's maximum.

@@ -23,9 +23,12 @@ import {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const THREADSPAN_MODES = new Set(["consult", "delegate", "integrated"]);
+const LEASE_LANES = new Set(["compact", "response"]);
+const LEDGER_VERSION = 4;
 const LEASE_INACTIVITY_MS = 30 * 60 * 1000;
 const MAX_LEASES = 32;
 const MAX_TOMBSTONES = 4_096;
+const MAX_LEGACY_TOMBSTONES = MAX_TOMBSTONES + MAX_LEASES;
 const MAX_BASELINE_TOOL_OUTPUTS = 4_096;
 const MAX_INTEGRATED_TOOL_OUTPUTS = 16;
 const RESERVED_METADATA = Object.freeze({
@@ -47,8 +50,8 @@ function leaseMode(routeSlug) {
   return THREADSPAN_MODES.has(mode) ? mode : undefined;
 }
 
-function maxRequests(mode) {
-  return mode === "integrated" ? 17 : 1;
+function maxRequests(mode, lane) {
+  return lane === "response" && mode === "integrated" ? 17 : 1;
 }
 
 function uuid(value) {
@@ -82,14 +85,15 @@ function normalizeLease(value, now) {
   const leaseId = uuid(value.leaseId);
   const generation = uuid(value.generation);
   const mode = leaseMode(value.routeSlug);
+  const lane = LEASE_LANES.has(value.lane) ? value.lane : undefined;
   const cwd = workspace(value.cwd, { mustExist: false });
   const threadId = uuid(value.threadId);
   const boundTurnId = uuid(value.boundTurnId);
   const baselineToolOutputIds = uniqueIds(value.baselineToolOutputIds, MAX_BASELINE_TOOL_OUTPUTS);
   const seenToolOutputIds = uniqueIds(value.seenToolOutputIds, MAX_INTEGRATED_TOOL_OUTPUTS);
-  const maximum = maxRequests(mode);
+  const maximum = maxRequests(mode, lane);
   if (
-    !leaseId || !generation || !mode || !cwd || value.cwd !== cwd || !threadId || !boundTurnId ||
+    !leaseId || !generation || !mode || !lane || !cwd || value.cwd !== cwd || !threadId || !boundTurnId ||
     !baselineToolOutputIds || !seenToolOutputIds ||
     !Number.isInteger(value.remainingRequests) || value.remainingRequests < 0 ||
     value.remainingRequests > maximum || value.maxRequests !== maximum ||
@@ -97,11 +101,12 @@ function normalizeLease(value, now) {
     !Number.isInteger(value.lastClaimAt) || !Number.isInteger(value.expiresAt) ||
     value.createdAt > value.boundAt || value.boundAt > value.lastClaimAt ||
     value.lastClaimAt > now + 1_000 || value.expiresAt !== value.lastClaimAt + LEASE_INACTIVITY_MS ||
-    (mode !== "integrated" && (baselineToolOutputIds.length || seenToolOutputIds.length))
+    ((mode !== "integrated" || lane !== "response") &&
+      (baselineToolOutputIds.length || seenToolOutputIds.length))
   ) return undefined;
   return {
     lease: {
-      leaseId, generation, routeSlug: value.routeSlug, mode, cwd, threadId, boundTurnId,
+      leaseId, generation, routeSlug: value.routeSlug, mode, lane, cwd, threadId, boundTurnId,
       baselineToolOutputIds, seenToolOutputIds,
       remainingRequests: value.remainingRequests, maxRequests: maximum,
       createdAt: value.createdAt, boundAt: value.boundAt,
@@ -117,16 +122,17 @@ function normalizeTombstone(value) {
   const leaseId = uuid(value.leaseId);
   const generation = uuid(value.generation);
   const mode = leaseMode(value.routeSlug);
+  const lane = LEASE_LANES.has(value.lane) ? value.lane : undefined;
   const cwd = workspace(value.cwd, { mustExist: false });
   const threadId = uuid(value.threadId);
   const boundTurnId = uuid(value.boundTurnId);
   if (
-    !leaseId || !generation || !mode || !cwd || value.cwd !== cwd || !threadId || !boundTurnId ||
+    !leaseId || !generation || !mode || !lane || !cwd || value.cwd !== cwd || !threadId || !boundTurnId ||
     !["expired", "exhausted"].includes(value.reason) ||
-    !Number.isInteger(value.createdAt) || !Number.isInteger(value.at)
+    !Number.isInteger(value.createdAt) || !Number.isInteger(value.at) || value.createdAt > value.at
   ) return undefined;
   return {
-    leaseId, generation, routeSlug: value.routeSlug, mode, cwd, threadId, boundTurnId,
+    leaseId, generation, routeSlug: value.routeSlug, mode, lane, cwd, threadId, boundTurnId,
     createdAt: value.createdAt, at: value.at, reason: value.reason,
   };
 }
@@ -137,6 +143,7 @@ function tombstoneFor(lease, reason, at) {
     generation: lease.generation,
     routeSlug: lease.routeSlug,
     mode: lease.mode,
+    lane: lease.lane,
     cwd: lease.cwd,
     threadId: lease.threadId,
     boundTurnId: lease.boundTurnId,
@@ -146,20 +153,132 @@ function tombstoneFor(lease, reason, at) {
   };
 }
 
+function normalizeV3Lease(value, now) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const leaseId = uuid(value.leaseId);
+  const generation = uuid(value.generation);
+  const mode = leaseMode(value.routeSlug);
+  const cwd = workspace(value.cwd, { mustExist: false });
+  const threadId = uuid(value.threadId);
+  const boundTurnId = uuid(value.boundTurnId);
+  const baselineToolOutputIds = uniqueIds(value.baselineToolOutputIds, MAX_BASELINE_TOOL_OUTPUTS);
+  const seenToolOutputIds = uniqueIds(value.seenToolOutputIds, MAX_INTEGRATED_TOOL_OUTPUTS);
+  const maximum = maxRequests(mode, "response");
+  if (
+    !leaseId || !generation || !mode || !cwd || value.cwd !== cwd || !threadId || !boundTurnId ||
+    !baselineToolOutputIds || !seenToolOutputIds ||
+    !Number.isInteger(value.remainingRequests) || value.remainingRequests < 0 ||
+    value.remainingRequests > maximum || value.maxRequests !== maximum ||
+    !Number.isInteger(value.createdAt) || !Number.isInteger(value.boundAt) ||
+    !Number.isInteger(value.lastClaimAt) || !Number.isInteger(value.expiresAt) ||
+    value.createdAt > value.boundAt || value.boundAt > value.lastClaimAt ||
+    value.lastClaimAt > now + 1_000 || value.expiresAt !== value.lastClaimAt + LEASE_INACTIVITY_MS ||
+    (mode !== "integrated" && (baselineToolOutputIds.length || seenToolOutputIds.length))
+  ) return undefined;
+  return {
+    leaseId, generation, routeSlug: value.routeSlug, mode, cwd, threadId, boundTurnId,
+    createdAt: value.createdAt, at: Math.max(now, value.createdAt),
+    reason: now >= value.expiresAt ? "expired" : "retained",
+    source: "lease", legacyVersion: 3,
+  };
+}
+
+function normalizeV3Tombstone(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const leaseId = uuid(value.leaseId);
+  const generation = uuid(value.generation);
+  const mode = leaseMode(value.routeSlug);
+  const cwd = workspace(value.cwd, { mustExist: false });
+  const threadId = uuid(value.threadId);
+  const boundTurnId = uuid(value.boundTurnId);
+  if (
+    !leaseId || !generation || !mode || !cwd || value.cwd !== cwd || !threadId || !boundTurnId ||
+    !["expired", "exhausted"].includes(value.reason) ||
+    !Number.isInteger(value.createdAt) || !Number.isInteger(value.at) || value.createdAt > value.at
+  ) return undefined;
+  return {
+    leaseId, generation, routeSlug: value.routeSlug, mode, cwd, threadId, boundTurnId,
+    createdAt: value.createdAt, at: value.at, reason: value.reason,
+    source: "tombstone", legacyVersion: 3,
+  };
+}
+
+function normalizeLegacyTombstone(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const leaseId = uuid(value.leaseId);
+  const generation = uuid(value.generation);
+  const mode = leaseMode(value.routeSlug);
+  const cwd = workspace(value.cwd, { mustExist: false });
+  const threadId = uuid(value.threadId);
+  const boundTurnId = uuid(value.boundTurnId);
+  if (
+    !leaseId || !generation || !mode || !cwd || value.cwd !== cwd || !threadId || !boundTurnId ||
+    value.legacyVersion !== 3 || !["lease", "tombstone"].includes(value.source) ||
+    !["retained", "expired", "exhausted"].includes(value.reason) ||
+    (value.source === "tombstone" && value.reason === "retained") ||
+    !Number.isInteger(value.createdAt) || !Number.isInteger(value.at) || value.createdAt > value.at
+  ) return undefined;
+  return {
+    leaseId, generation, routeSlug: value.routeSlug, mode, cwd, threadId, boundTurnId,
+    createdAt: value.createdAt, at: value.at, reason: value.reason,
+    source: value.source, legacyVersion: 3,
+  };
+}
+
 function readLedgerUnlocked(now = Date.now()) {
-  if (!existsSync(NATIVE_ROUTE_LEASE_PATH)) return { version: 3, leases: [], tombstones: [] };
+  if (!existsSync(NATIVE_ROUTE_LEASE_PATH)) {
+    return { version: LEDGER_VERSION, leases: [], tombstones: [], legacyTombstones: [] };
+  }
   let raw;
   try { raw = JSON.parse(readFileSync(NATIVE_ROUTE_LEASE_PATH, "utf8")); }
   catch { throw stateError("native_lease_state_invalid", "Native route lease state is unreadable."); }
+  if (raw?.version === 3) {
+    if (
+      !Array.isArray(raw.leases) || raw.leases.length > MAX_LEASES ||
+      !Array.isArray(raw.tombstones) || raw.tombstones.length > MAX_TOMBSTONES
+    ) {
+      throw stateError("native_lease_state_invalid", "Native route lease v3 ledger is invalid.");
+    }
+    const ids = new Set();
+    const legacyTombstones = [];
+    for (const value of raw.tombstones) {
+      const entry = normalizeV3Tombstone(value);
+      if (!entry || ids.has(entry.leaseId)) {
+        throw stateError("native_lease_state_invalid", "Native route lease v3 ledger contains an invalid tombstone.");
+      }
+      ids.add(entry.leaseId);
+      legacyTombstones.push(entry);
+    }
+    for (const value of raw.leases) {
+      const entry = normalizeV3Lease(value, now);
+      if (!entry || ids.has(entry.leaseId)) {
+        throw stateError("native_lease_state_invalid", "Native route lease v3 ledger contains an invalid lease.");
+      }
+      ids.add(entry.leaseId);
+      legacyTombstones.push(entry);
+    }
+    writeLedgerUnlocked([], [], legacyTombstones);
+    return { version: LEDGER_VERSION, leases: [], tombstones: [], legacyTombstones };
+  }
   if (
-    raw?.version !== 3 || !Array.isArray(raw.leases) || raw.leases.length > MAX_LEASES ||
-    !Array.isArray(raw.tombstones) || raw.tombstones.length > MAX_TOMBSTONES
+    raw?.version !== LEDGER_VERSION || !Array.isArray(raw.leases) || raw.leases.length > MAX_LEASES ||
+    !Array.isArray(raw.tombstones) || raw.tombstones.length > MAX_TOMBSTONES ||
+    !Array.isArray(raw.legacyTombstones) || raw.legacyTombstones.length > MAX_LEGACY_TOMBSTONES
   ) {
     throw stateError("native_lease_state_invalid", "Native route lease ledger is invalid.");
   }
   const leases = [];
   const ids = new Set();
   const tombstones = [];
+  const legacyTombstones = [];
+  for (const rawLegacy of raw.legacyTombstones) {
+    const legacy = normalizeLegacyTombstone(rawLegacy);
+    if (!legacy || ids.has(legacy.leaseId)) {
+      throw stateError("native_lease_state_invalid", "Native route lease ledger contains invalid legacy provenance.");
+    }
+    ids.add(legacy.leaseId);
+    legacyTombstones.push(legacy);
+  }
   for (const rawTombstone of raw.tombstones) {
     const tombstone = normalizeTombstone(rawTombstone);
     if (!tombstone || ids.has(tombstone.leaseId)) {
@@ -183,18 +302,18 @@ function readLedgerUnlocked(now = Date.now()) {
       converted = true;
     } else leases.push(normalized.lease);
   }
-  if (converted) writeLedgerUnlocked(leases, tombstones);
-  return { version: 3, leases, tombstones };
+  if (converted) writeLedgerUnlocked(leases, tombstones, legacyTombstones);
+  return { version: LEDGER_VERSION, leases, tombstones, legacyTombstones };
 }
 
-function writeLedgerUnlocked(leases, tombstones) {
-  if (!leases.length && !tombstones.length) {
+function writeLedgerUnlocked(leases, tombstones, legacyTombstones = []) {
+  if (!leases.length && !tombstones.length && !legacyTombstones.length) {
     if (existsSync(NATIVE_ROUTE_LEASE_PATH)) unlinkSync(NATIVE_ROUTE_LEASE_PATH);
     return;
   }
   writePrivateJson(
     NATIVE_ROUTE_LEASE_PATH,
-    { version: 3, leases, tombstones },
+    { version: LEDGER_VERSION, leases, tombstones, legacyTombstones },
     { directoryMode: 0o700 },
   );
 }
@@ -224,6 +343,7 @@ function safeLease(lease) {
     generation: lease.generation,
     routeSlug: lease.routeSlug,
     mode: lease.mode,
+    lane: lease.lane,
     cwd: lease.cwd,
     threadId: lease.threadId,
     boundTurnId: lease.boundTurnId,
@@ -246,26 +366,40 @@ function ledgerSnapshot(ledger) {
   const latestTombstone = [...ledger.tombstones].sort(
     (a, b) => b.at - a.at || b.leaseId.localeCompare(a.leaseId),
   )[0];
+  const latestLegacy = [...ledger.legacyTombstones].sort(
+    (a, b) => b.at - a.at || b.leaseId.localeCompare(a.leaseId),
+  )[0];
+  const retained = !latestTombstone || (latestLegacy && latestLegacy.at > latestTombstone.at)
+    ? latestLegacy
+    : latestTombstone;
   return latest
     ? {
         configured: true,
         activeCount: ledger.leases.length,
-        tombstoneCount: ledger.tombstones.length,
+        tombstoneCount: ledger.tombstones.length + ledger.legacyTombstones.length,
+        ...(ledger.legacyTombstones.length
+          ? { legacyTombstoneCount: ledger.legacyTombstones.length }
+          : {}),
         ...safeLease(latest),
       }
     : {
         configured: false,
         activeCount: 0,
-        tombstoneCount: ledger.tombstones.length,
-        ...(latestTombstone
+        tombstoneCount: ledger.tombstones.length + ledger.legacyTombstones.length,
+        ...(ledger.legacyTombstones.length
+          ? { legacyTombstoneCount: ledger.legacyTombstones.length }
+          : {}),
+        ...(retained
           ? {
-              leaseId: latestTombstone.leaseId,
-              generation: latestTombstone.generation,
-              routeSlug: latestTombstone.routeSlug,
-              threadId: latestTombstone.threadId,
-              boundTurnId: latestTombstone.boundTurnId,
+              leaseId: retained.leaseId,
+              generation: retained.generation,
+              routeSlug: retained.routeSlug,
+              ...(retained.lane ? { lane: retained.lane } : {}),
+              threadId: retained.threadId,
+              boundTurnId: retained.boundTurnId,
               tombstone: true,
-              tombstoneReason: latestTombstone.reason,
+              tombstoneReason: retained.reason,
+              ...(retained.legacyVersion ? { legacyVersion: retained.legacyVersion } : {}),
             }
           : {}),
       };
@@ -287,6 +421,9 @@ export function clearNativeRouteLease(leaseId, generation) {
     const matchedTombstone = ledger.tombstones.some(
       (entry) => entry.leaseId === target && entry.generation === targetGeneration,
     );
+    const matchedLegacy = ledger.legacyTombstones.some(
+      (entry) => entry.leaseId === target && entry.generation === targetGeneration,
+    );
     const kept = matchedLease
       ? ledger.leases.filter(
           (lease) => !(lease.leaseId === target && lease.generation === targetGeneration),
@@ -297,12 +434,22 @@ export function clearNativeRouteLease(leaseId, generation) {
           (entry) => !(entry.leaseId === target && entry.generation === targetGeneration),
         )
       : ledger.tombstones;
-    writeLedgerUnlocked(kept, keptTombstones);
+    const keptLegacyTombstones = matchedLegacy
+      ? ledger.legacyTombstones.filter(
+          (entry) => !(entry.leaseId === target && entry.generation === targetGeneration),
+        )
+      : ledger.legacyTombstones;
+    writeLedgerUnlocked(kept, keptTombstones, keptLegacyTombstones);
     return {
-      cleared: matchedLease || matchedTombstone,
+      cleared: matchedLease || matchedTombstone || matchedLegacy,
       clearedLeaseId: target,
       generation: targetGeneration,
-      snapshot: ledgerSnapshot({ version: 3, leases: kept, tombstones: keptTombstones }),
+      snapshot: ledgerSnapshot({
+        version: LEDGER_VERSION,
+        leases: kept,
+        tombstones: keptTombstones,
+        legacyTombstones: keptLegacyTombstones,
+      }),
     };
   });
 }
@@ -391,7 +538,7 @@ function rejection(type, message) {
   return { ok: false, status: 409, error: { type, message } };
 }
 
-export function claimNativeRouteLease(routeSlug, requestedModel, headers, payload) {
+export function claimNativeRouteLease(routeSlug, requestedModel, headers, payload, lane = "response") {
   if (routeSlug !== requestedModel) {
     return rejection("native_route_lease_model_mismatch", "Threadspan routes must be selected explicitly in the native model picker.");
   }
@@ -399,6 +546,9 @@ export function claimNativeRouteLease(routeSlug, requestedModel, headers, payloa
   const mode = leaseMode(route?.slug);
   if (!route || !mode || route.provider !== mode) {
     return rejection("unknown_threadspan_picker_route", "The selected model is not a registered Threadspan picker route.");
+  }
+  if (!LEASE_LANES.has(lane)) {
+    return rejection("native_route_lease_lane_invalid", "The Threadspan request lane is invalid.");
   }
   const identity = nativeRouteRequestIdentity(headers, payload);
   if (!identity.rootTurn) return rejection("native_route_lease_root_turn_required", "Threadspan picker routes accept only root task turns.");
@@ -416,45 +566,58 @@ export function claimNativeRouteLease(routeSlug, requestedModel, headers, payloa
       }
       const now = Date.now();
       const ledger = readLedgerUnlocked(now);
-      const replay = ledger.tombstones.some(
+      const legacyReplay = ledger.legacyTombstones.some(
         (entry) => entry.routeSlug === routeSlug && entry.cwd === identity.cwd &&
           entry.threadId === identity.threadId && entry.boundTurnId === identity.rootTurnId,
+      );
+      if (legacyReplay) {
+        return rejection(
+          "native_route_legacy_replay_blocked",
+          "A retained v3 Threadspan task-turn claim predates request lanes and blocks redispatch until exact recovery.",
+        );
+      }
+      const replay = ledger.tombstones.some(
+        (entry) => entry.routeSlug === routeSlug && entry.cwd === identity.cwd &&
+          entry.threadId === identity.threadId && entry.boundTurnId === identity.rootTurnId &&
+          entry.lane === lane,
       );
       if (replay) {
         return rejection(
           "native_route_replay_blocked",
-          "This exact Threadspan task turn is retained as completed/expired and cannot be redispatched.",
+          "This exact Threadspan task turn and request lane were already dispatched and remain retained; redispatch was refused.",
         );
       }
       const matching = ledger.leases.filter(
         (lease) => lease.routeSlug === routeSlug && lease.cwd === identity.cwd &&
-          lease.threadId === identity.threadId && lease.boundTurnId === identity.rootTurnId,
+          lease.threadId === identity.threadId && lease.boundTurnId === identity.rootTurnId &&
+          lease.lane === lane,
       );
       if (matching.length > 1) return rejection("native_route_lease_ambiguous", "More than one lease matches this exact task turn.");
       let lease = matching[0];
       const outputs = toolOutputIds(payload);
       if (!lease) {
         if (ledger.leases.length >= MAX_LEASES) return rejection("native_route_ledger_full", "Too many Threadspan task leases are active.");
-        if (mode === "integrated" && outputs.length > MAX_BASELINE_TOOL_OUTPUTS) {
+        if (lane === "response" && mode === "integrated" && outputs.length > MAX_BASELINE_TOOL_OUTPUTS) {
           return rejection("native_route_tool_history_too_large", "The task tool history is too large to bind safely.");
         }
         lease = {
-          leaseId: randomUUID(), generation: randomUUID(), routeSlug, mode,
+          leaseId: randomUUID(), generation: randomUUID(), routeSlug, mode, lane,
           cwd: identity.cwd, threadId: identity.threadId, boundTurnId: identity.rootTurnId,
-          baselineToolOutputIds: mode === "integrated" ? outputs : [], seenToolOutputIds: [],
-          remainingRequests: maxRequests(mode), maxRequests: maxRequests(mode),
+          baselineToolOutputIds: lane === "response" && mode === "integrated" ? outputs : [],
+          seenToolOutputIds: [],
+          remainingRequests: maxRequests(mode, lane), maxRequests: maxRequests(mode, lane),
           createdAt: now, boundAt: now, lastClaimAt: now,
           expiresAt: now + LEASE_INACTIVITY_MS, authority: "native-picker-selection",
         };
       } else if (lease.remainingRequests === 0) {
-        return rejection("native_route_request_limit", "This Threadspan root turn already consumed its bounded provider request allowance.");
+        return rejection("native_route_request_limit", "This Threadspan request lane already dispatched its bounded provider allowance.");
       }
       if (lease.remainingRequests === 1 && ledger.tombstones.length >= MAX_TOMBSTONES) {
         return rejection("native_route_tombstone_full", "Native route replay tombstone capacity is full.");
       }
 
       let seenToolOutputIds = lease.seenToolOutputIds;
-      if (mode === "integrated" && matching.length) {
+      if (lane === "response" && mode === "integrated" && matching.length) {
         const baseline = new Set(lease.baselineToolOutputIds);
         const seen = new Set(seenToolOutputIds);
         const additions = outputs.filter((id) => !baseline.has(id) && !seen.has(id));
@@ -485,13 +648,13 @@ export function claimNativeRouteLease(routeSlug, requestedModel, headers, payloa
       const tombstones = exhausted
         ? [...ledger.tombstones, tombstoneFor(updated, "exhausted", now)]
         : ledger.tombstones;
-      writeLedgerUnlocked(leases, tombstones);
+      writeLedgerUnlocked(leases, tombstones, ledger.legacyTombstones);
       return {
         ok: true,
         lease: {
           configured: !exhausted,
           activeCount: leases.length,
-          tombstoneCount: tombstones.length,
+          tombstoneCount: tombstones.length + ledger.legacyTombstones.length,
           ...safeLease(updated),
           ...(exhausted ? { tombstone: true, tombstoneReason: "exhausted" } : {}),
         },

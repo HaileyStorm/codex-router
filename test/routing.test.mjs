@@ -738,13 +738,38 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
   );
   const threadId = "01a035a2-f151-77c1-8c62-28e2b719599b";
   const rootTurnId = "11a035a2-f151-77c1-8c62-28e2b719599b";
+  const secondRootTurnId = "12a035a2-f151-77c1-8c62-28e2b719599b";
+  const thirdRootTurnId = "13a035a2-f151-77c1-8c62-28e2b719599b";
   const turnId = "21a035a2-f151-77c1-8c62-28e2b719599b";
   const gatewayRequests = [];
   const nativeRequests = [];
   const gateway = await mockServer(async (request, response) => {
     if (request.method === "GET") return json(response, 200, { ok: true });
-    gatewayRequests.push(await bodyJson(request));
-    json(response, 200, { id: "resp_external", object: "response", output: [] });
+    const requestBody = await bodyJson(request);
+    gatewayRequests.push(requestBody);
+    if (requestBody.input === "empty completion") {
+      response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
+      response.end([
+        "event: response.created",
+        'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-empty"}}',
+        "",
+        "event: response.completed",
+        'data: {"type":"response.completed","sequence_number":1,"response":{"id":"r-empty","output":[]}}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"));
+      return;
+    }
+    json(response, 200, {
+      id: "resp_external",
+      object: "response",
+      output: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "compact summary" }],
+      }],
+    });
   });
   const native = await mockServer(async (request, response) => {
     nativeRequests.push(await bodyJson(request));
@@ -766,13 +791,14 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
   };
   const router = run("router.mjs", routerEnv);
   const route = "consult/grok-build/grok-4.6";
-  const headers = {
+  const headersFor = (root = rootTurnId) => ({
     "Content-Type": "application/json",
     "X-Codex-Turn-Metadata": JSON.stringify({
-      turn: { thread_id: threadId, root_turn_id: rootTurnId, turn_id: turnId },
+      turn: { thread_id: threadId, root_turn_id: root, turn_id: turnId },
       workspaces: { [workspace]: { git: null } },
     }),
-  };
+  });
+  const headers = headersFor();
   const body = {
     model: route,
     input: "external test",
@@ -799,24 +825,43 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
     assert.equal(malformed.status, 400);
     assert.equal(gatewayRequests.length, 0, "malformed metadata escaped the picker lease gate");
 
+    const compactInput = [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "compact me" }] },
+    ];
+    const v1Compact = await fetch(`${routerBase(routerPort)}/responses/compact`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ ...body, input: compactInput }),
+    });
+    assert.equal(v1Compact.status, 200, router.testErrors());
+    assert.equal(gatewayRequests.length, 1);
+    const duplicateV1Compact = await fetch(`${routerBase(routerPort)}/responses/compact`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ ...body, input: compactInput }),
+    });
+    assert.equal(duplicateV1Compact.status, 409);
+    assert.equal((await duplicateV1Compact.json()).error.type, "native_route_replay_blocked");
+    assert.equal(gatewayRequests.length, 1, "duplicate compact reached the provider");
+
     const external = await fetch(`${routerBase(routerPort)}/responses`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
     });
     assert.equal(external.status, 200, router.testErrors());
-    assert.equal(gatewayRequests.length, 1);
-    assert.equal(gatewayRequests[0].model, "threadspan-consult-grok-build-grok-4-6");
-    assert.equal(gatewayRequests[0].client_metadata, undefined);
-    assert.equal(gatewayRequests[0].metadata.keep, "yes");
-    assert.equal(gatewayRequests[0].metadata.cwd, workspace);
-    assert.equal(gatewayRequests[0].metadata.bridge_workspace, workspace);
-    assert.equal(gatewayRequests[0].metadata.bridge_thread_id, threadId);
-    assert.equal(gatewayRequests[0].metadata.bridge_reasoning_effort, "high");
-    assert.equal(gatewayRequests[0].metadata.bridge_allow_subagents, false);
-    assert.equal(gatewayRequests[0].metadata.bridge_allow_web_search, false);
-    assert.equal(gatewayRequests[0].metadata.bridge_automatic_takeover, false);
-    assert.equal(gatewayRequests[0].metadata.bridge_account_fallback, false);
+    assert.equal(gatewayRequests.length, 2);
+    assert.equal(gatewayRequests[1].model, "threadspan-consult-grok-build-grok-4-6");
+    assert.equal(gatewayRequests[1].client_metadata, undefined);
+    assert.equal(gatewayRequests[1].metadata.keep, "yes");
+    assert.equal(gatewayRequests[1].metadata.cwd, workspace);
+    assert.equal(gatewayRequests[1].metadata.bridge_workspace, workspace);
+    assert.equal(gatewayRequests[1].metadata.bridge_thread_id, threadId);
+    assert.equal(gatewayRequests[1].metadata.bridge_reasoning_effort, "high");
+    assert.equal(gatewayRequests[1].metadata.bridge_allow_subagents, false);
+    assert.equal(gatewayRequests[1].metadata.bridge_allow_web_search, false);
+    assert.equal(gatewayRequests[1].metadata.bridge_automatic_takeover, false);
+    assert.equal(gatewayRequests[1].metadata.bridge_account_fallback, false);
 
     const replay = await fetch(`${routerBase(routerPort)}/responses`, {
       method: "POST",
@@ -824,8 +869,82 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
       body: JSON.stringify(body),
     });
     assert.equal(replay.status, 409);
-    assert.equal(gatewayRequests.length, 1);
+    assert.equal(gatewayRequests.length, 2);
     assert.equal(nativeRequests.length, 0, "an exhausted external lease fell back to native OpenAI");
+
+    const secondHeaders = headersFor(secondRootTurnId);
+    const secondBody = {
+      ...body,
+      client_metadata: {
+        thread_id: threadId,
+        root_turn_id: secondRootTurnId,
+        turn_id: turnId,
+      },
+    };
+    const v2Compact = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: secondHeaders,
+      body: JSON.stringify({
+        ...secondBody,
+        stream: false,
+        input: [
+          { type: "message", role: "user", content: [{ type: "input_text", text: "changed compact payload" }] },
+          { type: "compaction_trigger" },
+        ],
+      }),
+    });
+    assert.equal(v2Compact.status, 200, router.testErrors());
+    assert.equal(gatewayRequests.length, 3);
+    const duplicateV2Compact = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: secondHeaders,
+      body: JSON.stringify({
+        ...secondBody,
+        stream: false,
+        input: [...compactInput, { type: "compaction_trigger" }],
+      }),
+    });
+    assert.equal(duplicateV2Compact.status, 409);
+    assert.equal((await duplicateV2Compact.json()).error.type, "native_route_replay_blocked");
+    assert.equal(gatewayRequests.length, 3);
+    const responseAfterV2Compact = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: secondHeaders,
+      body: JSON.stringify({ ...secondBody, input: "response after v2 compact" }),
+    });
+    assert.equal(responseAfterV2Compact.status, 200, router.testErrors());
+    assert.equal(gatewayRequests.length, 4);
+    const duplicateSecondResponse = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: secondHeaders,
+      body: JSON.stringify({ ...secondBody, input: "response after v2 compact" }),
+    });
+    assert.equal(duplicateSecondResponse.status, 409);
+    assert.equal(gatewayRequests.length, 4);
+
+    const thirdHeaders = headersFor(thirdRootTurnId);
+    const beforeEmpty = gatewayRequests.length;
+    const emptyCompletion = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: thirdHeaders,
+      body: JSON.stringify({
+        ...body,
+        stream: true,
+        input: "empty completion",
+        client_metadata: {
+          thread_id: threadId,
+          root_turn_id: thirdRootTurnId,
+          turn_id: turnId,
+        },
+      }),
+    });
+    assert.equal(emptyCompletion.status, 200, router.testErrors());
+    assert.match(await emptyCompletion.text(), /r-empty/);
+    assert.equal(
+      gatewayRequests.length,
+      beforeEmpty + 1,
+      "Threadspan empty completion escaped its exact provider-dispatch ceiling",
+    );
 
     const nativeResponse = await fetch(`${routerBase(routerPort)}/responses`, {
       method: "POST",

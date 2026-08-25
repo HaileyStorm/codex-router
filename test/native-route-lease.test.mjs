@@ -65,16 +65,24 @@ function request({
   };
 }
 
-function claim(route, value) {
-  return claimNativeRouteLease(route, route, value.headers, value.payload);
+function claim(route, value, lane = "response") {
+  return claimNativeRouteLease(route, route, value.headers, value.payload, lane);
 }
 
-test("native picker selection alone creates an exact one-request Consult lease", () => {
+test("native picker selection gives Consult separate retained compact and response lanes", () => {
   reset();
   assert.deepEqual(nativeRouteLeaseStatus(), { configured: false, activeCount: 0, tombstoneCount: 0 });
+  const compact = claim(CONSULT, request(), "compact");
+  assert.equal(compact.ok, true);
+  assert.equal(compact.lease.lane, "compact");
+  assert.equal(compact.lease.remainingRequests, 0);
+  const duplicateCompact = claim(CONSULT, request(), "compact");
+  assert.equal(duplicateCompact.error.type, "native_route_replay_blocked");
+
   const first = claim(CONSULT, request());
   assert.equal(first.ok, true);
   assert.equal(first.lease.authority, "native-picker-selection");
+  assert.equal(first.lease.lane, "response");
   assert.equal(first.lease.threadId, THREAD);
   assert.equal(first.lease.boundTurnId, ROOT_TURN);
   assert.equal(first.lease.remainingRequests, 0);
@@ -84,33 +92,92 @@ test("native picker selection alone creates an exact one-request Consult lease",
   const duplicate = claim(CONSULT, request());
   assert.equal(duplicate.error.type, "native_route_replay_blocked");
   const retained = nativeRouteLeaseStatus();
-  assert.equal(retained.tombstoneCount, 1);
+  assert.equal(retained.tombstoneCount, 2);
   assert.equal(retained.tombstone, true);
-  assert.equal(
-    clearNativeRouteLease(retained.leaseId, retained.generation).snapshot.tombstoneCount,
-    0,
-  );
+  assert.equal(clearNativeRouteLease(compact.lease.leaseId, compact.lease.generation).snapshot.tombstoneCount, 1);
+  assert.equal(clearNativeRouteLease(first.lease.leaseId, first.lease.generation).snapshot.tombstoneCount, 0);
 });
 
-test("Integrated picker lease reuses exact task/root and enforces 16 unique tool outputs", () => {
+test("Integrated compact is separate from all 17 response dispatches and 16 tool outputs", () => {
   reset();
+  const compact = claim(INTEGRATED, request({ outputs: ["historical"] }), "compact");
+  assert.equal(compact.ok, true);
+  assert.equal(compact.lease.maxRequests, 1);
+  assert.equal(compact.lease.integratedToolOutputs, 0);
+  assert.equal(claim(INTEGRATED, request({ outputs: ["historical"] }), "compact").error.type, "native_route_replay_blocked");
   const first = claim(INTEGRATED, request({ outputs: ["historical"] }));
   assert.equal(first.ok, true);
+  assert.equal(first.lease.maxRequests, 17);
   assert.equal(first.lease.remainingRequests, 16);
   const duplicate = claim(INTEGRATED, request({ outputs: ["historical"] }));
   assert.equal(duplicate.error.type, "native_route_tool_progress_required");
   assert.equal(nativeRouteLeaseStatus().remainingRequests, 16);
   const sixteen = Array.from({ length: 16 }, (_, index) => `new-${index}`);
-  const second = claim(INTEGRATED, request({ turnId: "31a035a2-f151-77c1-8c62-28e2b719599b", outputs: ["historical", ...sixteen] }));
-  assert.equal(second.ok, true);
-  assert.equal(second.lease.integratedToolOutputs, 16);
+  let final;
+  for (let index = 0; index < sixteen.length; index += 1) {
+    final = claim(INTEGRATED, request({
+      turnId: `${String(index + 31).padStart(2, "0")}a035a2-f151-77c1-8c62-28e2b719599b`,
+      outputs: ["historical", ...sixteen.slice(0, index + 1)],
+    }));
+    assert.equal(final.ok, true);
+    assert.equal(final.lease.remainingRequests, 15 - index);
+  }
+  assert.equal(final.lease.integratedToolOutputs, 16);
+  assert.equal(final.lease.tombstone, true);
+  assert.equal(claim(INTEGRATED, request({ outputs: ["historical", ...sixteen] })).error.type, "native_route_replay_blocked");
+
+  const newRoot = claim(INTEGRATED, request({ rootTurnId: SECOND_ROOT, outputs: ["historical"] }));
+  assert.equal(newRoot.ok, true, "a distinct explicitly selected root turn did not receive its own keyed lease");
   const before = nativeRouteLeaseStatus().remainingRequests;
-  const over = claim(INTEGRATED, request({ turnId: "41a035a2-f151-77c1-8c62-28e2b719599b", outputs: [...sixteen, "new-17"] }));
+  const over = claim(INTEGRATED, request({
+    rootTurnId: SECOND_ROOT,
+    turnId: "61a035a2-f151-77c1-8c62-28e2b719599b",
+    outputs: ["historical", ...sixteen, "new-17"],
+  }));
   assert.equal(over.error.type, "native_route_tool_call_limit");
   assert.equal(nativeRouteLeaseStatus().remainingRequests, before);
-  const otherRoot = claim(INTEGRATED, request({ rootTurnId: SECOND_ROOT }));
-  assert.equal(otherRoot.ok, true, "a distinct explicitly selected root turn did not receive its own keyed lease");
-  assert.equal(nativeRouteLeaseStatus().activeCount, 2);
+  assert.equal(nativeRouteLeaseStatus().activeCount, 1);
+});
+
+test("version-3 lease provenance migrates explicitly and blocks both new lanes", () => {
+  reset();
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const now = Date.now();
+  const leaseId = "31a035a2-f151-77c1-8c62-28e2b719599b";
+  const generation = "41a035a2-f151-77c1-8c62-28e2b719599b";
+  writeFileSync(NATIVE_ROUTE_LEASE_PATH, `${JSON.stringify({
+    version: 3,
+    leases: [{
+      leaseId,
+      generation,
+      routeSlug: INTEGRATED,
+      mode: "integrated",
+      cwd: workspace,
+      threadId: THREAD,
+      boundTurnId: ROOT_TURN,
+      baselineToolOutputIds: [],
+      seenToolOutputIds: [],
+      remainingRequests: 16,
+      maxRequests: 17,
+      createdAt: now,
+      boundAt: now,
+      lastClaimAt: now,
+      expiresAt: now + 30 * 60_000,
+      authority: "native-picker-selection",
+    }],
+    tombstones: [],
+  })}\n`, { mode: 0o600 });
+
+  assert.equal(claim(INTEGRATED, request(), "compact").error.type, "native_route_legacy_replay_blocked");
+  assert.equal(claim(INTEGRATED, request(), "response").error.type, "native_route_legacy_replay_blocked");
+  const migrated = JSON.parse(readFileSync(NATIVE_ROUTE_LEASE_PATH, "utf8"));
+  assert.equal(migrated.version, 4);
+  assert.equal(migrated.leases.length, 0);
+  assert.equal(migrated.tombstones.length, 0);
+  assert.equal(migrated.legacyTombstones.length, 1);
+  assert.equal(migrated.legacyTombstones[0].legacyVersion, 3);
+  assert.equal(migrated.legacyTombstones[0].source, "lease");
+  assert.equal(clearNativeRouteLease(leaseId, generation).cleared, true);
 });
 
 test("picker leases are keyed per task and exact-generation clear preserves others", () => {
@@ -160,6 +227,21 @@ test("expired lease becomes a durable tombstone and blocks replay after restart"
     },
   ));
   assert.equal(restarted.error.type, "native_route_replay_blocked");
+});
+
+test("version-4 tombstones with impossible timestamp provenance fail closed", () => {
+  reset();
+  assert.equal(claim(CONSULT, request(), "compact").ok, true);
+  const ledger = JSON.parse(readFileSync(NATIVE_ROUTE_LEASE_PATH, "utf8"));
+  ledger.tombstones[0].createdAt = ledger.tombstones[0].at + 1;
+  writeFileSync(NATIVE_ROUTE_LEASE_PATH, `${JSON.stringify(ledger)}\n`, { mode: 0o600 });
+  const refused = claim(CONSULT, request(), "response");
+  assert.equal(refused.error.type, "native_route_lease_state_invalid");
+  assert.equal(
+    JSON.parse(readFileSync(NATIVE_ROUTE_LEASE_PATH, "utf8")).tombstones[0].createdAt,
+    ledger.tombstones[0].createdAt,
+    "invalid retained provenance was rewritten instead of rejected",
+  );
 });
 
 test("cross-process lock is fail-closed and never stale-broken", () => {

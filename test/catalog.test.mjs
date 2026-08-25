@@ -226,7 +226,7 @@ test("routed models advertise search and image detail only when the registry opt
 
 test("routed models can explicitly narrow inherited tool capabilities", () => {
   const plain = routedModel(template, grok);
-  assert.equal("supports_parallel_tool_calls" in plain, false);
+  assert.equal(plain.supports_parallel_tool_calls, true);
   assert.equal("experimental_supported_tools" in plain, false);
 
   const narrowed = routedModel(template, {
@@ -723,7 +723,7 @@ test("bundled backfill is an allowlist, not every empty account field", () => {
 });
 
 test("account-only models satisfy the strict custom-catalog instruction schema", () => {
-  const [spark] = mergeNativeCatalogs(
+  const native = mergeNativeCatalogs(
     {
       models: [
         {
@@ -734,8 +734,16 @@ test("account-only models satisfy the strict custom-catalog instruction schema",
       ],
     },
     { models: [{ slug: "other", base_instructions: "other instructions" }] },
-  ).models;
+  );
+  const [spark] = native.models;
   assert.equal(spark.base_instructions, "spark instructions");
+  const [published] = buildMergedCatalog(native, []);
+  assert.equal(published.supports_parallel_tool_calls, true);
+  const [explicitlyDisabled] = buildMergedCatalog(
+    { models: [{ ...spark, supports_parallel_tool_calls: false }] },
+    [],
+  );
+  assert.equal(explicitlyDisabled.supports_parallel_tool_calls, false);
 });
 
 // The bundled catalog's base_instructions equals the account template with

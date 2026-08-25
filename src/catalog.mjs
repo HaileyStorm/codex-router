@@ -487,6 +487,13 @@ function rewriteModelMessages(messages, model) {
 function normalizeNativeModel(model) {
   return {
     ...model,
+    // Some current account entries omit this field now that native models
+    // always permit parallel tool calls, while older Desktop builds still
+    // require the compatibility boolean when parsing model_catalog_json.
+    supports_parallel_tool_calls:
+      typeof model.supports_parallel_tool_calls === "boolean"
+        ? model.supports_parallel_tool_calls
+        : true,
     supports_reasoning_summaries:
       typeof model.supports_reasoning_summaries === "boolean"
         ? model.supports_reasoning_summaries
@@ -548,15 +555,23 @@ export function routedModel(template, model) {
         : "none",
     support_verbosity: false,
     default_verbosity: null,
-    // Capability toggles come from the registry entry, never from the native
-    // template: an absent flag keeps the conservative default so a routed
-    // model only advertises what its slug's gateway path actually verified.
+    // Search and image-detail toggles come from the registry entry, never from
+    // the native template: absent flags keep the conservative default so a
+    // routed model advertises only what its gateway path actually verified.
     // Both search paths are explicit registry capabilities. Hosted search is
     // executed by the provider backend; standalone search is executed by
     // Codex and its result is replayed through the routed conversation. An
     // absent declaration remains the conservative default.
     supports_search_tool: ["hosted", "standalone"].includes(model.searchTool?.mode),
     supports_image_detail_original: model.supportsImageDetailOriginal === true,
+    // A custom catalog consumed by an older Desktop parser requires this
+    // compatibility field. Preserve the established routed default when a
+    // current native template omits the retired field; providers that reject
+    // parallel scheduling still opt out explicitly below.
+    supports_parallel_tool_calls:
+      typeof template.supports_parallel_tool_calls === "boolean"
+        ? template.supports_parallel_tool_calls
+        : true,
     use_responses_lite: false,
     // Codex only knows one ApplyPatchToolType variant. The native template
     // carries "freeform", but upstreams that reject OpenAI custom tools (Meta

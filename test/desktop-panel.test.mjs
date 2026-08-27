@@ -53,6 +53,7 @@ test("the panel serves the shared UI with the bridge injected", async () => {
     assert.match(body, /window\.__TAURI__/);
     assert.match(body, /fetch\("\.\/invoke"/);
     assert.match(body, /data-tab="connections"/);
+    assert.match(body, /id="global-fast-state"/);
     assert.match(
       body,
       /id="tool-result-aging-switch" type="checkbox" disabled/,
@@ -149,6 +150,30 @@ test("a read command answers with the router's own data", async () => {
   }
 });
 
+test("router health exposes the authoritative host-global Fast intent", async () => {
+  const { url, close } = await serve();
+  try {
+    const response = await fetch(url("/panel/invoke"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "router_health", args: {} }),
+    });
+    const raw = await response.text();
+    assert.equal(response.status, 200, raw);
+    const payload = JSON.parse(raw);
+    assert.equal(payload.value.ok, true);
+    assert.equal(typeof payload.value.fastMode.enabled, "boolean");
+    assert.match(payload.value.fastMode.status, /^(enabled|disabled|unavailable)$/);
+    assert.equal(
+      payload.value.fastMode.status === "enabled",
+      payload.value.fastMode.configuredTier === "fast" ||
+        payload.value.fastMode.configuredTier === "priority",
+    );
+  } finally {
+    await close();
+  }
+});
+
 test("malformed JSON and wrong methods are answered, not crashed on", async () => {
   const { url, close } = await serve();
   try {
@@ -213,9 +238,12 @@ test("the panel renders and answers in a real browser", { skip: browserSkip }, a
     await page.waitForTimeout(600);
     const text = await page.locator("body").innerText();
     assert.match(text, /anthropic|cerebras|deepseek/i, "provider rows did not render");
+    await page.click('button.tab[data-tab="status"]');
+    await page.waitForTimeout(100);
+    assert.match(await page.locator("#global-fast-state").innerText(), /Global Fast intent/);
     assert.equal(
       await page.evaluate(() => document.querySelector("button.tab.is-active")?.dataset.tab),
-      "connections",
+      "status",
     );
     assert.equal(
       await page.locator("#tool-result-aging-switch").isDisabled(),

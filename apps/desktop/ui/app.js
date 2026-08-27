@@ -5,6 +5,7 @@ import {
   dailySeries,
   exactTokens,
   formatReset,
+  globalFastIntentView,
   observedModelSpeed,
   sevenDayTokens,
   sourceOptions,
@@ -101,6 +102,7 @@ function startPanel() {
     quotaCards: document.getElementById("quota-cards"),
     usageOverview: document.getElementById("usage-overview"),
     statusSummary: document.getElementById("status-summary"),
+    globalFastState: document.getElementById("global-fast-state"),
     activeRequests: document.getElementById("active-requests"),
     quotaResets: document.getElementById("quota-resets"),
     providers: document.getElementById("provider-list"),
@@ -303,9 +305,11 @@ function startPanel() {
     try {
       state.health = await call("router_health");
       renderStatus();
+      renderStatusView();
     } catch {
       state.health = { ok: false, activity: { state: "offline" } };
       renderStatus();
+      renderStatusView();
     }
     const nextActivityState = state.health?.activity?.state || "offline";
     if (state.lastActivityState === "generating" && nextActivityState !== "generating") {
@@ -435,6 +439,13 @@ function startPanel() {
     elements.statusSummary.textContent = activeCount
       ? `${activeCount} request${activeCount === 1 ? "" : "s"} in flight · ${activity.state || "active"}`
       : `Router ${state.health?.ok === false ? "offline" : "ready"} · nothing in flight`;
+    const fastView = globalFastIntentView(state.health?.fastMode);
+    elements.globalFastState.hidden = !fastView;
+    if (!fastView) {
+      elements.globalFastState.innerHTML = "";
+    } else {
+      elements.globalFastState.innerHTML = `<header><strong>Global Fast intent</strong><small>${escapeHtml(fastView.label)}</small></header><p class="status-empty">${escapeHtml(fastView.detail)}</p>`;
+    }
     elements.activeRequests.innerHTML = `<header><strong>Live requests</strong><small>${activeCount ? activeCount : "none"}</small></header>${active.length
       ? active.map((request) => {
           const started = Number(request.startedAt) || Date.now();

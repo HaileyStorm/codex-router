@@ -6,6 +6,7 @@ import {
   chartGeometry,
   compactTokens,
   dailySeries,
+  globalFastIntentView,
   metricRemainingPercent,
   observedModelSpeed,
   quotaWindow,
@@ -170,6 +171,22 @@ test("active model speed prefers its provider and matches qualified slugs", () =
   usage.providers[0].models[0].observedTokensPerSecond = null;
   assert.equal(observedModelSpeed(usage, "deepseek", "deepseek/deepseek-v4-flash"), null);
   assert.equal(observedModelSpeed(usage, "deepseek", "missing/model"), null);
+});
+
+test("global Fast intent view distinguishes authoritative states and hides missing state", () => {
+  assert.equal(globalFastIntentView(null), null);
+  assert.deepEqual(globalFastIntentView({ status: "enabled", configuredTier: "priority" }), {
+    label: "Enabled",
+    detail: "Host config requests priority; eligible models apply it at the next request.",
+  });
+  assert.deepEqual(globalFastIntentView({ status: "disabled" }), {
+    label: "Disabled",
+    detail: "Host config does not request Fast.",
+  });
+  assert.deepEqual(globalFastIntentView({ status: "unavailable" }), {
+    label: "Unavailable",
+    detail: "Host Fast config could not be read; requests fail closed to normal speed.",
+  });
 });
 
 test("desktop UI exposes translations with matching keys for every language", () => {

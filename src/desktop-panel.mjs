@@ -11,6 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { COMMANDS, runDesktopCommand, sourceRoot } from "./desktop-commands.mjs";
+import { readGlobalFastModeIntent } from "./global-fast-mode.mjs";
 
 const UI_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -93,7 +94,12 @@ const LOCAL = {
   platform_info: () => ({ platform: process.platform, island: false, shell: "web" }),
   desktop_settings: () => ({ islandEnabled: false, islandExpanded: false }),
   // The router is answering this request, so it is by definition reachable.
-  router_health: () => ({ ok: true, service: "codex-router", status: "ok" }),
+  router_health: () => ({
+    ok: true,
+    service: "codex-router",
+    status: "ok",
+    fastMode: readGlobalFastModeIntent(),
+  }),
   set_island_enabled: () => ({ islandEnabled: false, islandExpanded: false }),
   set_island_expanded: () => ({ islandEnabled: false, islandExpanded: false }),
   show_panel: () => null,

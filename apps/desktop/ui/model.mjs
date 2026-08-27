@@ -230,6 +230,23 @@ export function observedModelSpeed(providerUsage, providerId, modelSlug) {
     : null;
 }
 
+export function globalFastIntentView(fastMode) {
+  if (!fastMode) return null;
+  if (fastMode.status === "enabled") {
+    return {
+      label: "Enabled",
+      detail: `Host config requests ${fastMode.configuredTier || "Fast"}; eligible models apply it at the next request.`,
+    };
+  }
+  if (fastMode.status === "disabled") {
+    return { label: "Disabled", detail: "Host config does not request Fast." };
+  }
+  return {
+    label: "Unavailable",
+    detail: "Host Fast config could not be read; requests fail closed to normal speed.",
+  };
+}
+
 function smoothPath(points) {
   if (!points.length) return "";
   if (points.length === 1) return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;

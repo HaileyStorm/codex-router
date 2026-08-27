@@ -484,8 +484,16 @@ function rewriteModelMessages(messages, model) {
   return next;
 }
 
+const GPT_5_6_POLICY_SLUGS = new Set([
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+]);
+const GPT_5_6_CONTEXT_WINDOW = 320_000;
+const GPT_5_6_AUTO_COMPACT_TOKEN_LIMIT = 272_000;
+
 function normalizeNativeModel(model) {
-  return {
+  const next = {
     ...model,
     // Some current account entries omit this field now that native models
     // always permit parallel tool calls, while older Desktop builds still
@@ -499,6 +507,11 @@ function normalizeNativeModel(model) {
         ? model.supports_reasoning_summaries
         : false,
   };
+  if (GPT_5_6_POLICY_SLUGS.has(String(model.slug))) {
+    next.context_window = GPT_5_6_CONTEXT_WINDOW;
+    next.auto_compact_token_limit = GPT_5_6_AUTO_COMPACT_TOKEN_LIMIT;
+  }
+  return next;
 }
 
 export function routedModel(template, model) {

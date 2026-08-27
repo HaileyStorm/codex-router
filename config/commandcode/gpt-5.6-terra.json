@@ -33,8 +33,8 @@
           "description": "Maximum reasoning depth"
         }
       ],
-      "contextWindow": 1050000,
-      "autoCompact": 900000,
+      "contextWindow": 320000,
+      "autoCompact": 272000,
       "inputModalities": [
         "text"
       ],

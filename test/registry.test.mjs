@@ -448,10 +448,16 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(minimax.contextWindow, 1_000_000);
   assert.equal(minimax.autoCompact, 900_000);
   assert.deepEqual(minimax.inputModalities, ["text", "image"]);
-  assert.equal(
-    MODEL_BY_SLUG.get("opencode-go-responses/gpt-5.6-luna").contextWindow,
-    272_000,
-  );
+  for (const slug of [
+    "commandcode/gpt-5.6-sol",
+    "commandcode/gpt-5.6-terra",
+    "commandcode/gpt-5.6-luna",
+    "opencode-go-responses/gpt-5.6-luna",
+  ]) {
+    const model = MODEL_BY_SLUG.get(slug);
+    assert.equal(model.contextWindow, 320_000, slug);
+    assert.equal(model.autoCompact, 272_000, slug);
+  }
   assert.equal(
     MODEL_BY_SLUG.get("commandcode/deepseek-v4-flash").contextWindow,
     1_000_000,

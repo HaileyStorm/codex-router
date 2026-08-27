@@ -200,6 +200,29 @@ native Sol row advertises an 872K maximum; upstream may reject a request beyond
 that captured limit. These profiles are not defaults, are not inherited by
 router-managed agents, and are not published in login-free or DSH catalogs.
 
+### Global Fast mode
+
+Codex Desktop's Settings → Speed control and its Fast shortcut both persist the
+Desktop-managed root or embedded-profile `service_tier`. The router treats that existing
+setting as the single host-global intent; it does not create a second toggle.
+Immediately before every native request is serialized, the router discards any
+stale task-local tier and re-applies Fast only when the selected native catalog
+row advertises the `priority`/Fast tier. This gives already-running tasks the
+new global setting at their next request boundary, while new tasks, subagents,
+and compaction use it immediately. No in-flight request is interrupted or
+replayed, and model, provider, reasoning effort, permissions, and task identity
+are unchanged.
+
+External/router models keep their own scheduling and billing contracts. A
+routed request receives Fast only when its catalog row declares the exact
+wire-level `priority` or `fast` service tier; otherwise the router removes the
+stale native setting. Current Grok and Threadspan rows declare no Fast tier. An
+unreadable or ambiguous Codex config also fails closed to normal speed. The
+authenticated router health payload exposes the current global intent for
+companion status surfaces; Settings → Speed remains the canonical owner-visible
+control. CLI-only profile files and one-invocation `-c` overrides are not a
+second global state surface.
+
 ### Threadspan routes in the native picker
 
 The checked-in `threadspan` provider is a loopback-only integration for a

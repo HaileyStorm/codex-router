@@ -724,6 +724,169 @@ test("router preserves native auth and isolates every external route", async () 
   }
 });
 
+test("global Fast state governs native request boundaries and never leaks to routed providers", async () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "global-fast-routing-"));
+  const codexHome = path.join(testRoot, "codex-home");
+  const stateDir = path.join(codexHome, "codex-router");
+  const configPath = path.join(codexHome, "config.toml");
+  const catalogPath = path.join(stateDir, "merged-models.json");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(configPath, 'service_tier = "priority"\n', { mode: 0o600 });
+  writeFileSync(
+    path.join(stateDir, "enabled-providers.json"),
+    `${JSON.stringify({ version: 1, providers: ["grok-oauth"] })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    catalogPath,
+    `${JSON.stringify({
+      models: [
+        {
+          slug: "gpt-5.6-sol",
+          service_tiers: [{ id: "priority", name: "Fast" }],
+          additional_speed_tiers: ["fast"],
+        },
+        {
+          slug: "grok-oauth/grok-4.6",
+          service_tiers: [],
+          additional_speed_tiers: [],
+        },
+      ],
+    })}\n`,
+    { mode: 0o600 },
+  );
+
+  const nativeRequests = [];
+  const routedRequests = [];
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push(await bodyJson(request));
+    json(response, 200, { route: "native" });
+  });
+  const gateway = await mockServer(async (request, response) => {
+    const body = await bodyJson(request);
+    routedRequests.push(body);
+    if (body.stream === false && Array.isArray(body.input)) {
+      json(response, 200, {
+        id: "resp-fast-summary",
+        object: "response",
+        output: [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "compact summary" }],
+          },
+        ],
+      });
+    } else {
+      json(response, 200, { route: "external" });
+    }
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_HOME: codexHome,
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_CATALOG: catalogPath,
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+    "ChatGPT-Account-Id": "account-id",
+    "Content-Type": "application/json",
+  };
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+
+    const enabledNative = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "gpt-5.6-sol",
+        input: "native enabled",
+        service_tier: "default",
+      }),
+    });
+    assert.equal(enabledNative.status, 200, router.testErrors());
+    assert.equal(nativeRequests[0].service_tier, "priority");
+
+    const routed = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "grok-oauth/grok-4.6",
+        input: "external",
+        service_tier: "priority",
+      }),
+    });
+    assert.equal(routed.status, 200, router.testErrors());
+    assert.equal(routedRequests[0].service_tier, undefined);
+
+    const compactInput = [
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "compact external" }],
+      },
+    ];
+    const v1Compact = await fetch(`${routerBase(routerPort)}/responses/compact`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "grok-oauth/grok-4.6",
+        input: compactInput,
+        service_tier: "priority",
+      }),
+    });
+    assert.equal(v1Compact.status, 200, router.testErrors());
+    assert.equal(routedRequests[1].service_tier, undefined);
+
+    const v2Compact = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "grok-oauth/grok-4.6",
+        stream: false,
+        input: [...compactInput, { type: "compaction_trigger" }],
+        service_tier: "priority",
+      }),
+    });
+    assert.equal(v2Compact.status, 200, router.testErrors());
+    assert.equal(routedRequests[2].service_tier, undefined);
+
+    // A global change takes effect on the next request without a router or
+    // task restart and clears an old task-local Fast value.
+    writeFileSync(configPath, 'service_tier = "default"\n', { mode: 0o600 });
+    const disabledNative = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "gpt-5.6-sol",
+        input: "native disabled",
+        service_tier: "priority",
+      }),
+    });
+    assert.equal(disabledNative.status, 200, router.testErrors());
+    assert.equal(nativeRequests[1].service_tier, undefined);
+
+    const health = await fetch(`${routerBase(routerPort)}/health`).then((response) =>
+      response.json(),
+    );
+    assert.deepEqual(health.fastMode, {
+      enabled: false,
+      configuredTier: null,
+      source: "service_tier",
+      status: "disabled",
+    });
+  } finally {
+    await stopChild(router);
+    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
 test("native Sol profiles rewrite only at native normal and compact dispatch", async () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "native-profile-routing-"));
   writeFileSync(
@@ -4145,13 +4308,31 @@ test("router redirects native background turns to the configured routed model", 
   const routerPort = await openPort();
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-native-redirect-"));
   const stateDir = path.join(testRoot, "state");
+  const codexHome = path.join(testRoot, "codex-home");
+  const catalogPath = path.join(stateDir, "catalog.json");
   mkdirSync(stateDir, { recursive: true });
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(path.join(codexHome, "config.toml"), 'service_tier = "priority"\n');
+  writeFileSync(
+    catalogPath,
+    `${JSON.stringify({
+      models: [
+        {
+          slug: "gpt-5.6-luna",
+          service_tiers: [{ id: "priority", name: "Fast" }],
+        },
+        { slug: "kimi-oauth/k3", service_tiers: [] },
+      ],
+    })}\n`,
+  );
   writeFileSync(
     path.join(stateDir, "native-redirect.json"),
     `${JSON.stringify({ version: 1, model: "kimi-oauth/k3" })}\n`,
   );
   const router = run("router.mjs", {
+    CODEX_HOME: codexHome,
     CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_CATALOG: catalogPath,
     CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
     CODEX_ROUTER_STATE_DIR: stateDir,
     CODEX_ROUTER_QUIET: "1",
@@ -4171,6 +4352,7 @@ test("router redirects native background turns to the configured routed model", 
     });
     assert.equal(response.status, 200);
     assert.equal(gatewayRequests.at(-1).model, "kimi-oauth-k3");
+    assert.equal(gatewayRequests.at(-1).service_tier, undefined);
   } finally {
     await stopChild(router);
     await closeServer(gateway.server);

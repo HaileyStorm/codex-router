@@ -45,6 +45,7 @@ import {
   nativeProfile,
 } from "./native-profiles.mjs";
 import { readNativeRedirect } from "./native-redirect.mjs";
+import { applyGlobalFastMode, readGlobalFastModeIntent } from "./global-fast-mode.mjs";
 import {
   commitNativeRouteReservation,
   injectThreadspanMetadata,
@@ -787,6 +788,7 @@ async function healthPayload() {
     version: VERSION,
     router: "ready",
     activity: activityPayload(),
+    fastMode: readGlobalFastModeIntent(),
     oauth,
     api,
     gateway,
@@ -1881,6 +1883,16 @@ async function handleResponses(request, response, requestUrl) {
       });
       return;
     }
+    // The Desktop shortcut and Settings -> Speed row both persist one
+    // host-global intent. Re-resolve it once, before compaction classification
+    // or route-specific normalization, so normal, v1 compact, v2 compact,
+    // primary, and subagent requests cannot drift. A routed model receives the
+    // tier only when its own catalog row declares that exact wire value.
+    applyGlobalFastMode(payload, {
+      requestedModel: route?.slug || requestedModel,
+      routed: Boolean(route),
+      catalog: catalogModels(),
+    });
     // Compaction is its own retained dispatch lane. Classify it before the
     // Threadspan picker claim so an automatic v1/v2 compact cannot consume the
     // operator-selected response allowance or Integrated tool-result budget.

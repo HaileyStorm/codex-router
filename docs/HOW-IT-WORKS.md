@@ -76,6 +76,18 @@ before native normal or compact dispatch. Unknown profile slugs fail locally.
 They are explicit primary/subagent choices only and are excluded from
 login-free aliases and DSH publication.
 
+Fast is resolved at the last safe native request boundary. The Desktop's
+Settings → Speed row and Fast shortcut already write the same Desktop-managed
+root or embedded-profile `service_tier`; the router reads that owner-visible setting on
+every request, clears any stale task-local value, and attaches `priority` only
+when the selected native catalog row declares Fast support. A global change
+therefore reaches active tasks on their next request without a restart,
+interrupt, or replay. Routed providers receive Fast only when their catalog row
+declares the exact wire-level tier; otherwise `service_tier` is removed. Current
+Grok and Threadspan routes are therefore unaffected. Malformed or unavailable
+config fails closed to normal speed. CLI-only profile files and per-invocation
+`-c` overrides are not interpreted as a second host-global intent.
+
 Signed-out catalogs additionally alias external models onto native GPT slugs.
 The ChatGPT desktop app's model menu filters `model/list` results against a
 server-delivered allowlist of native slugs, so an external slug can never

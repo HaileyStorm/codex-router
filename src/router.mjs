@@ -41,9 +41,11 @@ import { discoveryDisabled } from "./discovery-mode.mjs";
 import { readNativeAliases } from "./native-alias.mjs";
 import { readNativeRedirect } from "./native-redirect.mjs";
 import {
-  claimNativeRouteLease,
+  commitNativeRouteReservation,
   injectThreadspanMetadata,
   isThreadspanRoute,
+  reserveNativeRouteLease,
+  rollbackNativeRouteReservation,
   validateThreadspanMetadata,
 } from "./native-route-lease.mjs";
 import {
@@ -1516,7 +1518,7 @@ function extractResponseText(payload) {
   return text.join("\n");
 }
 
-async function summarize(request, payload, route, signal) {
+async function summarize(request, payload, route, signal, beforeFetch) {
   const originalInput = Array.isArray(payload.input) ? payload.input : [];
   // Compaction replays the whole conversation, so any image still in it would
   // reach the text-only model unbridged and fail the compaction rather than
@@ -1560,10 +1562,22 @@ async function summarize(request, payload, route, signal) {
   // Compaction re-enters the same provider as the routed turn; Fireworks
   // rejects this OpenAI search parameter at that boundary too.
   if (providerForModel(route)?.id === "fireworks") delete body.web_search_options;
+  const routedBody = Buffer.from(JSON.stringify(body), "utf8");
+  const headers = routedHeaders();
+  signal?.throwIfAborted();
+  const commit = beforeFetch?.();
+  if (commit && !commit.ok) {
+    return {
+      ok: false,
+      status: commit.status,
+      payload: { error: commit.error },
+      toolResultAging: aged.stats,
+    };
+  }
   const upstream = await fetch(`${GATEWAY_BASE}/responses`, {
     method: "POST",
-    headers: routedHeaders(),
-    body: JSON.stringify(body),
+    headers,
+    body: routedBody,
     signal,
   });
   const bytes = Buffer.from(await upstream.arrayBuffer());
@@ -1639,8 +1653,8 @@ function writeCompactionSse(response, model, summary) {
 
 // Returns what the request path needs to meter and log the compaction, so a
 // routed compaction leaves the same telemetry trail as any other routed turn.
-async function handleRoutedCompaction(request, response, payload, route, signal, v2) {
-  const result = await summarize(request, payload, route, signal);
+async function handleRoutedCompaction(request, response, payload, route, signal, v2, beforeFetch) {
+  const result = await summarize(request, payload, route, signal, beforeFetch);
   if (!result.ok) {
     writeJson(response, result.status, result.payload);
     return {
@@ -1790,6 +1804,14 @@ async function handleResponses(request, response, requestUrl) {
   let finalStatus;
   let activityStatus;
   let usageRecorded = false;
+  let threadspanReservation;
+  let threadspanCommitted = false;
+  const commitThreadspanReservation = () => {
+    if (!threadspanReservation || threadspanCommitted) return { ok: true };
+    const committed = commitNativeRouteReservation(threadspanReservation);
+    if (committed.ok) threadspanCommitted = true;
+    return committed;
+  };
   try {
     if (!requireCodexTransport(request, response)) return;
     const encoded = await readRequestBody(request);
@@ -1845,9 +1867,10 @@ async function handleResponses(request, response, requestUrl) {
       payload.input.at(-1)?.type === "compaction_trigger";
     const threadspanLane = compactV1 || compactV2 ? "compact" : "response";
     // Selecting a Threadspan row in the native picker is transfer authority.
-    // Bind or advance its private lease before any normalization, gateway
-    // request, or provider credential read. Exact route/workspace/task/root
-    // identity keeps background and subagent traffic outside that authority.
+    // Reserve its private lease before normalization without consuming the
+    // dispatch allowance. Exact route/workspace/task/root/lane identity keeps
+    // background and subagent traffic outside that authority; the reservation
+    // is committed only beside the selected-provider fetch below.
     if (isThreadspanRoute(route)) {
       try {
         validateThreadspanMetadata(payload);
@@ -1860,19 +1883,20 @@ async function handleResponses(request, response, requestUrl) {
         });
         return;
       }
-      const claim = claimNativeRouteLease(
+      const reserved = reserveNativeRouteLease(
         route.slug,
         requestedModel,
         request.headers,
         payload,
         threadspanLane,
       );
-      if (!claim.ok) {
-        writeJson(response, claim.status, { error: claim.error });
+      if (!reserved.ok) {
+        writeJson(response, reserved.status, { error: reserved.error });
         return;
       }
+      threadspanReservation = reserved.reservation;
       try {
-        injectThreadspanMetadata(payload, route, claim.lease);
+        injectThreadspanMetadata(payload, route, threadspanReservation);
       } catch (error) {
         writeJson(response, error?.status || 400, {
           error: {
@@ -1917,6 +1941,7 @@ async function handleResponses(request, response, requestUrl) {
         route,
         controller.signal,
         compactV2,
+        commitThreadspanReservation,
       );
       // Compaction used to return here without metering or logging, so neither
       // a successful nor a failed one appeared anywhere in the router's own
@@ -2096,6 +2121,14 @@ async function handleResponses(request, response, requestUrl) {
     // attempt replays the identical bytes under the identical encoding. Nothing
     // here consumes a stream, which is what makes the request replayable at
     // all.
+    controller.signal.throwIfAborted();
+    const committed = commitThreadspanReservation();
+    if (!committed.ok) {
+      writeJson(response, committed.status, { error: committed.error });
+      finalStatus = committed.status;
+      activityStatus = committed.status;
+      return;
+    }
     const { response: upstream, retries } = await fetchWithRetry(
       target,
       {
@@ -2489,6 +2522,15 @@ async function handleResponses(request, response, requestUrl) {
     }
     throw error;
   } finally {
+    if (threadspanReservation && !threadspanCommitted) {
+      try {
+        rollbackNativeRouteReservation(threadspanReservation);
+      } catch (error) {
+        console.error(
+          `[codex-router] Threadspan reservation rollback failed: ${formatErrorChain(error)}`,
+        );
+      }
+    }
     const status = activityStatus ?? finalStatus ?? response.statusCode;
     activity.finish(status);
     // Timestamped per-request timing for latency diagnosis. Never gated on

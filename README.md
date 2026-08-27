@@ -189,9 +189,13 @@ owner, mode 0600, bounded single-token content); it never copies or prints it.
 Selecting a clearly named Threadspan row in Codex's native model picker and
 pressing Send is the transfer authority; there is no separate authorization step.
 
-The first valid root request atomically creates a lease keyed to the exact
-route, resolved cwd, native task, and stable root-turn ID. Status and
-generation-safe recovery remain available:
+The first valid root request durably reserves a lease keyed to the exact route,
+resolved cwd, native task, stable root-turn ID, and dispatch lane without
+consuming it. Local metadata, normalization, and serialization failures roll
+back that exact reservation so the request can be retried. Immediately before
+the selected-provider fetch, the router durably commits and consumes the
+reservation; every outcome after that boundary remains retained and
+fail-closed. Status and generation-safe recovery remain available:
 
 ```sh
 node src/control.mjs native-lease status
@@ -207,9 +211,15 @@ aggregate maximum of 16 unique post-baseline tool-call outputs. A duplicate in
 either lane is retained and refused locally without provider or native-OpenAI
 fallback. Version-3 ledgers are migrated to explicit legacy provenance that
 blocks both lanes until generation-safe recovery, because the older record
-cannot prove which lane was dispatched. Every request must match the selected
-model, resolved cwd, task ID, and stable root-turn ID; subagents, expired/locked
-leases, and mismatches also fail locally. The picker advertises a conservative
+cannot prove which lane was dispatched. Version-4 records retain their known
+lane but are likewise migrated as possibly dispatched provenance; neither old
+format is reinterpreted as safely retryable. Threadspan requests are explicitly
+classified `owner_private` and disclosed by the picker transfer authority;
+Delegate alone enables Threadspan subagents, while Consult and Integrated keep
+them disabled. Web search, automatic takeover, planning, and account fallback
+remain disabled. Every request must match the selected model, resolved cwd,
+task ID, and stable root-turn ID; subagents, expired/locked leases, and
+mismatches also fail locally. The picker advertises a conservative
 128K context/112K compaction safety bound because Threadspan's live catalog did
 not report a context window; those numbers are client limits, not a claim about
 the backend model's maximum. Threadspan rows deliberately omit Codex's optional

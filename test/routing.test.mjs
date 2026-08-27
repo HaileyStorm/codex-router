@@ -740,6 +740,8 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
   const rootTurnId = "11a035a2-f151-77c1-8c62-28e2b719599b";
   const secondRootTurnId = "12a035a2-f151-77c1-8c62-28e2b719599b";
   const thirdRootTurnId = "13a035a2-f151-77c1-8c62-28e2b719599b";
+  const rollbackRootTurnId = "14a035a2-f151-77c1-8c62-28e2b719599b";
+  const failedDispatchRootTurnId = "15a035a2-f151-77c1-8c62-28e2b719599b";
   const turnId = "21a035a2-f151-77c1-8c62-28e2b719599b";
   const gatewayRequests = [];
   const nativeRequests = [];
@@ -747,6 +749,10 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
     if (request.method === "GET") return json(response, 200, { ok: true });
     const requestBody = await bodyJson(request);
     gatewayRequests.push(requestBody);
+    if (requestBody.input === "provider failure") {
+      json(response, 503, { error: { message: "provider unavailable" } });
+      return;
+    }
     if (requestBody.input === "empty completion") {
       response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
       response.end([
@@ -772,7 +778,23 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
     });
   });
   const native = await mockServer(async (request, response) => {
-    nativeRequests.push(await bodyJson(request));
+    const requestBody = await bodyJson(request);
+    if (requestBody.tool_choice?.name === "relay_external_agent_payload") {
+      native.relayAttempts = (native.relayAttempts || 0) + 1;
+      if (native.relayAttempts === 1) {
+        json(response, 502, { error: { message: "temporary local relay failure" } });
+        return;
+      }
+      json(response, 200, {
+        output: [{
+          type: "function_call",
+          name: "relay_external_agent_payload",
+          arguments: JSON.stringify({ payload: "Retry the exact owner-private task." }),
+        }],
+      });
+      return;
+    }
+    nativeRequests.push(requestBody);
     json(response, 200, { id: "resp_native", object: "response", output: [] });
   });
   const routerPort = await openPort();
@@ -802,7 +824,12 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
   const body = {
     model: route,
     input: "external test",
-    metadata: { keep: "yes" },
+    metadata: {
+      keep: "yes",
+      bridge_payload_classification: "public",
+      bridge_payload_disclosed: false,
+      bridge_allow_subagents: true,
+    },
     client_metadata: { thread_id: threadId, root_turn_id: rootTurnId, turn_id: turnId },
   };
 
@@ -858,6 +885,8 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
     assert.equal(gatewayRequests[1].metadata.bridge_workspace, workspace);
     assert.equal(gatewayRequests[1].metadata.bridge_thread_id, threadId);
     assert.equal(gatewayRequests[1].metadata.bridge_reasoning_effort, "high");
+    assert.equal(gatewayRequests[1].metadata.bridge_payload_classification, "owner_private");
+    assert.equal(gatewayRequests[1].metadata.bridge_payload_disclosed, true);
     assert.equal(gatewayRequests[1].metadata.bridge_allow_subagents, false);
     assert.equal(gatewayRequests[1].metadata.bridge_allow_web_search, false);
     assert.equal(gatewayRequests[1].metadata.bridge_automatic_takeover, false);
@@ -945,6 +974,76 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
       beforeEmpty + 1,
       "Threadspan empty completion escaped its exact provider-dispatch ceiling",
     );
+
+    const rollbackHeaders = headersFor(rollbackRootTurnId);
+    const rollbackBody = {
+      ...body,
+      stream: false,
+      client_metadata: {
+        thread_id: threadId,
+        root_turn_id: rollbackRootTurnId,
+        turn_id: turnId,
+      },
+      input: [{
+        type: "agent_message",
+        content: [
+          { type: "input_text", text: "Message Type: MESSAGE\nPayload:\n" },
+          { type: "encrypted_content", encrypted_content: "gAAAAA-reserve-rollback=" },
+        ],
+      }],
+    };
+    const beforeRollback = gatewayRequests.length;
+    const localFailure = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: rollbackHeaders,
+      body: JSON.stringify(rollbackBody),
+    });
+    assert.equal(localFailure.status, 502);
+    assert.equal(gatewayRequests.length, beforeRollback, "local preparation failure reached Threadspan");
+    const exactRetry = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: rollbackHeaders,
+      body: JSON.stringify(rollbackBody),
+    });
+    assert.equal(exactRetry.status, 200, router.testErrors());
+    assert.equal(gatewayRequests.length, beforeRollback + 1);
+    assert.equal(native.relayAttempts, 2);
+    const retryAfterCommit = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: rollbackHeaders,
+      body: JSON.stringify(rollbackBody),
+    });
+    assert.equal(retryAfterCommit.status, 409);
+    assert.equal((await retryAfterCommit.json()).error.type, "native_route_replay_blocked");
+    assert.equal(gatewayRequests.length, beforeRollback + 1);
+
+    const failedDispatchHeaders = headersFor(failedDispatchRootTurnId);
+    const failedDispatchBody = {
+      ...body,
+      input: "provider failure",
+      client_metadata: {
+        thread_id: threadId,
+        root_turn_id: failedDispatchRootTurnId,
+        turn_id: turnId,
+      },
+    };
+    const beforeFailedDispatch = gatewayRequests.length;
+    const providerFailure = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: failedDispatchHeaders,
+      body: JSON.stringify(failedDispatchBody),
+    });
+    assert.equal(providerFailure.status, 503);
+    assert.equal(gatewayRequests.length, beforeFailedDispatch + 1);
+    const retainedFailure = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: failedDispatchHeaders,
+      body: JSON.stringify(failedDispatchBody),
+    });
+    assert.equal(retainedFailure.status, 409);
+    assert.equal((await retainedFailure.json()).error.type, "native_route_replay_blocked");
+    assert.equal(gatewayRequests.length, beforeFailedDispatch + 1);
+    assert.equal(nativeRequests.length, 0, "failed Threadspan dispatch fell back to native OpenAI");
 
     const nativeResponse = await fetch(`${routerBase(routerPort)}/responses`, {
       method: "POST",

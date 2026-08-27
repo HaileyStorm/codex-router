@@ -25,7 +25,8 @@ process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 process.env.MODEL_ROUTER_STATE_DIR = stateDir;
 
 const {
-  claimNativeRouteLease, clearNativeRouteLease, nativeRouteLeaseStatus,
+  clearNativeRouteLease, commitNativeRouteReservation, nativeRouteLeaseStatus,
+  injectThreadspanMetadata, reserveNativeRouteLease, rollbackNativeRouteReservation,
 } = await import("../src/native-route-lease.mjs");
 const {
   NATIVE_ROUTE_LEASE_LOCK_PATH, NATIVE_ROUTE_LEASE_PATH, PROVIDER_SELECTION_PATH,
@@ -38,6 +39,10 @@ const SECOND_ROOT = "12a035a2-f151-77c1-8c62-28e2b719599b";
 const ATTEMPT = "21a035a2-f151-77c1-8c62-28e2b719599b";
 const CONSULT = "consult/grok-build/grok-4.6";
 const INTEGRATED = "integrated/nous/deepseek/deepseek-v4-flash-0731";
+
+function indexedUuid(index) {
+  return `00000000-0000-0000-0000-${index.toString(16).padStart(12, "0")}`;
+}
 
 function reset() {
   for (const target of [NATIVE_ROUTE_LEASE_PATH, PROVIDER_SELECTION_PATH]) {
@@ -65,13 +70,20 @@ function request({
   };
 }
 
+function reserve(route, value, lane = "response") {
+  return reserveNativeRouteLease(route, route, value.headers, value.payload, lane);
+}
+
 function claim(route, value, lane = "response") {
-  return claimNativeRouteLease(route, route, value.headers, value.payload, lane);
+  const reserved = reserve(route, value, lane);
+  return reserved.ok ? commitNativeRouteReservation(reserved.reservation) : reserved;
 }
 
 test("native picker selection gives Consult separate retained compact and response lanes", () => {
   reset();
-  assert.deepEqual(nativeRouteLeaseStatus(), { configured: false, activeCount: 0, tombstoneCount: 0 });
+  assert.deepEqual(nativeRouteLeaseStatus(), {
+    configured: false, activeCount: 0, reservationCount: 0, tombstoneCount: 0,
+  });
   const compact = claim(CONSULT, request(), "compact");
   assert.equal(compact.ok, true);
   assert.equal(compact.lease.lane, "compact");
@@ -96,6 +108,219 @@ test("native picker selection gives Consult separate retained compact and respon
   assert.equal(retained.tombstone, true);
   assert.equal(clearNativeRouteLease(compact.lease.leaseId, compact.lease.generation).snapshot.tombstoneCount, 1);
   assert.equal(clearNativeRouteLease(first.lease.leaseId, first.lease.generation).snapshot.tombstoneCount, 0);
+});
+
+test("reservation rollback preserves allowance and exact retry while commit consumes once", () => {
+  reset();
+  const pending = reserve(CONSULT, request());
+  assert.equal(pending.ok, true);
+  assert.equal(pending.reservation.reserved, true);
+  assert.equal(pending.reservation.remainingRequests, 1);
+  assert.equal(pending.reservation.exhausted, false);
+  assert.equal(nativeRouteLeaseStatus().reservationCount, 1);
+  assert.equal(nativeRouteLeaseStatus().tombstoneCount, 0);
+
+  const concurrent = reserve(CONSULT, request());
+  assert.equal(concurrent.error.type, "native_route_reserved");
+  assert.match(concurrent.error.message, /no provider request was sent/i);
+  assert.equal(clearNativeRouteLease(pending.reservation.leaseId, SECOND_ROOT).cleared, false);
+  assert.equal(
+    rollbackNativeRouteReservation({ ...pending.reservation, generation: SECOND_ROOT }).rolledBack,
+    false,
+  );
+  assert.equal(nativeRouteLeaseStatus().reservationCount, 1);
+
+  const rolledBack = rollbackNativeRouteReservation(pending.reservation);
+  assert.equal(rolledBack.rolledBack, true);
+  assert.equal(rolledBack.snapshot.reservationCount, 0);
+  assert.equal(rolledBack.snapshot.tombstoneCount, 0);
+  const retry = reserve(CONSULT, request());
+  assert.equal(retry.ok, true);
+  assert.notEqual(retry.reservation.reservationId, pending.reservation.reservationId);
+
+  const committed = commitNativeRouteReservation(retry.reservation);
+  assert.equal(committed.ok, true);
+  assert.equal(committed.lease.remainingRequests, 0);
+  assert.equal(committed.lease.tombstone, true);
+  const duplicateCommit = commitNativeRouteReservation(retry.reservation);
+  assert.equal(duplicateCommit.error.type, "native_route_dispatch_retained");
+  assert.match(duplicateCommit.error.message, /already committed.*retained/i);
+  assert.equal(reserve(CONSULT, request()).error.type, "native_route_replay_blocked");
+});
+
+test("a crash-persisted reservation blocks concurrency until exact rollback", () => {
+  reset();
+  const value = request();
+  const script = `
+    import { reserveNativeRouteLease } from './src/native-route-lease.mjs';
+    const headers = ${JSON.stringify(value.headers)};
+    const payload = ${JSON.stringify(value.payload)};
+    process.stdout.write(JSON.stringify(reserveNativeRouteLease(${JSON.stringify(CONSULT)}, ${JSON.stringify(CONSULT)}, headers, payload)));
+  `;
+  const crashed = JSON.parse(execFileSync(
+    process.execPath,
+    ["--input-type=module", "-e", script],
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: home,
+        CODEX_HOME: path.join(home, ".codex"),
+        MODEL_ROUTER_STATE_DIR: stateDir,
+        CODEX_ROUTER_STATE_DIR: stateDir,
+      },
+    },
+  ));
+  assert.equal(crashed.ok, true);
+  assert.equal(reserve(CONSULT, value).error.type, "native_route_reserved");
+  assert.equal(rollbackNativeRouteReservation(crashed.reservation).rolledBack, true);
+  const retry = reserve(CONSULT, value);
+  assert.equal(retry.ok, true);
+  assert.equal(rollbackNativeRouteReservation(retry.reservation).rolledBack, true);
+});
+
+test("pending reservations cannot overbook committed lease capacity", () => {
+  reset();
+  const pending = [];
+  for (let index = 0; index < 32; index += 1) {
+    const reserved = reserve(INTEGRATED, request({
+      threadId: indexedUuid(100 + index),
+      rootTurnId: indexedUuid(1_000 + index),
+    }));
+    assert.equal(reserved.ok, true);
+    pending.push(reserved.reservation);
+  }
+  const overflow = reserve(INTEGRATED, request({
+    threadId: indexedUuid(200),
+    rootTurnId: indexedUuid(2_000),
+  }));
+  assert.equal(overflow.error.type, "native_route_ledger_full");
+  for (const reservation of pending) {
+    assert.equal(commitNativeRouteReservation(reservation).ok, true);
+  }
+  const status = nativeRouteLeaseStatus();
+  assert.equal(status.activeCount, 32);
+  assert.equal(status.reservationCount, 0);
+  assert.equal(clearNativeRouteLease(pending[0].leaseId, pending[0].generation).cleared, true);
+  assert.equal(nativeRouteLeaseStatus().activeCount, 31);
+});
+
+test("pending exhaustion cannot overbook tombstone capacity", () => {
+  reset();
+  const templateCommit = claim(CONSULT, request());
+  assert.equal(templateCommit.ok, true);
+  const template = JSON.parse(readFileSync(NATIVE_ROUTE_LEASE_PATH, "utf8")).tombstones[0];
+  const tombstones = Array.from({ length: 4_095 }, (_, index) => ({
+    ...template,
+    leaseId: indexedUuid(10_000 + index),
+    generation: indexedUuid(20_000 + index),
+    lastReservationId: indexedUuid(30_000 + index),
+  }));
+  writeFileSync(NATIVE_ROUTE_LEASE_PATH, `${JSON.stringify({
+    version: 5,
+    reservations: [],
+    leases: [],
+    tombstones,
+    legacyTombstones: [],
+  })}\n`, { mode: 0o600 });
+
+  const finalSlot = reserve(CONSULT, request({
+    threadId: SECOND_THREAD,
+    rootTurnId: SECOND_ROOT,
+  }));
+  assert.equal(finalSlot.ok, true);
+  const overflow = reserve(CONSULT, request({
+    threadId: indexedUuid(50_000),
+    rootTurnId: indexedUuid(50_001),
+  }));
+  assert.equal(overflow.error.type, "native_route_tombstone_full");
+  const committed = commitNativeRouteReservation(finalSlot.reservation);
+  assert.equal(committed.ok, true);
+  assert.equal(nativeRouteLeaseStatus().tombstoneCount, 4_096);
+  assert.equal(
+    clearNativeRouteLease(committed.lease.leaseId, committed.lease.generation).snapshot.tombstoneCount,
+    4_095,
+  );
+});
+
+test("Integrated provisional tool progress is discarded on rollback", () => {
+  reset();
+  const first = claim(INTEGRATED, request({ outputs: ["historical"] }));
+  assert.equal(first.ok, true);
+  assert.equal(first.lease.remainingRequests, 16);
+  const pending = reserve(INTEGRATED, request({ outputs: ["historical", "new-0"] }));
+  assert.equal(pending.ok, true);
+  assert.equal(pending.reservation.remainingRequests, 16);
+  assert.equal(nativeRouteLeaseStatus().remainingRequests, 16);
+  assert.equal(nativeRouteLeaseStatus().integratedToolOutputs, 0);
+  assert.equal(rollbackNativeRouteReservation(pending.reservation).rolledBack, true);
+  assert.equal(nativeRouteLeaseStatus().remainingRequests, 16);
+  assert.equal(nativeRouteLeaseStatus().integratedToolOutputs, 0);
+  const staleCommit = commitNativeRouteReservation(pending.reservation);
+  assert.equal(staleCommit.error.type, "native_route_reservation_missing");
+  assert.match(staleCommit.error.message, /no provider request was sent/i);
+  const retried = reserve(INTEGRATED, request({ outputs: ["historical", "new-0"] }));
+  const committed = commitNativeRouteReservation(retried.reservation);
+  assert.equal(committed.lease.remainingRequests, 15);
+  assert.equal(committed.lease.integratedToolOutputs, 1);
+});
+
+test("an expired Integrated follow-up receipt is not mislabeled as dispatched", () => {
+  reset();
+  assert.equal(claim(INTEGRATED, request({ outputs: ["historical"] })).ok, true);
+  const pending = reserve(INTEGRATED, request({ outputs: ["historical", "new-0"] }));
+  assert.equal(pending.ok, true);
+  const ledger = JSON.parse(readFileSync(NATIVE_ROUTE_LEASE_PATH, "utf8"));
+  const old = Date.now() - 30 * 60_000 - 2_000;
+  Object.assign(ledger.leases[0], {
+    createdAt: old,
+    boundAt: old,
+    lastClaimAt: old,
+    expiresAt: old + 30 * 60_000,
+  });
+  Object.assign(ledger.reservations[0], {
+    createdAt: old,
+    boundAt: old,
+    reservedAt: old,
+    expiresAt: old + 30 * 60_000,
+  });
+  writeFileSync(NATIVE_ROUTE_LEASE_PATH, `${JSON.stringify(ledger)}\n`, { mode: 0o600 });
+  assert.equal(nativeRouteLeaseStatus().reservationCount, 0);
+  const staleCommit = commitNativeRouteReservation(pending.reservation);
+  assert.equal(staleCommit.error.type, "native_route_reservation_missing");
+  assert.match(staleCommit.error.message, /no provider request was sent/i);
+});
+
+test("Threadspan metadata is owner-private and Delegate alone enables subagents", () => {
+  const routes = [
+    [CONSULT, false],
+    ["delegate/grok-build/grok-4.6", true],
+    [INTEGRATED, false],
+  ];
+  for (const [slug, allowSubagents] of routes) {
+    const payload = {
+      metadata: {
+        keep: "caller-owned",
+        bridge_payload_classification: "public",
+        bridge_payload_disclosed: false,
+        bridge_allow_subagents: !allowSubagents,
+        bridge_allow_web_search: true,
+      },
+    };
+    injectThreadspanMetadata(
+      payload,
+      { slug, defaultEffort: "high" },
+      { cwd: workspace, threadId: THREAD },
+    );
+    assert.equal(payload.metadata.keep, "caller-owned");
+    assert.equal(payload.metadata.bridge_payload_classification, "owner_private");
+    assert.equal(payload.metadata.bridge_payload_disclosed, true);
+    assert.equal(payload.metadata.bridge_allow_subagents, allowSubagents);
+    assert.equal(payload.metadata.bridge_allow_web_search, false);
+    assert.equal(payload.metadata.bridge_no_plan, true);
+    assert.equal(payload.metadata.bridge_account_fallback, false);
+  }
 });
 
 test("Integrated compact is separate from all 17 response dispatches and 16 tool outputs", () => {
@@ -171,13 +396,58 @@ test("version-3 lease provenance migrates explicitly and blocks both new lanes",
   assert.equal(claim(INTEGRATED, request(), "compact").error.type, "native_route_legacy_replay_blocked");
   assert.equal(claim(INTEGRATED, request(), "response").error.type, "native_route_legacy_replay_blocked");
   const migrated = JSON.parse(readFileSync(NATIVE_ROUTE_LEASE_PATH, "utf8"));
-  assert.equal(migrated.version, 4);
+  assert.equal(migrated.version, 5);
+  assert.deepEqual(migrated.reservations, []);
   assert.equal(migrated.leases.length, 0);
   assert.equal(migrated.tombstones.length, 0);
   assert.equal(migrated.legacyTombstones.length, 1);
   assert.equal(migrated.legacyTombstones[0].legacyVersion, 3);
   assert.equal(migrated.legacyTombstones[0].source, "lease");
   assert.equal(clearNativeRouteLease(leaseId, generation).cleared, true);
+});
+
+test("version-4 dispatched provenance migrates conservatively after restart", () => {
+  reset();
+  const committed = claim(INTEGRATED, request({ outputs: ["historical"] }));
+  assert.equal(committed.ok, true);
+  const current = JSON.parse(readFileSync(NATIVE_ROUTE_LEASE_PATH, "utf8"));
+  writeFileSync(NATIVE_ROUTE_LEASE_PATH, `${JSON.stringify({
+    version: 4,
+    leases: current.leases,
+    tombstones: current.tombstones,
+    legacyTombstones: current.legacyTombstones,
+  })}\n`, { mode: 0o600 });
+
+  const script = `
+    import { nativeRouteLeaseStatus } from './src/native-route-lease.mjs';
+    process.stdout.write(JSON.stringify(nativeRouteLeaseStatus()));
+  `;
+  const restarted = JSON.parse(execFileSync(
+    process.execPath,
+    ["--input-type=module", "-e", script],
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: home,
+        CODEX_HOME: path.join(home, ".codex"),
+        MODEL_ROUTER_STATE_DIR: stateDir,
+        CODEX_ROUTER_STATE_DIR: stateDir,
+      },
+    },
+  ));
+  assert.equal(restarted.legacyVersion, 4);
+  assert.equal(restarted.lane, "response");
+  const migrated = JSON.parse(readFileSync(NATIVE_ROUTE_LEASE_PATH, "utf8"));
+  assert.equal(migrated.version, 5);
+  assert.deepEqual(migrated.reservations, []);
+  assert.deepEqual(migrated.leases, []);
+  assert.equal(migrated.legacyTombstones[0].legacyVersion, 4);
+  assert.equal(reserve(INTEGRATED, request(), "response").error.type, "native_route_legacy_replay_blocked");
+  const compact = reserve(INTEGRATED, request(), "compact");
+  assert.equal(compact.ok, true, "lane-aware v4 provenance blocked an unrelated compact lane");
+  assert.equal(rollbackNativeRouteReservation(compact.reservation).rolledBack, true);
 });
 
 test("picker leases are keyed per task and exact-generation clear preserves others", () => {
@@ -212,10 +482,10 @@ test("expired lease becomes a durable tombstone and blocks replay after restart"
   assert.equal(stored.tombstones[0].reason, "expired");
 
   const script = `
-    import { claimNativeRouteLease } from './src/native-route-lease.mjs';
+    import { reserveNativeRouteLease } from './src/native-route-lease.mjs';
     const headers = ${JSON.stringify(request().headers)};
     const payload = ${JSON.stringify(request().payload)};
-    process.stdout.write(JSON.stringify(claimNativeRouteLease(${JSON.stringify(INTEGRATED)}, ${JSON.stringify(INTEGRATED)}, headers, payload)));
+    process.stdout.write(JSON.stringify(reserveNativeRouteLease(${JSON.stringify(INTEGRATED)}, ${JSON.stringify(INTEGRATED)}, headers, payload)));
   `;
   const restarted = JSON.parse(execFileSync(
     process.execPath,
@@ -229,7 +499,7 @@ test("expired lease becomes a durable tombstone and blocks replay after restart"
   assert.equal(restarted.error.type, "native_route_replay_blocked");
 });
 
-test("version-4 tombstones with impossible timestamp provenance fail closed", () => {
+test("version-5 tombstones with impossible timestamp provenance fail closed", () => {
   reset();
   assert.equal(claim(CONSULT, request(), "compact").ok, true);
   const ledger = JSON.parse(readFileSync(NATIVE_ROUTE_LEASE_PATH, "utf8"));

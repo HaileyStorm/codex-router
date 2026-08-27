@@ -66,6 +66,16 @@ each enabled external provider. Native GPT entries are included only when
 `codex login status` confirms an OpenAI login, so signed-out login-free users see
 only their authenticated external models.
 
+Signed-in catalogs also derive two deliberate Sol-only context profiles from
+the complete normalized native `gpt-5.6-sol` row. The 600K/480K and
+Experimental 1M/800K rows keep Sol's instructions, capabilities, reasoning
+levels, native authentication, and compaction compatibility hash. Their
+`native-profile/` slugs are never registry or LiteLLM routes: the router keeps
+the profile identity for attribution, then rewrites it to bare Sol immediately
+before native normal or compact dispatch. Unknown profile slugs fail locally.
+They are explicit primary/subagent choices only and are excluded from
+login-free aliases and DSH publication.
+
 Signed-out catalogs additionally alias external models onto native GPT slugs.
 The ChatGPT desktop app's model menu filters `model/list` results against a
 server-delivered allowlist of native slugs, so an external slug can never
@@ -86,7 +96,8 @@ map, which restores native GPT routing.
 | Kimi K3 API | `kimi-api/kimi-k3` | `kimi-api-k3` | `kimi-k3` |
 | DeepSeek V4 Flash | `deepseek/deepseek-v4-flash` | `deepseek-v4-flash` | `deepseek-v4-flash` |
 | DeepSeek V4 Pro | `deepseek/deepseek-v4-pro` | `deepseek-v4-pro` | `deepseek-v4-pro` |
-| Grok 4.5 OAuth | `grok-oauth/grok-4.5` | `grok-oauth-grok-4-5` | `grok-4.5` |
+| Grok Direct | `grok-oauth/grok-4.6` | `grok-oauth-grok-4-6` | `grok-4.6` |
+| Grok Direct 4.5 | `grok-oauth/grok-4.5` | `grok-oauth-grok-4-5` | `grok-4.5` |
 | Grok 4.5 | `grok-api/grok-4.5` | `grok-api-grok-4-5` | `grok-4.5` |
 | Claude Opus 4.8 | `anthropic-api/claude-opus-4.8` | `anthropic-api-claude-opus-4-8` | `claude-opus-4-8` |
 | GLM-5.2 Ollama Cloud | `ollama-cloud/glm-5.2` | `ollama-cloud-glm-5-2` | `glm-5.2` |

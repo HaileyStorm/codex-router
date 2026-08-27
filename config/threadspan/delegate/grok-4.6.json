@@ -7,8 +7,8 @@
       "upstreamModel": "delegate/grok-build/grok-4.6",
       "provider": "delegate",
       "listed": true,
-      "displayName": "Grok Build Agent · Grok 4.6 Fast",
-      "description": "Routes externally to Grok 4.6 Fast through Grok Build with provider-owned workspace tools when selected in the native picker.",
+      "displayName": "Grok Agent",
+      "description": "Uses the selected Threadspan owner session for one Grok 4.6 Fast agent turn with workspace tools.",
       "priority": 0,
       "defaultEffort": "high",
       "reasoningLevels": [

@@ -91,6 +91,12 @@ test("native models map for the harness, minus Codex's internal variants", () =>
       supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }],
       priority: 1,
     },
+    {
+      slug: "native-profile/gpt-5.6-sol-600k",
+      display_name: "GPT-5.6 Sol 600K",
+      visibility: "list",
+      context_window: 600000,
+    },
     // A watermarked build and the auto-review model are Codex's own internals.
     { slug: "gpt-5.6-sol-wm", display_name: "watermarked", visibility: "hide" },
     { slug: "codex-auto-review", visibility: "hide" },

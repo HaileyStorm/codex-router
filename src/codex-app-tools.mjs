@@ -1152,6 +1152,25 @@ export const CODEX_APP_TOOLS =
 ]
 ;
 
+// The captured app-tool snapshot predates router-owned native profile rows.
+// Add their explicit model choices without changing the app's omission rule:
+// an omitted model still inherits the existing thread/default configuration.
+const NATIVE_PROFILE_MODEL_DESCRIPTION =
+  " native-profile/gpt-5.6-sol-600k (Deliberate native Sol 600K context profile; supported reasoning efforts: low, medium, high, xhigh, max, ultra), native-profile/gpt-5.6-sol-1m (Experimental native Sol 1M context profile; supported reasoning efforts: low, medium, high, xhigh, max, ultra).";
+for (const namespace of CODEX_APP_TOOLS) {
+  if (namespace?.name !== CODEX_APP_NAMESPACE) continue;
+  for (const fn of namespace.tools || []) {
+    if (!new Set(["create_thread", "send_message_to_thread"]).has(fn?.name)) continue;
+    const modelSchema = fn.inputSchema?.properties?.model;
+    if (
+      typeof modelSchema?.description === "string" &&
+      !modelSchema.description.includes("native-profile/gpt-5.6-sol-600k")
+    ) {
+      modelSchema.description += NATIVE_PROFILE_MODEL_DESCRIPTION;
+    }
+  }
+}
+
 // The Codex client registers the app toolset with deferLoading and executes
 // the calls natively even when the definitions were not in the request. The
 // router therefore relays the full set to routed providers (so the model can

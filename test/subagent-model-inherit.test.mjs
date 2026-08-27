@@ -60,6 +60,20 @@ test("explicit model always wins and stays untouched", () => {
     JSON.stringify({ threadId: "t1", prompt: "continue", model: "gpt-5.5" }),
   );
   assert.equal(injectSessionModelForSpawnCalls(namespaced, SESSION_MODEL), namespaced);
+
+  const profile = spawnCall(
+    "codex_app__create_thread",
+    undefined,
+    JSON.stringify({
+      prompt: "long task",
+      model: "native-profile/gpt-5.6-sol-600k",
+    }),
+  );
+  assert.equal(injectSessionModelForSpawnCalls(profile, SESSION_MODEL), profile);
+  assert.equal(
+    JSON.parse(profile.arguments).model,
+    "native-profile/gpt-5.6-sol-600k",
+  );
 });
 
 test("chatgptWorkCloud create_thread calls omit model", () => {

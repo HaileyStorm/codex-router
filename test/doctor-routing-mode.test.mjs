@@ -113,7 +113,11 @@ wire_api = "responses"
       const merged = JSON.parse(
         readFileSync(path.join(stateDir, "merged-models.json"), "utf8"),
       );
-      assert.deepEqual(merged.models.map((model) => model.slug), ["gpt-5.6-sol"]);
+      assert.deepEqual(merged.models.map((model) => model.slug), [
+        "gpt-5.6-sol",
+        "native-profile/gpt-5.6-sol-600k",
+        "native-profile/gpt-5.6-sol-1m",
+      ]);
       assert.equal(
         readdirSync(path.join(codexHome, "agents")).filter((name) =>
           name.startsWith("router-model-"),

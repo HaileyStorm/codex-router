@@ -15,6 +15,7 @@
 
 import { applyVisionBridge } from "./vision-bridge.mjs";
 import { yamlScalar } from "./yaml-structure.mjs";
+import { isNativeProfileNamespace } from "./native-profiles.mjs";
 
 // The route key the router owns inside `llm-pi-ai.providers`. Everything else
 // under that key belongs to the user (or to the harness's own Models page) and
@@ -144,7 +145,12 @@ export function dshCatalogModels(selectedModels, visionEngine) {
  */
 export function dshNativeModels(nativeCatalogModels) {
   return (nativeCatalogModels || [])
-    .filter((model) => model?.slug && model.visibility !== "hide")
+    .filter(
+      (model) =>
+        model?.slug &&
+        model.visibility !== "hide" &&
+        !isNativeProfileNamespace(model.slug),
+    )
     .map((model) => ({
       slug: String(model.slug),
       displayName: model.display_name ? `${model.display_name} (Codex)` : String(model.slug),

@@ -484,13 +484,69 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.deepEqual(grok.reasoningLevels.map((level) => level.effort), ["low", "medium", "high"]);
   assert.deepEqual(grok.inputModalities, ["text", "image"]);
   const grok46 = MODEL_BY_SLUG.get("grok-oauth/grok-4.6");
+  assert.equal(grok46.displayName, "Grok Direct");
+  assert.equal(
+    grok46.description,
+    "Uses the official Grok CLI OAuth session for direct Grok 4.6 coding, tools, and hosted web/X search.",
+  );
   assert.equal(grok46.contextWindow, 500_000);
+  assert.equal(grok46.autoCompact, 440_000);
+  assert.equal(grok46.gatewayModel, "grok-oauth-grok-4-6");
+  assert.equal(grok46.upstreamModel, "grok-4.6");
+  assert.equal(grok46.provider, "grok-oauth");
+  assert.equal(grok46.compHash, "grok-oauth-grok-4-6-v1");
   assert.deepEqual(
     grok46.reasoningLevels.map((level) => level.effort),
     ["low", "medium", "high", "xhigh"],
   );
   assert.equal(grok46.defaultEffort, "high");
   assert.deepEqual(grok46.inputModalities, ["text", "image"]);
+  const grok45 = MODEL_BY_SLUG.get("grok-oauth/grok-4.5");
+  assert.equal(grok45.displayName, "Grok Direct 4.5");
+  assert.equal(
+    grok45.description,
+    "Uses the official Grok CLI OAuth session for direct Grok 4.5 coding, tools, and hosted web/X search.",
+  );
+  assert.equal(grok45.contextWindow, 500_000);
+  assert.equal(grok45.autoCompact, 440_000);
+  assert.equal(grok45.gatewayModel, "grok-oauth-grok-4-5");
+  assert.equal(grok45.upstreamModel, "grok-4.5");
+  assert.equal(grok45.provider, "grok-oauth");
+  assert.equal(grok45.compHash, "grok-oauth-grok-4-5-v2");
+  const threadspanRows = [
+    {
+      slug: "delegate/grok-build/grok-4.6",
+      displayName: "Grok Agent",
+      gatewayModel: "threadspan-delegate-grok-build-grok-4-6",
+      description:
+        "Uses the selected Threadspan owner session for one Grok 4.6 Fast agent turn with workspace tools.",
+    },
+    {
+      slug: "consult/grok-build/grok-4.6",
+      displayName: "Grok Consult",
+      gatewayModel: "threadspan-consult-grok-build-grok-4-6",
+      description:
+        "Uses the selected Threadspan owner session for one text-only Grok 4.6 Fast consultation.",
+    },
+  ];
+  for (const { slug, displayName, gatewayModel, description } of threadspanRows) {
+    const model = MODEL_BY_SLUG.get(slug);
+    assert.equal(model.displayName, displayName, slug);
+    assert.equal(model.description, description, slug);
+    assert.equal(model.gatewayModel, gatewayModel, slug);
+    assert.equal(model.upstreamModel, slug, slug);
+    assert.equal(model.provider, slug.split("/")[0], slug);
+    assert.equal(model.contextWindow, 131_072, slug);
+    assert.equal(model.autoCompact, 112_000, slug);
+    assert.equal(model.compHash, undefined, slug);
+  }
+  for (const slug of [
+    "native-profile/gpt-5.6-sol-600k",
+    "native-profile/gpt-5.6-sol-1m",
+  ]) {
+    assert.equal(MODEL_BY_SLUG.has(slug), false, slug);
+    assert.equal(LISTED_MODELS.some((model) => model.slug === slug), false, slug);
+  }
   for (const slug of [
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-pro",

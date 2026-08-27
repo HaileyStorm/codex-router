@@ -42,6 +42,11 @@ import {
   readNativeCatalogSource,
 } from "./native-catalog-source.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
+import {
+  NATIVE_PROFILE_MANIFEST,
+  assertNativeProfilesDisjoint,
+  isNativeProfileNamespace,
+} from "./native-profiles.mjs";
 
 const refresh = process.argv.includes("--refresh-native");
 
@@ -514,6 +519,41 @@ function normalizeNativeModel(model) {
   return next;
 }
 
+function nativeProfileModels(normalizedNativeModels, routedModelsList) {
+  assertNativeProfilesDisjoint(MODEL_BY_SLUG);
+  const nativeBySlug = new Map(
+    normalizedNativeModels.map((model) => [String(model.slug), model]),
+  );
+  const routedSlugs = new Set(routedModelsList.map((model) => String(model.slug)));
+  const seenProfiles = new Set();
+  const profiles = [];
+  for (const profile of NATIVE_PROFILE_MANIFEST.profiles) {
+    if (seenProfiles.has(profile.slug)) {
+      throw new Error(`Duplicate native profile slug: ${profile.slug}`);
+    }
+    seenProfiles.add(profile.slug);
+    if (nativeBySlug.has(profile.slug) || routedSlugs.has(profile.slug) || MODEL_BY_SLUG.has(profile.slug)) {
+      throw new Error(`Native profile slug collides with an existing model: ${profile.slug}`);
+    }
+    const base = nativeBySlug.get(profile.nativeModel);
+    // An account/binary catalog may legitimately omit Sol. In that case no
+    // native profile can be truthfully derived, so publish none rather than
+    // cloning an unrelated template or failing the whole catalog refresh.
+    if (!base) continue;
+    profiles.push({
+      ...base,
+      slug: profile.slug,
+      display_name: profile.displayName,
+      description: profile.description,
+      priority: profile.priority,
+      context_window: profile.contextWindow,
+      max_context_window: profile.contextWindow,
+      auto_compact_token_limit: profile.autoCompact,
+    });
+  }
+  return profiles;
+}
+
 export function routedModel(template, model) {
   const next = {
     ...template,
@@ -745,11 +785,25 @@ export function buildMergedCatalog(native, routedModelsList, { includeNative = t
   if (!template) {
     throw new Error("Native model catalog is empty.");
   }
-  const models = new Map(
-    includeNative
-      ? native.models.map((model) => [model.slug, normalizeNativeModel(model)])
-      : [],
-  );
+  const normalizedNative = includeNative
+    ? native.models.map((model) => normalizeNativeModel(model))
+    : [];
+  for (const model of native.models) {
+    if (isNativeProfileNamespace(model.slug)) {
+      throw new Error(`Raw native catalog uses the reserved profile namespace: ${model.slug}`);
+    }
+  }
+  for (const model of routedModelsList) {
+    if (isNativeProfileNamespace(model.slug)) {
+      throw new Error(`Routed model uses the reserved native profile namespace: ${model.slug}`);
+    }
+  }
+  const models = new Map(normalizedNative.map((model) => [model.slug, model]));
+  if (includeNative) {
+    for (const profile of nativeProfileModels(normalizedNative, routedModelsList)) {
+      models.set(profile.slug, profile);
+    }
+  }
   for (const model of routedModelsList) {
     models.set(model.slug, routedModel(template, model));
   }

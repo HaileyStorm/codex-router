@@ -17,6 +17,7 @@ test.after(() => rmSync(stateDir, { recursive: true, force: true }));
 test("assignments pair listed native slots with external models by priority", () => {
   const native = [
     { slug: "codex-auto-review", visibility: "hide", priority: 1 },
+    { slug: "native-profile/gpt-5.6-sol-600k", visibility: "list", priority: 2 },
     { slug: "gpt-5.4", visibility: "list", priority: 20 },
     { slug: "gpt-5.5", visibility: "list", priority: 10 },
   ];

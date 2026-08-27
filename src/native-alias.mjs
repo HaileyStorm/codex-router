@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 
 import { NATIVE_ALIAS_PATH } from "./paths.mjs";
+import { isNativeProfileNamespace } from "./native-profiles.mjs";
 
 // Signed-out Codex surfaces (notably the ChatGPT desktop app) only display
 // models whose slugs pass a server-delivered allowlist of native GPT slugs.
@@ -9,7 +10,12 @@ import { NATIVE_ALIAS_PATH } from "./paths.mjs";
 
 export function buildNativeAliasAssignments(nativeModels, externalModels) {
   const slots = (Array.isArray(nativeModels) ? nativeModels : [])
-    .filter((model) => model.visibility === "list" && typeof model.slug === "string")
+    .filter(
+      (model) =>
+        model.visibility === "list" &&
+        typeof model.slug === "string" &&
+        !isNativeProfileNamespace(model.slug),
+    )
     .sort((left, right) => {
       const priority = Number(left.priority ?? 999) - Number(right.priority ?? 999);
       return priority || String(left.slug).localeCompare(String(right.slug));

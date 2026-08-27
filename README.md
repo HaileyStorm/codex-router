@@ -122,11 +122,12 @@ Linux installations support the Codex CLI.
 | Kimi K3 (China API) | `kimi-api-cn/kimi-k3` | Separately billed Moonshot **China** platform key |
 | DeepSeek V4 Flash (API) | `deepseek/deepseek-v4-flash` | DeepSeek API key |
 | DeepSeek V4 Pro (API) | `deepseek/deepseek-v4-pro` | DeepSeek API key |
-| Grok Build Agent · Grok 4.6 Fast | `delegate/grok-build/grok-4.6` | Existing local Threadspan owner session |
-| Grok Build Consult · Grok 4.6 Fast | `consult/grok-build/grok-4.6` | Existing local Threadspan owner session |
+| Grok Agent | `delegate/grok-build/grok-4.6` | Existing local Threadspan owner session |
+| Grok Consult | `consult/grok-build/grok-4.6` | Existing local Threadspan owner session |
 | Nous Tools · DeepSeek V4 Flash/Pro | `integrated/nous/deepseek/deepseek-v4-{flash-0731,pro-0813}` | Existing local Threadspan owner session |
 | Nous Consult · DeepSeek V4 Flash/Pro | `consult/nous/deepseek/deepseek-v4-{flash-0731,pro-0813}` | Existing local Threadspan owner session |
-| Grok 4.5 (OAuth) | `grok-oauth/grok-4.5` | Official Grok CLI OAuth session |
+| Grok Direct | `grok-oauth/grok-4.6` | Official Grok CLI OAuth session |
+| Grok Direct 4.5 | `grok-oauth/grok-4.5` | Official Grok CLI OAuth session |
 | Grok 4.5 (API) | `grok-api/grok-4.5` | Separately billed xAI API key |
 | Claude Opus 4.8 (API) | `anthropic-api/claude-opus-4.8` | Separately billed Anthropic API key |
 | GLM-5.2 (Ollama Cloud) | `ollama-cloud/glm-5.2` | Ollama Cloud API key |
@@ -179,6 +180,25 @@ subscription reused through the official CLI's session.)
 The Codex catalog is credential-aware. It includes models only from enabled
 external providers with a stored credential or valid OAuth session. Native GPT
 models are included only when `codex login status` confirms an OpenAI login.
+
+### Native Sol context profiles
+
+Signed-in Codex catalogs add two explicit native Sol choices without changing
+the standard `gpt-5.6-sol` 320K/272K policy:
+
+| Picker label | Model ID | Context | Auto-compact |
+| --- | --- | ---: | ---: |
+| GPT-5.6 Sol 600K | `native-profile/gpt-5.6-sol-600k` | 600,000 | 480,000 |
+| GPT-5.6 Sol 1M (Experimental) | `native-profile/gpt-5.6-sol-1m` | 1,000,000 | 800,000 |
+
+Choose these infrequently and deliberately for a primary task or an explicit
+subagent override that benefits from retaining more history. They use the same
+native OpenAI login and dispatch as bare Sol, not LiteLLM or an external
+provider. Longer retained input may consume the account's usage allowance
+faster. The 1M choice is marked Experimental because the currently captured
+native Sol row advertises an 872K maximum; upstream may reject a request beyond
+that captured limit. These profiles are not defaults, are not inherited by
+router-managed agents, and are not published in login-free or DSH catalogs.
 
 ### Threadspan routes in the native picker
 

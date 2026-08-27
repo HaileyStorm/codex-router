@@ -39,6 +39,11 @@ import { MODEL_BY_SLUG, PROVIDERS, providerForModel } from "./model-registry.mjs
 import { createHealthCache } from "./health-cache.mjs";
 import { discoveryDisabled } from "./discovery-mode.mjs";
 import { readNativeAliases } from "./native-alias.mjs";
+import {
+  assertNativeProfilesDisjoint,
+  isNativeProfileNamespace,
+  nativeProfile,
+} from "./native-profiles.mjs";
 import { readNativeRedirect } from "./native-redirect.mjs";
 import {
   commitNativeRouteReservation,
@@ -48,6 +53,7 @@ import {
   rollbackNativeRouteReservation,
   validateThreadspanMetadata,
 } from "./native-route-lease.mjs";
+
 import {
   canonicalProviderId,
   readProviderSelection,
@@ -108,6 +114,11 @@ import {
 import { VERSION } from "./version.mjs";
 import { nativeSessionHeaders } from "./codex-native-session.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
+
+// A profile slug is native authority. Refuse to start if a future external
+// registry entry claims the same identity; request-order precedence must never
+// decide which provider/account receives a turn.
+assertNativeProfilesDisjoint(MODEL_BY_SLUG);
 
 installStableFetchTransport();
 
@@ -1818,17 +1829,29 @@ async function handleResponses(request, response, requestUrl) {
     const body = decodeBody(encoded, request.headers["content-encoding"]);
     const payload = parseBody(body);
     requestedModel = typeof payload.model === "string" ? payload.model : "";
+    const selectedNativeProfile = nativeProfile(requestedModel);
     let registeredRoute =
-      MODEL_BY_SLUG.get(requestedModel) ??
-      MODEL_BY_SLUG.get(readNativeAliases()[requestedModel]);
+      selectedNativeProfile
+        ? undefined
+        : MODEL_BY_SLUG.get(requestedModel) ??
+          MODEL_BY_SLUG.get(readNativeAliases()[requestedModel]);
     // These namespaces are external-routing authority, never native model
     // names. A stale picker entry or version-skewed Threadspan slug must fail
     // locally instead of falling through to native OpenAI or native redirect.
-    if (!registeredRoute && /^(?:consult|delegate|integrated)\//.test(requestedModel)) {
+    if (
+      !registeredRoute &&
+      !selectedNativeProfile &&
+      (/^(?:consult|delegate|integrated)\//.test(requestedModel) ||
+        isNativeProfileNamespace(requestedModel))
+    ) {
       writeJson(response, 409, {
         error: {
-          type: "unknown_external_model_route",
-          message: "The selected external model route is not registered in this router build.",
+          type: isNativeProfileNamespace(requestedModel)
+            ? "unknown_native_model_profile"
+            : "unknown_external_model_route",
+          message: isNativeProfileNamespace(requestedModel)
+            ? "The selected native model profile is not registered in this router build."
+            : "The selected external model route is not registered in this router build.",
         },
       });
       return;
@@ -1839,7 +1862,7 @@ async function handleResponses(request, response, requestUrl) {
     // them to the configured routed model; a target that is unknown or whose
     // provider is hidden leaves the turn native rather than trading a quota
     // failure for a routing error.
-    if (!registeredRoute && requestedModel) {
+    if (!registeredRoute && !selectedNativeProfile && requestedModel) {
       const redirect = MODEL_BY_SLUG.get(readNativeRedirect());
       if (redirect && readProviderSelection().includes(redirect.provider)) {
         registeredRoute = redirect;
@@ -2107,6 +2130,11 @@ async function handleResponses(request, response, requestUrl) {
       if (callerBroughtNoUpstreamCredential(request)) {
         normalizeNativeForSubstitutedCaller(native);
       }
+      // Preserve the profile slug through routing, attribution, and request
+      // normalization, then reveal only the canonical native model to the
+      // OpenAI backend. Both /responses and /responses/compact share this
+      // serialization boundary, as does v2 compaction_trigger traffic.
+      if (selectedNativeProfile) native.model = selectedNativeProfile.nativeModel;
       target = nativeTarget(requestUrl.pathname);
       headers = nativeHeaders(request);
       routedBody = await compressedNativeBody(

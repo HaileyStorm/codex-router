@@ -25,6 +25,10 @@ import {
   routedModel,
 } from "../src/catalog.mjs";
 import { MODEL_BY_SLUG } from "../src/model-registry.mjs";
+import {
+  NATIVE_PROFILE_MANIFEST,
+  assertNativeProfilesDisjoint,
+} from "../src/native-profiles.mjs";
 
 const template = {
   slug: "gpt-5.5",
@@ -420,6 +424,102 @@ test("merged catalog applies owner limits only to exact native GPT-5.6 tiers", (
   }
 });
 
+test("merged catalog clones exactly two explicit native Sol profiles", () => {
+  const nativeSol = {
+    ...template,
+    slug: "gpt-5.6-sol",
+    display_name: "GPT-5.6 Sol",
+    description: "Native Sol",
+    context_window: 272_000,
+    max_context_window: 872_000,
+    auto_compact_token_limit: null,
+    effective_context_window_percent: 95,
+    comp_hash: "3000",
+    multi_agent_version: "v2",
+    input_modalities: ["text", "image"],
+    supported_reasoning_levels: [
+      { effort: "low", description: "Fast" },
+      { effort: "max", description: "Deep" },
+    ],
+    supports_search_tool: true,
+    experimental_supported_tools: ["apply_patch"],
+  };
+  const merged = buildMergedCatalog({ models: [nativeSol] }, []);
+  const bySlug = new Map(merged.map((model) => [model.slug, model]));
+  const normalizedBase = bySlug.get(nativeSol.slug);
+  assert.equal(normalizedBase.context_window, 320_000);
+  assert.equal(normalizedBase.auto_compact_token_limit, 272_000);
+  assert.equal(NATIVE_PROFILE_MANIFEST.version, 1);
+  assert.equal(NATIVE_PROFILE_MANIFEST.profiles.length, 2);
+
+  const mutableFields = new Set([
+    "slug",
+    "display_name",
+    "description",
+    "priority",
+    "context_window",
+    "max_context_window",
+    "auto_compact_token_limit",
+  ]);
+  const capabilities = (model) =>
+    Object.fromEntries(
+      Object.entries(model).filter(([field]) => !mutableFields.has(field)),
+    );
+  for (const spec of NATIVE_PROFILE_MANIFEST.profiles) {
+    const profile = bySlug.get(spec.slug);
+    assert.ok(profile, spec.slug);
+    assert.equal(profile.context_window, spec.contextWindow, spec.slug);
+    assert.equal(profile.max_context_window, spec.contextWindow, spec.slug);
+    assert.equal(profile.auto_compact_token_limit, spec.autoCompact, spec.slug);
+    assert.equal(profile.priority, spec.priority, spec.slug);
+    assert.equal(profile.comp_hash, "3000", spec.slug);
+    assert.equal(profile.multi_agent_version, "v2", spec.slug);
+    assert.deepEqual(capabilities(profile), capabilities(normalizedBase), spec.slug);
+  }
+  assert.match(bySlug.get("native-profile/gpt-5.6-sol-1m").display_name, /Experimental/);
+  assert.deepEqual(
+    merged
+      .filter((model) => String(model.slug).startsWith("native-profile/"))
+      .map((model) => model.slug),
+    [
+      "native-profile/gpt-5.6-sol-600k",
+      "native-profile/gpt-5.6-sol-1m",
+    ],
+  );
+});
+
+test("native profile namespace collisions fail before catalog publication", () => {
+  const nativeSol = { ...template, slug: "gpt-5.6-sol", comp_hash: "3000" };
+  assert.throws(
+    () =>
+      buildMergedCatalog(
+        {
+          models: [
+            nativeSol,
+            { ...template, slug: "native-profile/gpt-5.6-sol-600k" },
+          ],
+        },
+        [],
+      ),
+    /reserved profile namespace/,
+  );
+  assert.throws(
+    () =>
+      buildMergedCatalog(
+        { models: [nativeSol] },
+        [{ ...grok, slug: "native-profile/gpt-5.6-sol-1m" }],
+      ),
+    /reserved native profile namespace/,
+  );
+  assert.throws(
+    () =>
+      assertNativeProfilesDisjoint(
+        new Map([["native-profile/gpt-5.6-sol-600k", { provider: "future" }]]),
+      ),
+    /collides with the external model registry/,
+  );
+});
+
 test("routed GPT-5.6 wrappers publish the owner limits without changing Grok", () => {
   for (const slug of [
     "commandcode/gpt-5.6-sol",
@@ -491,6 +591,10 @@ test("login-free catalog republishes external models under native slugs", () => 
   assert.equal(bySlug.get("gpt-5.4").display_name, "Kimi K3 (OAuth)");
   assert.equal(bySlug.get("grok-oauth/grok-4.5").visibility, "hide");
   assert.equal(bySlug.get("kimi-oauth/k3").visibility, "hide");
+  assert.equal(
+    models.some((model) => String(model.slug).startsWith("native-profile/")),
+    false,
+  );
 });
 
 test("login-free catalog keeps overflow models visible under their own slugs", () => {

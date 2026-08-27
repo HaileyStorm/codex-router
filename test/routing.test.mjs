@@ -724,6 +724,107 @@ test("router preserves native auth and isolates every external route", async () 
   }
 });
 
+test("native Sol profiles rewrite only at native normal and compact dispatch", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "native-profile-routing-"));
+  writeFileSync(
+    path.join(stateDir, "native-redirect.json"),
+    `${JSON.stringify({ version: 1, model: "grok-oauth/grok-4.5" })}\n`,
+    { mode: 0o600 },
+  );
+  const nativeRequests = [];
+  const gatewayRequests = [];
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    json(response, 200, { route: "native" });
+  });
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    json(response, 200, { route: "external" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+    "ChatGPT-Account-Id": "account-id",
+    "Content-Type": "application/json",
+  };
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    for (const [endpoint, model, input] of [
+      ["/responses", "native-profile/gpt-5.6-sol-600k", "normal"],
+      [
+        "/responses/compact",
+        "native-profile/gpt-5.6-sol-1m",
+        [{ type: "message", role: "user", content: [{ type: "input_text", text: "compact" }] }],
+      ],
+      [
+        "/responses",
+        "native-profile/gpt-5.6-sol-600k",
+        [{ type: "compaction_trigger" }],
+      ],
+    ]) {
+      const response = await fetch(`${routerBase(routerPort)}${endpoint}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model, input }),
+      });
+      assert.equal(response.status, 200, `${endpoint} ${model}: ${router.testErrors()}`);
+    }
+
+    assert.equal(nativeRequests.length, 3);
+    assert.deepEqual(
+      nativeRequests.map((request) => request.body.model),
+      ["gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol"],
+    );
+    assert.deepEqual(
+      nativeRequests.map((request) => request.url),
+      [
+        "/backend-api/codex/responses",
+        "/backend-api/codex/responses/compact",
+        "/backend-api/codex/responses",
+      ],
+    );
+    for (const request of nativeRequests) {
+      assert.equal(request.headers.authorization, "Bearer CHATGPT_SESSION_TOKEN");
+      assert.equal(request.headers["chatgpt-account-id"], "account-id");
+    }
+    assert.equal(gatewayRequests.length, 0, "native profiles followed the external redirect");
+
+    const stale = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "native-profile/gpt-5.6-sol-stale",
+        input: "must fail locally",
+      }),
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json()).error.type, "unknown_native_model_profile");
+    assert.equal(nativeRequests.length, 3);
+    assert.equal(gatewayRequests.length, 0);
+  } finally {
+    await stopChild(router);
+    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("Threadspan picker selection creates an exact lease with no fallback", async () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "threadspan-native-route-"));
   const workspace = path.join(stateDir, "workspace");

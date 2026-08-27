@@ -71,6 +71,17 @@ test("snapshot covers the full native app toolset (threads, automations, navigat
   }
 });
 
+test("thread tools describe native profiles as explicit model choices", () => {
+  const codexApp = CODEX_APP_TOOLS.find((entry) => entry.name === "codex_app");
+  for (const name of ["create_thread", "send_message_to_thread"]) {
+    const fn = codexApp.tools.find((tool) => tool.name === name);
+    const description = fn.inputSchema.properties.model.description;
+    assert.match(description, /native-profile\/gpt-5\.6-sol-600k/);
+    assert.match(description, /native-profile\/gpt-5\.6-sol-1m/);
+    assert.match(description, /Experimental native Sol 1M/);
+  }
+});
+
 test("merge fills the deferred app tools into the reduced client namespace", () => {
   const { tools, merged } = mergeCodexAppTools(clientRoutedTools());
   assert.equal(merged, true);

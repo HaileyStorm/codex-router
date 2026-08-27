@@ -44,7 +44,15 @@ function clientRoutedTools() {
             properties: {
               model: {
                 anyOf: [
-                  { type: "string", enum: ["gpt-5.6-sol", "gpt-5.6-terra"] },
+                  {
+                    type: "string",
+                    enum: [
+                      "gpt-5.6-sol",
+                      "gpt-5.6-terra",
+                      "native-profile/gpt-5.6-sol-600k",
+                      "native-profile/gpt-5.6-sol-1m",
+                    ],
+                  },
                   { type: "null" },
                 ],
               },
@@ -405,6 +413,25 @@ test("response transform drops a spawn-agent model override not offered by the t
     message: "verify",
     model: "gpt-5.6-terra",
   });
+
+  for (const model of [
+    "native-profile/gpt-5.6-sol-600k",
+    "native-profile/gpt-5.6-sol-1m",
+  ]) {
+    const explicitProfile = rewriteNamespaceResponsePayload(
+      {
+        output: [
+          {
+            type: "function_call",
+            name: "collaboration__spawn_agent",
+            arguments: JSON.stringify({ message: "verify", model }),
+          },
+        ],
+      },
+      lookups,
+    );
+    assert.equal(JSON.parse(explicitProfile.output[0].arguments).model, model);
+  }
 });
 
 test("response transform detects headerless SSE after split framing prelude", async () => {

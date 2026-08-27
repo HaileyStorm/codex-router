@@ -1452,7 +1452,9 @@ test("router relays encrypted Codex subagent payloads before external routing", 
   const nativeRequests = [];
   const native = await mockServer(async (request, response) => {
     nativeRequests.push({ headers: request.headers, body: await bodyJson(request) });
-    const relayArguments = JSON.stringify({ payload: "Inspect /tmp/capture.png harshly." });
+    const relayArguments = JSON.stringify({
+      payload: `Relayed plaintext ${nativeRequests.length}.`,
+    });
     const relayEvents = [
       {
         type: "response.output_item.added",
@@ -1499,37 +1501,74 @@ test("router relays encrypted Codex subagent payloads before external routing", 
     CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
     CODEX_ROUTER_QUIET: "1",
   });
+  const alternateWorkspace = mkdtempSync(path.join(os.tmpdir(), "agent-lineage-workspace-"));
+  const baselineLineage = {
+    accountId: "account-id",
+    parentThreadId: "10000000-0000-4000-8000-000000000001",
+    threadId: "20000000-0000-4000-8000-000000000002",
+    rootTurnId: "30000000-0000-4000-8000-000000000003",
+    workspace: root,
+  };
+  const encryptedContent = "gAAAAA-test-payload=";
+
+  function lineageHeaders(lineage = baselineLineage, extra = {}) {
+    return {
+      Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+      "ChatGPT-Account-Id": lineage.accountId,
+      "Thread-Id": lineage.threadId,
+      "X-Codex-Parent-Thread-Id": lineage.parentThreadId,
+      "X-Codex-Turn-Metadata": JSON.stringify({
+        turn: {
+          thread_id: lineage.threadId,
+          root_turn_id: lineage.rootTurnId,
+          turn_id: "40000000-0000-4000-8000-000000000004",
+        },
+        workspaces: { [lineage.workspace]: { git: null } },
+      }),
+      "Content-Type": "application/json",
+      ...extra,
+    };
+  }
+
+  function encryptedRequestBody(lineage = baselineLineage) {
+    return {
+      model: "kimi-oauth/k3",
+      stream: false,
+      client_metadata: {
+        thread_id: lineage.threadId,
+        root_turn_id: lineage.rootTurnId,
+        workspace: lineage.workspace,
+      },
+      input: [
+        {
+          type: "agent_message",
+          author: "/root",
+          recipient: "/root/critic",
+          content: [
+            {
+              type: "input_text",
+              text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\n",
+            },
+            { type: "encrypted_content", encrypted_content: encryptedContent },
+          ],
+        },
+      ],
+    };
+  }
+
+  async function sendEncrypted(lineage = baselineLineage, extraHeaders = {}) {
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: lineageHeaders(lineage, extraHeaders),
+      body: JSON.stringify(encryptedRequestBody(lineage)),
+    });
+    assert.equal(response.status, 200, await response.text());
+    return gatewayRequests.at(-1).body.input[0].content.at(-1).text;
+  }
 
   try {
     await waitFor(`${routerBase(routerPort)}/models`, router);
-    const response = await fetch(`${routerBase(routerPort)}/responses`, {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
-        "ChatGPT-Account-Id": "account-id",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "kimi-oauth/k3",
-        stream: false,
-        input: [
-          {
-            type: "agent_message",
-            author: "/root",
-            recipient: "/root/critic",
-            content: [
-              {
-                type: "input_text",
-                text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\n",
-              },
-              { type: "encrypted_content", encrypted_content: "gAAAAA-test-payload=" },
-            ],
-          },
-        ],
-      }),
-    });
-
-    assert.equal(response.status, 200, await response.text());
+    assert.equal(await sendEncrypted(), "Relayed plaintext 1.");
     assert.equal(nativeRequests.length, 1);
     assert.equal(nativeRequests[0].headers.authorization, "Bearer CHATGPT_SESSION_TOKEN");
     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-id");
@@ -1539,42 +1578,62 @@ test("router relays encrypted Codex subagent payloads before external routing", 
     assert.equal(gatewayRequests.length, 1);
     const content = gatewayRequests[0].body.input[0].content;
     assert.equal(content.some((part) => part.type === "encrypted_content"), false);
-    assert.equal(content.at(-1).text, "Inspect /tmp/capture.png harshly.");
+    assert.equal(content.at(-1).text, "Relayed plaintext 1.");
+    assert.equal(gatewayRequests[0].headers["chatgpt-account-id"], undefined);
+    assert.equal(gatewayRequests[0].headers["thread-id"], undefined);
+    assert.equal(gatewayRequests[0].headers["x-codex-parent-thread-id"], undefined);
+    assert.equal(gatewayRequests[0].headers["x-codex-turn-metadata"], undefined);
 
-    const cachedResponse = await fetch(`${routerBase(routerPort)}/responses`, {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
-        "ChatGPT-Account-Id": "account-id",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "kimi-oauth/k3",
-        stream: false,
-        input: [
-          {
-            type: "agent_message",
-            content: [
-              {
-                type: "input_text",
-                text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\n",
-              },
-              { type: "encrypted_content", encrypted_content: "gAAAAA-test-payload=" },
-            ],
-          },
-        ],
-      }),
-    });
-    assert.equal(cachedResponse.status, 200, await cachedResponse.text());
+    assert.equal(await sendEncrypted(), "Relayed plaintext 1.");
     assert.equal(nativeRequests.length, 1);
+
+    const isolatedLineages = [
+      { ...baselineLineage, accountId: "other-account-id" },
+      {
+        ...baselineLineage,
+        parentThreadId: "10000000-0000-4000-8000-000000000009",
+      },
+      { ...baselineLineage, threadId: "20000000-0000-4000-8000-000000000009" },
+      { ...baselineLineage, rootTurnId: "30000000-0000-4000-8000-000000000009" },
+      { ...baselineLineage, workspace: alternateWorkspace },
+    ];
+    for (const lineage of isolatedLineages) {
+      const expectedRelay = nativeRequests.length + 1;
+      assert.equal(await sendEncrypted(lineage), `Relayed plaintext ${expectedRelay}.`);
+      assert.equal(nativeRequests.length, expectedRelay);
+    }
+
+    const missingParentHeaders = lineageHeaders();
+    delete missingParentHeaders["X-Codex-Parent-Thread-Id"];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const expectedRelay = nativeRequests.length + 1;
+      const response = await fetch(`${routerBase(routerPort)}/responses`, {
+        method: "POST",
+        headers: missingParentHeaders,
+        body: JSON.stringify(encryptedRequestBody()),
+      });
+      assert.equal(response.status, 200, await response.text());
+      assert.equal(nativeRequests.length, expectedRelay);
+      assert.equal(
+        gatewayRequests.at(-1).body.input[0].content.at(-1).text,
+        `Relayed plaintext ${expectedRelay}.`,
+      );
+    }
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const expectedRelay = nativeRequests.length + 1;
+      assert.equal(
+        await sendEncrypted(baselineLineage, {
+          "Session-Id": "20000000-0000-4000-8000-000000000099",
+        }),
+        `Relayed plaintext ${expectedRelay}.`,
+      );
+      assert.equal(nativeRequests.length, expectedRelay);
+    }
 
     const plaintextResponse = await fetch(`${routerBase(routerPort)}/responses`, {
       method: "POST",
-      headers: {
-        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
-        "ChatGPT-Account-Id": "account-id",
-        "Content-Type": "application/json",
-      },
+      headers: lineageHeaders(),
       body: JSON.stringify({
         model: "kimi-oauth/k3",
         stream: false,
@@ -1596,8 +1655,8 @@ test("router relays encrypted Codex subagent payloads before external routing", 
       }),
     });
     assert.equal(plaintextResponse.status, 200, await plaintextResponse.text());
-    assert.equal(nativeRequests.length, 1);
-    const plaintextContent = gatewayRequests[2].body.input[0].content;
+    assert.equal(nativeRequests.length, 10);
+    const plaintextContent = gatewayRequests.at(-1).body.input[0].content;
     assert.equal(plaintextContent.some((part) => part.type === "encrypted_content"), false);
     assert.equal(
       plaintextContent.at(-1).text,
@@ -1606,6 +1665,7 @@ test("router relays encrypted Codex subagent payloads before external routing", 
   } finally {
     await stopChild(router);
     await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
+    rmSync(alternateWorkspace, { recursive: true, force: true });
   }
 });
 

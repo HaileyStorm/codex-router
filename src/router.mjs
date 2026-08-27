@@ -50,6 +50,7 @@ import {
   commitNativeRouteReservation,
   injectThreadspanMetadata,
   isThreadspanRoute,
+  nativeRouteRequestIdentity,
   reserveNativeRouteLease,
   rollbackNativeRouteReservation,
   validateThreadspanMetadata,
@@ -986,12 +987,95 @@ function parseRelayedAgentPayloadSse(bytes) {
   return undefined;
 }
 
-function agentPayloadCacheKey(encrypted) {
-  return createHash("sha256").update(encrypted).digest("base64url");
+const AGENT_PAYLOAD_LINEAGE_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function exactRequestHeader(request, name) {
+  const rawHeaders = Array.isArray(request?.rawHeaders) ? request.rawHeaders : [];
+  if (rawHeaders.length > 0) {
+    const values = [];
+    for (let index = 0; index < rawHeaders.length; index += 2) {
+      if (String(rawHeaders[index]).toLowerCase() === name) values.push(rawHeaders[index + 1]);
+    }
+    if (values.length !== 1) return undefined;
+    return typeof values[0] === "string" && values[0].trim() ? values[0].trim() : undefined;
+  }
+  const value = request?.headers?.[name];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function cachedAgentPayload(encrypted) {
-  const key = agentPayloadCacheKey(encrypted);
+function agentPayloadCacheScope(request) {
+  const accountId = exactRequestHeader(request, "chatgpt-account-id");
+  const parentThreadId = exactRequestHeader(request, "x-codex-parent-thread-id");
+  const turnMetadata = exactRequestHeader(request, "x-codex-turn-metadata");
+  if (!accountId || !parentThreadId || !turnMetadata) return undefined;
+  if (!AGENT_PAYLOAD_LINEAGE_UUID.test(parentThreadId)) return undefined;
+
+  const threadIds = [];
+  for (const name of ["thread-id", "session-id", "session_id"]) {
+    const value = exactRequestHeader(request, name);
+    if (value === undefined) continue;
+    if (!AGENT_PAYLOAD_LINEAGE_UUID.test(value)) return undefined;
+    threadIds.push(value.toLowerCase());
+  }
+  if (threadIds.length === 0 || new Set(threadIds).size !== 1) return undefined;
+
+  let metadata;
+  try {
+    metadata = JSON.parse(turnMetadata);
+  } catch {
+    return undefined;
+  }
+  const metadataThreadId = metadata?.turn?.thread_id;
+  const rootTurnId = metadata?.turn?.root_turn_id;
+  const workspaces = metadata?.workspaces;
+  if (
+    !AGENT_PAYLOAD_LINEAGE_UUID.test(metadataThreadId) ||
+    !AGENT_PAYLOAD_LINEAGE_UUID.test(rootTurnId) ||
+    metadataThreadId.toLowerCase() !== threadIds[0] ||
+    !workspaces ||
+    typeof workspaces !== "object" ||
+    Array.isArray(workspaces) ||
+    Object.keys(workspaces).length !== 1
+  ) {
+    return undefined;
+  }
+  const identity = nativeRouteRequestIdentity(
+    { "x-codex-turn-metadata": turnMetadata },
+    undefined,
+  );
+  if (
+    identity.threadId !== metadataThreadId.toLowerCase() ||
+    identity.rootTurnId !== rootTurnId.toLowerCase() ||
+    !identity.cwd
+  ) {
+    return undefined;
+  }
+
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        accountId,
+        parentThreadId: parentThreadId.toLowerCase(),
+        threadId: threadIds[0],
+        rootTurnId: identity.rootTurnId,
+        workspace: identity.cwd,
+      }),
+    )
+    .digest("base64url");
+}
+
+function agentPayloadCacheKey(encrypted, scope) {
+  return createHash("sha256")
+    .update(scope)
+    .update("\0")
+    .update(encrypted)
+    .digest("base64url");
+}
+
+function cachedAgentPayload(encrypted, scope) {
+  if (!scope) return undefined;
+  const key = agentPayloadCacheKey(encrypted, scope);
   const entry = agentPayloadCache.get(key);
   if (!entry) return undefined;
   if (entry.expiresAt <= Date.now()) {
@@ -1004,8 +1088,9 @@ function cachedAgentPayload(encrypted) {
   return entry.plaintext;
 }
 
-function rememberAgentPayload(encrypted, plaintext) {
-  const key = agentPayloadCacheKey(encrypted);
+function rememberAgentPayload(encrypted, plaintext, scope) {
+  if (!scope) return;
+  const key = agentPayloadCacheKey(encrypted, scope);
   const existing = agentPayloadCache.get(key);
   if (existing) agentPayloadCacheBytes -= existing.bytes;
   const bytes = Buffer.byteLength(plaintext, "utf8");
@@ -1027,7 +1112,8 @@ function rememberAgentPayload(encrypted, plaintext) {
 }
 
 async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
-  const cached = cachedAgentPayload(encrypted);
+  const cacheScope = agentPayloadCacheScope(request);
+  const cached = cachedAgentPayload(encrypted, cacheScope);
   if (cached !== undefined) return cached;
   const body = {
     model: nativeAgentRelayModel(),
@@ -1090,7 +1176,7 @@ async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
     error.status = 502;
     throw error;
   }
-  rememberAgentPayload(encrypted, plaintext);
+  rememberAgentPayload(encrypted, plaintext, cacheScope);
   return plaintext;
 }
 
@@ -1540,8 +1626,9 @@ async function summarize(request, payload, route, signal, beforeFetch) {
   // It replays the collaboration items too, so the agent-payload resolution a
   // routed turn performs has to happen here as well -- otherwise a compaction
   // inside a `/goal` or subagent session summarizes opaque payloads. The relay
-  // is cached by ciphertext, so a conversation whose turns already resolved
-  // costs nothing extra here.
+  // is cached by ciphertext inside the exact account/thread/root/workspace
+  // lineage, so a conversation whose turns already resolved costs nothing
+  // extra here without sharing plaintext across request lineages.
   const normalized = await normalizeRoutedAgentInput(request, originalInput, signal);
   const agingEnabled = toolResultAgingEnabled();
   const retentionContext = optionalToolResultRetentionContext(

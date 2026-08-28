@@ -6,11 +6,11 @@
       "displayName": "FreeToken (Local)",
       "kind": "openai-compatible",
       "ownedBy": "local",
-      "protocol": "openai",
+      "protocol": "openai-responses",
       "baseUrl": "http://127.0.0.1:1919/v1",
       "keyless": true,
       "defaultEnabled": false,
-      "planNote": "Local and on-demand. Start the owner-managed Qwen3.8 Flash-Next server before use; requests fail closed while it is unavailable."
+      "planNote": "Local and on-demand. Start the owner-managed Qwen3.8 Flash-Next server before use; requests fail closed while it is unavailable. Responses is the primary route; Chat Completions remains accepted for compatible local clients."
     }
   ]
 }

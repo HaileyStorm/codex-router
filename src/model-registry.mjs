@@ -555,10 +555,12 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     }
     // compHash is a compatibility certificate for compacted history, not a
     // model identity. Threadspan routes have no certified cross-provider
-    // compacted-history class, so omission deliberately leaves compatibility
-    // unknown and lets Codex rely on its independent context/downshift checks.
+    // compacted-history class, and the on-demand FreeToken route has not yet
+    // passed a native compact/resume acceptance. Omission deliberately leaves
+    // compatibility unknown until that exact wire path earns a certificate.
     // Every other checked-in provider keeps the stronger established rule.
-    const compHashMayBeUnknown = provider.variantOf === "threadspan";
+    const compHashMayBeUnknown =
+      provider.variantOf === "threadspan" || model.slug === "freetoken/qwen3.8-flash-next";
     if (model.compHash === undefined && !compHashMayBeUnknown) {
       return `listed model ${model.slug} is missing compHash`;
     }

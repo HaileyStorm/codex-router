@@ -29,6 +29,7 @@ import {
   writeStreamErrorEvent,
 } from "./http-utils.mjs";
 import { EmptyCompletionGuard } from "./empty-completion-guard.mjs";
+import { normalizeFlashNextInput } from "./freetoken-local.mjs";
 import {
   MERGED_CATALOG_PATH,
   NATIVE_CATALOG_PATH,
@@ -1970,6 +1971,20 @@ async function handleResponses(request, response, requestUrl) {
       });
       return;
     }
+    if (route?.slug === "freetoken/qwen3.8-flash-next") {
+      try {
+        payload.input = normalizeFlashNextInput(payload.input);
+      } catch (error) {
+        writeJson(response, error?.status || 409, {
+          error: {
+            type: error?.type || "local_model_compaction_incompatible",
+            provider: "freetoken",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+        return;
+      }
+    }
     // The Desktop shortcut and Settings -> Speed row both persist one
     // host-global intent. Re-resolve it once, before compaction classification
     // or route-specific normalization, so normal, v1 compact, v2 compact,
@@ -2185,7 +2200,7 @@ async function handleResponses(request, response, requestUrl) {
       // the whole turn -- 210 of them here before this was caught. Ollama has
       // no reasoning-effort concept to map it onto anyway, so drop it rather
       // than translate it into something the model never asked for.
-      if (provider?.keyless) {
+      if (provider?.keyless && provider.id !== "freetoken") {
         delete routed.reasoning;
         delete routed.reasoning_effort;
       }
@@ -2361,7 +2376,10 @@ async function handleResponses(request, response, requestUrl) {
         // Consult/Delegate, 17 responses for Integrated). The generic rescue
         // performs a second upstream dispatch behind one inbound claim, so it
         // is deliberately unavailable on those picker-authorized routes.
-        route && EMPTY_COMPLETION_RETRY && !isThreadspanRoute(route)
+        route &&
+        EMPTY_COMPLETION_RETRY &&
+        !isThreadspanRoute(route) &&
+        route.slug !== "freetoken/qwen3.8-flash-next"
           ? new EmptyCompletionGuard(contentType)
           : undefined;
       if (guard) transforms.push(guard);

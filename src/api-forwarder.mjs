@@ -36,7 +36,8 @@ import { installStableFetchTransport } from "./fetch-transport.mjs";
 import {
   FREETOKEN_PROVIDER_ID,
   dispatchFlashNext,
-  normalizeFlashNextOutputLimit,
+  normalizeFlashNextInput,
+  normalizeFlashNextReasoning,
 } from "./freetoken-local.mjs";
 
 installStableFetchTransport();
@@ -351,13 +352,16 @@ function normalizeBody(buffer, contentType, route) {
     error.status = 400;
     throw error;
   }
-  const expectedRoute =
-    provider.protocol === "anthropic"
-      ? "/messages"
-      : provider.protocol === "openai-responses"
-        ? "/responses"
-        : "/chat/completions";
-  if (route !== expectedRoute) {
+  const expectedRoutes = provider.id === FREETOKEN_PROVIDER_ID
+    ? new Set(["/responses", "/chat/completions"])
+    : new Set([
+        provider.protocol === "anthropic"
+          ? "/messages"
+          : provider.protocol === "openai-responses"
+            ? "/responses"
+            : "/chat/completions",
+      ]);
+  if (!expectedRoutes.has(route)) {
     const error = new Error(`Model ${model.gatewayModel} does not support ${route}.`);
     error.status = 400;
     throw error;
@@ -404,7 +408,7 @@ function normalizeBody(buffer, contentType, route) {
   // the bridge lives. Say that in the model's own turn instead of dropping the
   // part or letting the provider refuse the whole conversation.
   if (!supportsImageInput(model)) {
-    const textPartType = provider.protocol === "openai-responses" ? "input_text" : "text";
+    const textPartType = route === "/responses" ? "input_text" : "text";
     const reason =
       `${model.displayName || model.gatewayModel} cannot read images, and an image sent ` +
       "straight to the gateway skips the router's vision bridge";
@@ -549,12 +553,11 @@ function normalizeBody(buffer, contentType, route) {
       payload.tool_choice = "auto";
     }
   } else if (model.requestProfile === "freetoken-flash-next") {
-    // FreeToken's Qwen parser owns reasoning internally; the OpenAI-compatible
-    // surface does not expose a reasoning-effort ladder. Bound generation so
-    // the catalog's 65,536-token compaction point always leaves the accepted
-    // output envelope below the 65,792-token served limit.
-    delete payload.reasoning_effort;
-    normalizeFlashNextOutputLimit(payload);
+    // FreeToken exposes the same effort ladder on both supported surfaces,
+    // spelled as Responses `reasoning.effort` or Chat `reasoning_effort`.
+    // Preserve the selected rung and normalize only the surface spelling.
+    payload.input = normalizeFlashNextInput(payload.input);
+    normalizeFlashNextReasoning(payload, route);
   }
   return { body: Buffer.from(JSON.stringify(payload), "utf8"), model, provider, payload };
 }
@@ -583,9 +586,10 @@ function upstreamHeaders(requestHeaders, body, apiKey, provider, extraHeaders = 
     }
     if (value !== undefined) headers[name] = Array.isArray(value) ? value.join(", ") : value;
   }
-  if (provider.authMode === "anonymous") {
+  if (provider.authMode === "anonymous" || provider.id === FREETOKEN_PROVIDER_ID) {
     // The upstream explicitly permits anonymous access for the provider's
-    // free-model subset. Never forward the gateway's internal bearer token.
+    // free-model subset, or is the exact loopback-only FreeToken route. Never
+    // forward the gateway's internal bearer token to either keyless surface.
   } else if (provider.protocol === "anthropic") {
     headers["x-api-key"] = apiKey;
     headers["anthropic-version"] ||= "2023-06-01";

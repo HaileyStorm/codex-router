@@ -2342,33 +2342,151 @@ function curatedCopilotModel() {
   return { dir, file, gatewayModel: "github-copilot-gpt-test" };
 }
 
-test("API forwarder gates and serializes the exact on-demand Flash-Next route", async () => {
-  let healthMode = "wrong";
+test("router preserves Flash-Next Responses reasoning for the gateway", async () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "router-freetoken-reasoning-"));
+  writeFileSync(
+    path.join(testRoot, "enabled-providers.json"),
+    `${JSON.stringify({ version: 1, providers: ["freetoken"] })}\n`,
+    { mode: 0o600 },
+  );
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    if (request.method === "GET") {
+      json(response, 200, { ok: true });
+      return;
+    }
+    const body = await bodyJson(request);
+    gatewayRequests.push(body);
+    if (body.input === "empty completion") {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(
+        'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\ndata: [DONE]\n\n',
+      );
+      return;
+    }
+    json(response, 200, { id: "response-test", output: [] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_STATE_DIR: testRoot,
+    CODEX_ROUTER_SHOW_ALL_MODELS: "0",
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    for (const input of [
+      [{ type: "compaction", encrypted_content: "provider-opaque" }],
+      [{ type: "context_compaction", encrypted_content: "anything" }],
+      [{ type: "compaction", encrypted_content: "kcr1:" }],
+      [{
+        type: "compaction",
+        encrypted_content: `kcr1:${Buffer.from(" \n\t", "utf8").toString("base64")}`,
+      }],
+    ]) {
+      const rejected = await fetch(`${routerBase(routerPort)}/responses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "freetoken/qwen3.8-flash-next", input }),
+      });
+      assert.equal(rejected.status, 409, router.testErrors());
+      const error = await rejected.json();
+      assert.equal(error.error.type, "local_model_compaction_incompatible");
+      assert.equal(error.error.provider, "freetoken");
+      assert.equal(gatewayRequests.length, 0, "incompatible history reached the gateway");
+    }
+    const summaryText = "shared Flash-Next summary";
+    const summary = Buffer.from(summaryText, "utf8").toString("base64");
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "freetoken/qwen3.8-flash-next",
+        input: [
+          { type: "compaction", encrypted_content: `kcr1:${summary}` },
+          { role: "user", content: "hello" },
+        ],
+        reasoning: { effort: "xhigh" },
+      }),
+    });
+    assert.equal(response.status, 200, router.testErrors());
+    assert.equal(gatewayRequests.length, 1);
+    assert.equal(gatewayRequests[0].model, "freetoken-qwen3-8-flash-next");
+    assert.deepEqual(gatewayRequests[0].reasoning, { effort: "xhigh" });
+    assert.deepEqual(gatewayRequests[0].input[0], {
+      type: "message",
+      role: "user",
+      content: [{
+        type: "input_text",
+        text: `[Earlier conversation summary from Codex Router]\n\n${summaryText}`,
+      }],
+    });
+
+    const empty = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "freetoken/qwen3.8-flash-next",
+        input: "empty completion",
+      }),
+    });
+    assert.equal(empty.status, 200, router.testErrors());
+    await empty.text();
+    assert.equal(gatewayRequests.length, 2, "FreeToken empty completion was redispatched");
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("API forwarder gates and serializes both on-demand Flash-Next surfaces", async () => {
+  let readinessMode = "wrong-health";
   let active = 0;
   let maximum = 0;
   let alternateRequests = 0;
-  const chats = [];
-  const upstream = await mockServerAt(1919, async (request, response) => {
+  const generations = [];
+  const readinessRequests = [];
+  const upstream = await mockServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
-      if (healthMode === "stopped") {
-        request.socket.destroy();
-        return;
-      }
-      json(response, 200, healthMode === "good"
-        ? {
-            status: "ok",
-            maintenance: "serving",
-            model: "Qwen3.8-Flash-Next-NVFP4-7b719225",
-          }
-        : { status: "ok", maintenance: "serving", model: "wrong-model" });
+      readinessRequests.push({ url: request.url, authorization: request.headers.authorization });
+      json(response, 200, readinessMode === "wrong-health"
+        ? { status: "ok", maintenance: "loading" }
+        : { status: "ok", maintenance: "serving" });
       return;
     }
-    if (request.method === "POST" && request.url === "/v1/chat/completions") {
+    if (request.method === "GET" && request.url === "/v1/models") {
+      readinessRequests.push({ url: request.url, authorization: request.headers.authorization });
+      const id = readinessMode === "wrong-model"
+        ? "wrong-model"
+        : "Qwen3.8-Flash-Next-NVFP4-FP8-344f3a68";
+      json(response, 200, {
+        object: "list",
+        data: [{ id, context_length: 65_792, max_model_len: 65_792 }],
+      });
+      return;
+    }
+    if (request.method === "GET" && request.url === "/v1/cache/status") {
+      readinessRequests.push({ url: request.url, authorization: request.headers.authorization });
+      json(response, 200, { state: readinessMode === "wrong-cache" ? "rebuilding" : "serving" });
+      return;
+    }
+    if (
+      request.method === "POST" &&
+      ["/v1/chat/completions", "/v1/responses"].includes(request.url)
+    ) {
       active += 1;
       maximum = Math.max(maximum, active);
-      chats.push(await bodyJson(request));
+      generations.push({
+        url: request.url,
+        authorization: request.headers.authorization,
+        body: await bodyJson(request),
+      });
       response.writeHead(200, { "content-type": "application/json" });
-      response.write('{"id":"flash-next","choices":[');
+      response.write('{"id":"flash-next","output":[');
       await new Promise((resolve) => setTimeout(resolve, 60));
       response.end("]}");
       active -= 1;
@@ -2381,8 +2499,10 @@ test("API forwarder gates and serializes the exact on-demand Flash-Next route", 
   const forwarder = run("api-forwarder.mjs", {
     CODEX_ROUTER_API_PORT: String(forwarderPort),
     CODEX_ROUTER_QUIET: "1",
+    NODE_OPTIONS: `--import=${path.join(root, "test", "freetoken-fetch-preload.mjs")}`,
+    MODEL_ROUTER_TEST_FREETOKEN_REWRITE_ORIGIN: `http://127.0.0.1:${upstream.port}`,
   });
-  const turn = () => fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+  const turn = (route, effort, input) => fetch(`http://127.0.0.1:${forwarderPort}/v1${route}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${INTERNAL_KEY}`,
@@ -2390,8 +2510,9 @@ test("API forwarder gates and serializes the exact on-demand Flash-Next route", 
     },
     body: JSON.stringify({
       model: "freetoken-qwen3-8-flash-next",
-      reasoning_effort: "high",
-      messages: [{ role: "user", content: "hello" }],
+      ...(route === "/responses"
+        ? { reasoning: { effort }, input: input ?? [{ role: "user", content: "hello" }] }
+        : { reasoning: { effort }, messages: [{ role: "user", content: "hello" }] }),
     }),
   });
 
@@ -2399,33 +2520,76 @@ test("API forwarder gates and serializes the exact on-demand Flash-Next route", 
     await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
       Authorization: `Bearer ${INTERNAL_KEY}`,
     });
-    for (const mode of ["wrong", "stopped"]) {
-      healthMode = mode;
-      const response = await turn();
+    readinessMode = "good";
+    for (const input of [
+      [{ type: "compaction", encrypted_content: "opaque-provider-history" }],
+      [{ type: "context_compaction", encrypted_content: "anything" }],
+      [{ type: "compaction", encrypted_content: "kcr1:" }],
+      [{
+        type: "compaction",
+        encrypted_content: `kcr1:${Buffer.from(" \n\t", "utf8").toString("base64")}`,
+      }],
+    ]) {
+      const response = await turn("/responses", "xhigh", input);
+      assert.equal(response.status, 409, forwarder.testErrors());
+      const error = await response.json();
+      assert.equal(error.error.type, "local_model_compaction_incompatible");
+      assert.equal(error.error.provider, "freetoken");
+      assert.equal(readinessRequests.length, 0, "incompatible history triggered readiness");
+      assert.equal(generations.length, 0, "incompatible history triggered generation");
+    }
+    for (const mode of ["wrong-health", "wrong-model", "wrong-cache"]) {
+      readinessMode = mode;
+      const response = await turn("/responses", "xhigh");
       assert.equal(response.status, 503, forwarder.testErrors());
       const error = await response.json();
       assert.equal(error.error.type, "local_model_unavailable");
       assert.equal(error.error.provider, "freetoken");
-      assert.match(error.error.message, /owner-managed FreeToken server|exact \/health identity/);
-      assert.equal(chats.length, 0);
+      assert.match(error.error.message, /not ready|wrong model, context, or cache state/);
+      assert.equal(generations.length, 0);
       assert.equal(alternateRequests, 0);
     }
 
-    healthMode = "good";
-    const responses = await Promise.all([turn(), turn()]);
+    readinessMode = "good";
+    const directSummaryText = "shared Flash-Next summary";
+    const directSummary = Buffer.from(directSummaryText, "utf8").toString("base64");
+    const responses = await Promise.all([
+      turn("/responses", "xhigh", [
+        { type: "compaction", encrypted_content: `kcr1:${directSummary}` },
+        { role: "user", content: "hello" },
+      ]),
+      turn("/chat/completions", "medium"),
+    ]);
     assert.deepEqual(responses.map(({ status }) => status), [200, 200]);
     await Promise.all(responses.map((response) => response.text()));
-    assert.equal(maximum, 1, "the complete streamed upstream request is serialized");
-    assert.equal(chats.length, 2);
-    for (const body of chats) {
-      assert.equal(body.model, "Qwen3.8-Flash-Next-NVFP4-7b719225");
-      assert.equal(body.max_tokens, 255);
-      assert.equal(body.reasoning_effort, undefined);
-    }
+    assert.equal(maximum, 1, "Responses and Chat share one complete-request lane");
+    assert.equal(generations.length, 2);
+    const byRoute = Object.fromEntries(generations.map((request) => [request.url, request]));
+    assert.equal(byRoute["/v1/responses"].body.model, "Qwen3.8-Flash-Next-NVFP4-FP8-344f3a68");
+    assert.deepEqual(byRoute["/v1/responses"].body.reasoning, { effort: "xhigh" });
+    assert.deepEqual(byRoute["/v1/responses"].body.input[0], {
+      type: "message",
+      role: "user",
+      content: [{
+        type: "input_text",
+        text: `[Earlier conversation summary from Codex Router]\n\n${directSummaryText}`,
+      }],
+    });
+    assert.equal(byRoute["/v1/responses"].body.max_output_tokens, undefined);
+    assert.equal(byRoute["/v1/chat/completions"].body.model, "Qwen3.8-Flash-Next-NVFP4-FP8-344f3a68");
+    assert.equal(byRoute["/v1/chat/completions"].body.reasoning_effort, "medium");
+    assert.equal(byRoute["/v1/chat/completions"].body.reasoning, undefined);
+    assert.equal(generations.every(({ authorization }) => authorization === undefined), true);
+    assert.equal(readinessRequests.every(({ authorization }) => authorization === undefined), true);
+    const successfulReadiness = readinessRequests.slice(-6).map(({ url }) => url);
+    assert.deepEqual(successfulReadiness, [
+      "/health", "/v1/models", "/v1/cache/status",
+      "/health", "/v1/models", "/v1/cache/status",
+    ]);
     assert.equal(alternateRequests, 0);
   } finally {
     await stopChild(forwarder);
-    await closeServer(upstream);
+    await closeServer(upstream.server);
   }
 });
 

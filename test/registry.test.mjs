@@ -243,14 +243,19 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(PROVIDERS.get("freetoken").baseUrlEnv, undefined);
   assert.equal(PROVIDERS.get("freetoken").keyless, true);
   assert.equal(PROVIDERS.get("freetoken").defaultEnabled, false);
+  assert.equal(PROVIDERS.get("freetoken").protocol, "openai-responses");
   const flashNext = MODEL_BY_SLUG.get("freetoken/qwen3.8-flash-next");
-  assert.equal(flashNext.upstreamModel, "Qwen3.8-Flash-Next-NVFP4-7b719225");
+  assert.equal(flashNext.upstreamModel, "Qwen3.8-Flash-Next-NVFP4-FP8-344f3a68");
   assert.equal(flashNext.contextWindow, 65_792);
-  assert.equal(flashNext.autoCompact, 65_536);
+  assert.equal(flashNext.autoCompact, 56_000);
+  assert.equal(flashNext.defaultEffort, "xhigh");
+  assert.deepEqual(flashNext.reasoningLevels.map(({ effort }) => effort), [
+    "off", "low", "medium", "xhigh",
+  ]);
   assert.deepEqual(flashNext.inputModalities, ["text"]);
   assert.equal(flashNext.visionBridge, false);
   assert.equal(flashNext.supportsParallelToolCalls, false);
-  assert.match(flashNext.compHash, /33b887604c99375f96cc524310ff5211a2b8e43e/);
+  assert.equal(flashNext.compHash, undefined);
   assert.equal(PROVIDERS.get("local").transport, "ollama");
   assert.equal(PROVIDERS.get("lmstudio").baseUrl, "http://127.0.0.1:1234/v1");
   assert.equal(PROVIDERS.get("lmstudio").baseUrlEnv, "MODEL_ROUTER_LMSTUDIO_BASE_URL");
@@ -712,7 +717,10 @@ test("LiteLLM configuration is generated from every registry route", () => {
   const flashStart = rendered.indexOf('model_name: "freetoken-qwen3-8-flash-next"');
   const flashEnd = rendered.indexOf("\n  - model_name:", flashStart + 1);
   const flashBlock = rendered.slice(flashStart, flashEnd === -1 ? undefined : flashEnd);
+  assert.match(flashBlock, /model: "openai\/responses\/freetoken-qwen3-8-flash-next"/);
+  assert.doesNotMatch(flashBlock, /use_chat_completions_api/);
   assert.match(flashBlock, /num_retries: 0/);
+  assert.match(flashBlock, /timeout: 1200/);
   assert.equal([...rendered.matchAll(/^\s+num_retries: 0$/gm)].length, 1);
 });
 
@@ -776,7 +784,7 @@ test("visionBridge may only be set to false", async () => {
   }
 });
 
-test("only Threadspan listed models may omit compHash", async () => {
+test("only Threadspan and uncertified FreeToken listed models may omit compHash", async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const nodePath = (await import("node:path")).default;
@@ -806,6 +814,20 @@ test("only Threadspan listed models may omit compHash", async () => {
     });
     assert.equal(invalidThreadspan.status, 1);
     assert.match(invalidThreadspan.stderr, /invalid compHash/);
+
+    const futureFreeToken = load((registry) => {
+      const current = registry.models.find(
+        ({ slug }) => slug === "freetoken/qwen3.8-flash-next",
+      );
+      registry.models.push({
+        ...current,
+        slug: "freetoken/future-local-model",
+        gatewayModel: "freetoken-future-local-model",
+        upstreamModel: "future-local-model",
+      });
+    });
+    assert.equal(futureFreeToken.status, 1);
+    assert.match(futureFreeToken.stderr, /freetoken\/future-local-model is missing compHash/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

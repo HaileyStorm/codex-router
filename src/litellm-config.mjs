@@ -57,7 +57,9 @@ export function renderLiteLlmConfig() {
       ...(responsesSurface ? [] : ["      use_chat_completions_api: true"]),
       // The on-demand local route is single-shot and fail-closed. LiteLLM's
       // default two retries would repeat a generation after transport failure.
-      ...(provider.id === "freetoken" ? ["      num_retries: 0"] : []),
+      ...(provider.id === "freetoken"
+        ? ["      num_retries: 0", "      timeout: 1200"]
+        : []),
       "",
     );
   }

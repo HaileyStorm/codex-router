@@ -106,6 +106,7 @@ map, which restores native GPT routing.
 | K2.7 Coding OAuth | `kimi-oauth/kimi-for-coding` | `kimi-oauth-kimi-for-coding` | `kimi-for-coding` |
 | Kimi K3 OAuth | `kimi-oauth/k3` | `kimi-oauth-k3` | `k3` |
 | Kimi K3 API | `kimi-api/kimi-k3` | `kimi-api-k3` | `kimi-k3` |
+| Qwen3.8 Flash Next Local | `freetoken/qwen3.8-flash-next` | `freetoken-qwen3-8-flash-next` | `Qwen3.8-Flash-Next-NVFP4-FP8-344f3a68` |
 | DeepSeek V4 Flash | `deepseek/deepseek-v4-flash` | `deepseek-v4-flash` | `deepseek-v4-flash` |
 | DeepSeek V4 Pro | `deepseek/deepseek-v4-pro` | `deepseek-v4-pro` | `deepseek-v4-pro` |
 | Grok Direct | `grok-oauth/grok-4.6` | `grok-oauth-grok-4-6` | `grok-4.6` |

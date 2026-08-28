@@ -82,7 +82,12 @@ test("Flash-Next is absent by default and explicit selection publishes exact pic
     assert.equal(entry.display_name, "Qwen3.8 Flash Next (Local)");
     assert.match(entry.description, /Local, on-demand/);
     assert.equal(entry.context_window, 65_792);
-    assert.equal(entry.auto_compact_token_limit, 65_536);
+    assert.equal(entry.auto_compact_token_limit, 56_000);
+    assert.equal(entry.default_reasoning_level, "xhigh");
+    assert.deepEqual(entry.supported_reasoning_levels.map(({ effort }) => effort), [
+      "off", "low", "medium", "xhigh",
+    ]);
+    assert.equal(entry.comp_hash, undefined);
     assert.deepEqual(entry.input_modalities, ["text"]);
     assert.equal(entry.supports_parallel_tool_calls, false);
     assert.equal(entry.apply_patch_tool_type, null);

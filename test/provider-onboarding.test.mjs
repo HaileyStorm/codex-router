@@ -6,7 +6,10 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { oauthLoginArgs } from "../src/provider-onboarding.mjs";
+import {
+  defaultReadyProviderPositions,
+  oauthLoginArgs,
+} from "../src/provider-onboarding.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -74,6 +77,13 @@ test("provider onboarding reports install, login, and API key actions without se
     assert.equal(byId["minimax-token-plan"].action, "add-key");
     assert.equal(byId["github-copilot"].action, "add-key");
     assert.equal(byId["github-copilot"].credentialLabel, "GitHub token");
+    assert.equal(byId.freetoken.configured, true);
+    assert.equal(byId.freetoken.action, "ready");
+    assert.equal(byId.freetoken.defaultEnabled, false);
+    const defaultIds = defaultReadyProviderPositions(snapshot.providers)
+      .map((position) => snapshot.providers[position - 1].id);
+    assert.equal(defaultIds.includes("freetoken"), false);
+    assert.equal(defaultIds.includes("local"), true);
     assert.equal("credentialLabel" in byId["deepseek"], false);
     assert.equal(byId.clinepass.action, "add-key");
     assert.equal(byId.chutes.action, "add-key");

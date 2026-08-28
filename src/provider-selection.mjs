@@ -24,6 +24,10 @@ function providerIds() {
   return [...PROVIDERS.keys()];
 }
 
+function implicitProviderIds() {
+  return providerIds().filter((id) => PROVIDERS.get(id)?.defaultEnabled !== false);
+}
+
 // Protocol variants (registry `variantOf`) share their parent's credential and
 // must never be selectable apart from it: the selection file stores only
 // canonical parent ids, and every read expands a parent back into its family.
@@ -97,7 +101,7 @@ export function configuredProviderIds() {
       // Nothing to configure: local providers run on this machine, while
       // anonymous providers authenticate by the provider's free-model policy.
       // Reachability and rate limits remain health questions, not reasons to
-      // hide a provider from the picker.
+      // hide a provider from the picker once the operator explicitly selects it.
       configured.push(provider.id);
     } else if (credentialStatus(provider, { persistent: true }).configured) {
       configured.push(provider.id);
@@ -111,10 +115,14 @@ export function configuredProviderIds() {
 // enabled when the operator did not name any. Anonymous providers can
 // authenticate without a key, but enabling one sends future prompts to a
 // third-party endpoint, so it must be an explicit choice. Loopback keyless
-// providers remain safe to include in the default.
+// providers remain safe to include unless their registry entry deliberately
+// marks an on-demand route as opt-in-only.
 export function defaultProviderIds() {
   return configuredProviderIds().filter(
-    (id) => PROVIDERS.get(id)?.authMode !== "anonymous",
+    (id) => {
+      const provider = PROVIDERS.get(id);
+      return provider?.authMode !== "anonymous" && provider?.defaultEnabled !== false;
+    },
   );
 }
 
@@ -130,14 +138,14 @@ export function readProviderSelectionDetail() {
     return { providers: providerIds(), ignored: [], degraded: undefined };
   }
   if (!existsSync(PROVIDER_SELECTION_PATH)) {
-    return { providers: providerIds(), ignored: [], degraded: undefined };
+    return { providers: implicitProviderIds(), ignored: [], degraded: undefined };
   }
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(PROVIDER_SELECTION_PATH, "utf8"));
   } catch (error) {
     return {
-      providers: providerIds(),
+      providers: implicitProviderIds(),
       ignored: [],
       degraded: `Unreadable provider selection ${PROVIDER_SELECTION_PATH}: ${
         error instanceof Error ? error.message : String(error)
@@ -146,7 +154,7 @@ export function readProviderSelectionDetail() {
   }
   if (parsed?.version !== 1 || !Array.isArray(parsed.providers)) {
     return {
-      providers: providerIds(),
+      providers: implicitProviderIds(),
       ignored: [],
       degraded: `Invalid provider selection ${PROVIDER_SELECTION_PATH}: version/providers are invalid`,
     };
@@ -162,11 +170,11 @@ export function readProviderSelectionDetail() {
   // still hides anything that cannot authenticate.
   if (known.length === 0 && unknown.length > 0) {
     return {
-      providers: providerIds(),
+      providers: implicitProviderIds(),
       ignored: unknown,
       degraded: `Provider selection ${PROVIDER_SELECTION_PATH} names no provider this build knows (${
         unknown.join(", ")
-      }); showing all providers until it is rewritten.`,
+      }); showing the implicit default providers until it is rewritten.`,
     };
   }
   return {

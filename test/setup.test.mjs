@@ -56,6 +56,14 @@ test("automatic selection-only setup exposes only configured providers", () => {
   }
 });
 
+test("both guided setup implementations use opt-in-aware ready defaults", () => {
+  for (const file of ["src/setup.mjs", "src/setup-shared.mjs"]) {
+    const source = readFileSync(path.join(root, file), "utf8");
+    assert.match(source, /new Set\(defaultReadyProviderPositions\(snapshots\)\)/);
+    assert.doesNotMatch(source, /snapshot\.action === "ready" \? index \+ 1/);
+  }
+});
+
 test("--no-provider --no-discovery writes an empty selection and the discovery marker", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-setup-idle-"));
   const codexHome = path.join(testRoot, "codex");

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "freetoken/qwen3.8-flash-next",
+      "gatewayModel": "freetoken-qwen3-8-flash-next",
+      "upstreamModel": "Qwen3.8-Flash-Next-NVFP4-7b719225",
+      "provider": "freetoken",
+      "listed": true,
+      "displayName": "Qwen3.8 Flash Next (Local)",
+      "description": "Local, on-demand Qwen3.8 Flash-Next text model through the owner-managed FreeToken server.",
+      "priority": 900,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Model-defined reasoning"
+        }
+      ],
+      "contextWindow": 65792,
+      "autoCompact": 65536,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "freetoken-flash-next",
+      "visionBridge": false,
+      "supportsApplyPatchTool": false,
+      "supportsParallelToolCalls": false,
+      "multiAgentVersion": "v1",
+      "compHash": "freetoken-qwen38-flash-next-33b887604c99375f96cc524310ff5211a2b8e43e-v1"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -48,6 +49,47 @@ const template = {
   apply_patch_tool_type: "freeform",
   default_service_tier: "priority",
 };
+
+test("Flash-Next is absent by default and explicit selection publishes exact picker metadata", () => {
+  const state = mkdtempSync(path.join(os.tmpdir(), "catalog-freetoken-"));
+  const script = `
+    import { selectedConfiguredListedModels } from './src/provider-selection.mjs';
+    import { routedModel } from './src/catalog.mjs';
+    const model = selectedConfiguredListedModels().find(({ provider }) => provider === 'freetoken');
+    const template = { slug: 'gpt-template', base_instructions: 'template', supports_parallel_tool_calls: true };
+    console.log(JSON.stringify(model ? routedModel(template, model) : null));
+  `;
+  const run = () => JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: path.resolve("."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      MODEL_ROUTER_STATE_DIR: state,
+      CODEX_ROUTER_STATE_DIR: state,
+      MODEL_ROUTER_SHOW_ALL_MODELS: "0",
+      CODEX_ROUTER_SHOW_ALL_MODELS: "0",
+    },
+  }));
+  try {
+    assert.equal(run(), null);
+    writeFileSync(
+      path.join(state, "enabled-providers.json"),
+      '{"version":1,"providers":["freetoken"]}\n',
+      { mode: 0o600 },
+    );
+    const entry = run();
+    assert.equal(entry.slug, "freetoken/qwen3.8-flash-next");
+    assert.equal(entry.display_name, "Qwen3.8 Flash Next (Local)");
+    assert.match(entry.description, /Local, on-demand/);
+    assert.equal(entry.context_window, 65_792);
+    assert.equal(entry.auto_compact_token_limit, 65_536);
+    assert.deepEqual(entry.input_modalities, ["text"]);
+    assert.equal(entry.supports_parallel_tool_calls, false);
+    assert.equal(entry.apply_patch_tool_type, null);
+  } finally {
+    rmSync(state, { recursive: true, force: true });
+  }
+});
 
 const grok = {
   slug: "grok-oauth/grok-4.5",

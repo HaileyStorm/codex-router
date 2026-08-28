@@ -114,6 +114,7 @@ export function providerOnboardingSnapshot() {
           id: provider.id,
           displayName: provider.displayName,
           kind: "oauth",
+          defaultEnabled: provider.defaultEnabled !== false,
           configured,
           cliInstalled,
           cliRunnable: cli.runnable,
@@ -134,6 +135,7 @@ export function providerOnboardingSnapshot() {
           id: provider.id,
           displayName: provider.displayName,
           kind: "api",
+          defaultEnabled: provider.defaultEnabled !== false,
           credentialLabel: credentialLabel(provider),
           configured,
           action: configured ? "ready" : "blocked",
@@ -145,6 +147,7 @@ export function providerOnboardingSnapshot() {
         id: provider.id,
         displayName: provider.displayName,
         kind: "api",
+        defaultEnabled: provider.defaultEnabled !== false,
         ...(provider.credential?.label ? { credentialLabel: credentialLabel(provider) } : {}),
         configured,
         action: configured ? "ready" : "add-key",
@@ -177,6 +180,16 @@ export function providerOnboardingSnapshot() {
       };
     }),
   };
+}
+
+export function defaultReadyProviderPositions(snapshots) {
+  return snapshots
+    .map((snapshot, index) =>
+      snapshot.action === "ready" && snapshot.defaultEnabled !== false
+        ? index + 1
+        : undefined,
+    )
+    .filter(Boolean);
 }
 
 // npm and every CLI it installs globally start with `#!/usr/bin/env node`, so

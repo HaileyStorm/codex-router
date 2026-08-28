@@ -235,6 +235,12 @@ function loadRegistry() {
       if (provider.keyless !== undefined && typeof provider.keyless !== "boolean") {
         fail(`provider ${provider.id} has an invalid keyless flag`);
       }
+      if (
+        provider.defaultEnabled !== undefined &&
+        typeof provider.defaultEnabled !== "boolean"
+      ) {
+        fail(`provider ${provider.id} has an invalid defaultEnabled flag`);
+      }
       if (provider.keyless && provider.credential !== undefined) {
         fail(`keyless provider ${provider.id} must not declare a credential`);
       }

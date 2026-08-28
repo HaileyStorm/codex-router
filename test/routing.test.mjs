@@ -86,6 +86,15 @@ function run(script, env) {
   return child;
 }
 
+async function mockServerAt(port, handler) {
+  const server = http.createServer(handler);
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", resolve);
+  });
+  return server;
+}
+
 async function waitFor(url, child, headers = {}) {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -2332,6 +2341,93 @@ function curatedCopilotModel() {
   );
   return { dir, file, gatewayModel: "github-copilot-gpt-test" };
 }
+
+test("API forwarder gates and serializes the exact on-demand Flash-Next route", async () => {
+  let healthMode = "wrong";
+  let active = 0;
+  let maximum = 0;
+  let alternateRequests = 0;
+  const chats = [];
+  const upstream = await mockServerAt(1919, async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      if (healthMode === "stopped") {
+        request.socket.destroy();
+        return;
+      }
+      json(response, 200, healthMode === "good"
+        ? {
+            status: "ok",
+            maintenance: "serving",
+            model: "Qwen3.8-Flash-Next-NVFP4-7b719225",
+          }
+        : { status: "ok", maintenance: "serving", model: "wrong-model" });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/v1/chat/completions") {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      chats.push(await bodyJson(request));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"id":"flash-next","choices":[');
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      response.end("]}");
+      active -= 1;
+      return;
+    }
+    alternateRequests += 1;
+    json(response, 500, { error: "alternate route must not be called" });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const turn = () => fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "freetoken-qwen3-8-flash-next",
+      reasoning_effort: "high",
+      messages: [{ role: "user", content: "hello" }],
+    }),
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    for (const mode of ["wrong", "stopped"]) {
+      healthMode = mode;
+      const response = await turn();
+      assert.equal(response.status, 503, forwarder.testErrors());
+      const error = await response.json();
+      assert.equal(error.error.type, "local_model_unavailable");
+      assert.equal(error.error.provider, "freetoken");
+      assert.match(error.error.message, /owner-managed FreeToken server|exact \/health identity/);
+      assert.equal(chats.length, 0);
+      assert.equal(alternateRequests, 0);
+    }
+
+    healthMode = "good";
+    const responses = await Promise.all([turn(), turn()]);
+    assert.deepEqual(responses.map(({ status }) => status), [200, 200]);
+    await Promise.all(responses.map((response) => response.text()));
+    assert.equal(maximum, 1, "the complete streamed upstream request is serialized");
+    assert.equal(chats.length, 2);
+    for (const body of chats) {
+      assert.equal(body.model, "Qwen3.8-Flash-Next-NVFP4-7b719225");
+      assert.equal(body.max_tokens, 255);
+      assert.equal(body.reasoning_effort, undefined);
+    }
+    assert.equal(alternateRequests, 0);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream);
+  }
+});
 
 test("API forwarder validates Copilot auth, sets identity headers, and retries routing once", async () => {
   const userRequests = [];

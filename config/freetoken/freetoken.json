@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "freetoken",
+      "displayName": "FreeToken (Local)",
+      "kind": "openai-compatible",
+      "ownedBy": "local",
+      "protocol": "openai",
+      "baseUrl": "http://127.0.0.1:1919/v1",
+      "keyless": true,
+      "defaultEnabled": false,
+      "planNote": "Local and on-demand. Start the owner-managed Qwen3.8 Flash-Next server before use; requests fail closed while it is unavailable."
+    }
+  ]
+}

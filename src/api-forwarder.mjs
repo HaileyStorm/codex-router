@@ -33,6 +33,11 @@ import {
 } from "./github-copilot-session.mjs";
 import { VERSION } from "./version.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
+import {
+  FREETOKEN_PROVIDER_ID,
+  dispatchFlashNext,
+  normalizeFlashNextOutputLimit,
+} from "./freetoken-local.mjs";
 
 installStableFetchTransport();
 
@@ -543,6 +548,13 @@ function normalizeBody(buffer, contentType, route) {
     if (payload.tool_choice !== undefined && payload.tool_choice !== "none") {
       payload.tool_choice = "auto";
     }
+  } else if (model.requestProfile === "freetoken-flash-next") {
+    // FreeToken's Qwen parser owns reasoning internally; the OpenAI-compatible
+    // surface does not expose a reasoning-effort ladder. Bound generation so
+    // the catalog's 65,536-token compaction point always leaves the accepted
+    // output envelope below the 65,792-token served limit.
+    delete payload.reasoning_effort;
+    normalizeFlashNextOutputLimit(payload);
   }
   return { body: Buffer.from(JSON.stringify(payload), "utf8"), model, provider, payload };
 }
@@ -681,38 +693,16 @@ async function handleRequest(request, response) {
   response.once("close", () => {
     if (!response.writableEnded) controller.abort();
   });
-  // Fetch may detach a Buffer's backing ArrayBuffer while sending it. Copilot
-  // can replay once after refreshing account routing, so use one immutable
-  // string for both attempts instead of trying to reuse detached bytes.
-  const upstreamBody = normalized.provider.authProfile === "github-copilot"
-    ? normalized.body.toString("utf8")
-    : normalized.body;
-  let session = await upstreamSession(normalized.provider, credential, normalized.payload);
-  let target = `${session.baseUrl}${route}${requestUrl.search}`;
-  let upstream = await fetch(target, {
-    method: request.method,
-    headers: upstreamHeaders(
-      request.headers,
-      upstreamBody,
-      session.apiKey,
-      normalized.provider,
-      session.headers,
-    ),
-    body: upstreamBody,
-    signal: controller.signal,
-  });
-  // Account routing can change with plan or policy. Re-resolve and replay once
-  // before any response byte reaches the caller; every other status is relayed.
-  if (normalized.provider.authProfile === "github-copilot" && upstream.status === 401) {
-    await upstream.body?.cancel().catch(() => undefined);
-    session = await upstreamSession(
-      normalized.provider,
-      credential,
-      normalized.payload,
-      { force: true },
-    );
-    target = `${session.baseUrl}${route}${requestUrl.search}`;
-    upstream = await fetch(target, {
+  const dispatch = async () => {
+    // Fetch may detach a Buffer's backing ArrayBuffer while sending it. Copilot
+    // can replay once after refreshing account routing, so use one immutable
+    // string for both attempts instead of trying to reuse detached bytes.
+    const upstreamBody = normalized.provider.authProfile === "github-copilot"
+      ? normalized.body.toString("utf8")
+      : normalized.body;
+    let session = await upstreamSession(normalized.provider, credential, normalized.payload);
+    let target = `${session.baseUrl}${route}${requestUrl.search}`;
+    let upstream = await fetch(target, {
       method: request.method,
       headers: upstreamHeaders(
         request.headers,
@@ -724,21 +714,53 @@ async function handleRequest(request, response) {
       body: upstreamBody,
       signal: controller.signal,
     });
-  }
-  await pipeResponse(upstream, response);
-  // Harvest the provider's own quota report from the response it just sent.
-  // Costs no extra request and works for any provider that emits the standard
-  // headers, so a newly added provider reports limits without bespoke code.
-  // Recorded after the body streams because persisting is synchronous I/O and
-  // must never sit in time-to-first-byte.
-  const rateLimit = parseRateLimitHeaders(upstream.headers);
-  // Variant-routed responses meter the same upstream subscription, so quota
-  // headers land under the family's canonical provider id.
-  if (rateLimit) recordRateLimitSnapshot(canonicalProviderId(normalized.provider.id), rateLimit);
-  if (!QUIET) {
-    console.error(
-      `[api-forwarder] provider=${normalized.provider.id} model=${normalized.model.upstreamModel} status=${upstream.status} duration_ms=${Date.now() - startedAt}`,
-    );
+    // Account routing can change with plan or policy. Re-resolve and replay once
+    // before any response byte reaches the caller; every other status is relayed.
+    if (normalized.provider.authProfile === "github-copilot" && upstream.status === 401) {
+      await upstream.body?.cancel().catch(() => undefined);
+      session = await upstreamSession(
+        normalized.provider,
+        credential,
+        normalized.payload,
+        { force: true },
+      );
+      target = `${session.baseUrl}${route}${requestUrl.search}`;
+      upstream = await fetch(target, {
+        method: request.method,
+        headers: upstreamHeaders(
+          request.headers,
+          upstreamBody,
+          session.apiKey,
+          normalized.provider,
+          session.headers,
+        ),
+        body: upstreamBody,
+        signal: controller.signal,
+      });
+    }
+    await pipeResponse(upstream, response);
+    // Harvest the provider's own quota report from the response it just sent.
+    // Costs no extra request and works for any provider that emits the standard
+    // headers, so a newly added provider reports limits without bespoke code.
+    // Recorded after the body streams because persisting is synchronous I/O and
+    // must never sit in time-to-first-byte.
+    const rateLimit = parseRateLimitHeaders(upstream.headers);
+    // Variant-routed responses meter the same upstream subscription, so quota
+    // headers land under the family's canonical provider id.
+    if (rateLimit) recordRateLimitSnapshot(canonicalProviderId(normalized.provider.id), rateLimit);
+    if (!QUIET) {
+      console.error(
+        `[api-forwarder] provider=${normalized.provider.id} model=${normalized.model.upstreamModel} status=${upstream.status} duration_ms=${Date.now() - startedAt}`,
+      );
+    }
+  };
+
+  if (normalized.provider.id === FREETOKEN_PROVIDER_ID) {
+    // The endpoint is intentionally on-demand. Exact identity is revalidated
+    // inside the single-request lane before the task can send a chat body.
+    await dispatchFlashNext(dispatch, { signal: controller.signal });
+  } else {
+    await dispatch();
   }
 }
 
@@ -752,6 +774,16 @@ const server = http.createServer((request, response) => {
       `[api-forwarder] request failed: ${formatErrorChain(error, { messages: false })}`,
     );
     if (!response.headersSent) {
+      if (error?.type?.startsWith("local_model_")) {
+        writeJson(response, status, {
+          error: {
+            type: error.type,
+            provider: error.provider,
+            message: error.message,
+          },
+        });
+        return;
+      }
       writeJson(response, status, {
         error: {
           type: "provider_api_proxy_error",

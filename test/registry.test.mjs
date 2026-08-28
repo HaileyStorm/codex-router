@@ -81,6 +81,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "commandcode/step-3.7-flash",
       "deepseek/deepseek-v4-flash",
       "deepseek/deepseek-v4-pro",
+      "freetoken/qwen3.8-flash-next",
       "grok-api/grok-4.5",
       "grok-oauth/grok-4.5",
       "grok-oauth/grok-4.6",
@@ -238,6 +239,18 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "COMMANDCODE_API_KEY",
   ]);
   assert.equal(PROVIDERS.get("grok-api").baseUrl, "https://api.x.ai/v1");
+  assert.equal(PROVIDERS.get("freetoken").baseUrl, "http://127.0.0.1:1919/v1");
+  assert.equal(PROVIDERS.get("freetoken").baseUrlEnv, undefined);
+  assert.equal(PROVIDERS.get("freetoken").keyless, true);
+  assert.equal(PROVIDERS.get("freetoken").defaultEnabled, false);
+  const flashNext = MODEL_BY_SLUG.get("freetoken/qwen3.8-flash-next");
+  assert.equal(flashNext.upstreamModel, "Qwen3.8-Flash-Next-NVFP4-7b719225");
+  assert.equal(flashNext.contextWindow, 65_792);
+  assert.equal(flashNext.autoCompact, 65_536);
+  assert.deepEqual(flashNext.inputModalities, ["text"]);
+  assert.equal(flashNext.visionBridge, false);
+  assert.equal(flashNext.supportsParallelToolCalls, false);
+  assert.match(flashNext.compHash, /33b887604c99375f96cc524310ff5211a2b8e43e/);
   assert.equal(PROVIDERS.get("local").transport, "ollama");
   assert.equal(PROVIDERS.get("lmstudio").baseUrl, "http://127.0.0.1:1234/v1");
   assert.equal(PROVIDERS.get("lmstudio").baseUrlEnv, "MODEL_ROUTER_LMSTUDIO_BASE_URL");
@@ -696,6 +709,11 @@ test("LiteLLM configuration is generated from every registry route", () => {
   );
   assert.doesNotMatch(lunaBlock, /use_chat_completions_api/);
   assert.doesNotMatch(rendered, /ANTHROPIC_API_KEY|CLINE_API_KEY|DEEPSEEK_API_KEY|KIMI_API_KEY/);
+  const flashStart = rendered.indexOf('model_name: "freetoken-qwen3-8-flash-next"');
+  const flashEnd = rendered.indexOf("\n  - model_name:", flashStart + 1);
+  const flashBlock = rendered.slice(flashStart, flashEnd === -1 ? undefined : flashEnd);
+  assert.match(flashBlock, /num_retries: 0/);
+  assert.equal([...rendered.matchAll(/^\s+num_retries: 0$/gm)].length, 1);
 });
 
 test("curated upgrade prompts point at listed generational successors", () => {

@@ -11,6 +11,7 @@ import { kimiOAuthStatus } from "./oauth-status.mjs";
 import { SOURCE_ROOT, TARGET } from "./paths.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
 import {
+  defaultReadyProviderPositions,
   hasSignInCli,
   installOauthCli,
   oauthCliPath,
@@ -211,11 +212,7 @@ const colorEnabled = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
 
 function guidedSelection() {
   const snapshots = providerOnboardingSnapshot().providers;
-  let selected = new Set(
-    snapshots
-      .map((snapshot, index) => (snapshot.action === "ready" ? index + 1 : undefined))
-      .filter(Boolean),
-  );
+  let selected = new Set(defaultReadyProviderPositions(snapshots));
   if (selected.size === 0) selected = new Set([1]);
   process.stdout.write("\nChoose the providers to show in Codex:\n");
   for (;;) {

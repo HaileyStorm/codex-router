@@ -1013,6 +1013,7 @@ struct ProviderIcon: View {
     if providerID == "anthropic-api" { return "Anthropic" }
     if providerID.hasPrefix("zai-") { return "GLM" }
     if providerID == "qwen-plan" { return "Qwen" }
+    if providerID == "freetoken" { return "Qwen Flash-Next (Local)" }
     if providerID == "ollama-cloud" { return "Ollama" }
     if providerID.hasPrefix("commandcode") { return "Command Code" }
     if providerID == "github-copilot" { return "GitHub Copilot" }

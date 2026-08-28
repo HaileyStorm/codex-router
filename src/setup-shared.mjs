@@ -19,7 +19,10 @@ import { kimiOAuthStatus } from "./oauth-status.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { SOURCE_ROOT } from "./paths.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
-import { providerOnboardingSnapshot } from "./provider-onboarding.mjs";
+import {
+  defaultReadyProviderPositions,
+  providerOnboardingSnapshot,
+} from "./provider-onboarding.mjs";
 import { defaultProviderIds, validateProviderIds } from "./provider-selection.mjs";
 import { commandOnPath, spawnableCommand } from "./spawnable-command.mjs";
 import { renderProviderChoices, toggleSelection } from "./setup-ui.mjs";
@@ -173,11 +176,7 @@ function tryRun(command, commandArgs) {
 function guidedSelection(appName) {
   const snapshots = providerOnboardingSnapshot().providers;
   const colorEnabled = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
-  let selected = new Set(
-    snapshots
-      .map((snapshot, index) => (snapshot.action === "ready" ? index + 1 : undefined))
-      .filter(Boolean),
-  );
+  let selected = new Set(defaultReadyProviderPositions(snapshots));
   if (selected.size === 0) selected = new Set([1]);
   process.stdout.write(`\nChoose the providers to show in ${appName}:\n`);
   process.stdout.write(

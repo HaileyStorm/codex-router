@@ -64,6 +64,9 @@ function unit() {
     CODEX_ROUTER_OAUTH_PORT: String(PORTS.oauth),
     CODEX_ROUTER_PORT: String(PORTS.router),
     CODEX_ROUTER_API_PORT: String(PORTS.api),
+    ...(process.env.CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP === "1"
+      ? { CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP: "1" }
+      : {}),
     ...(process.env.KIMI_CODE_HOME ? { KIMI_CODE_HOME: process.env.KIMI_CODE_HOME } : {}),
     ...(process.env.CODEX_ROUTER_SOURCE_ROOT
       ? { CODEX_ROUTER_SOURCE_ROOT: SOURCE_ROOT }

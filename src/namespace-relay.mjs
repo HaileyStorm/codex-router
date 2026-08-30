@@ -374,11 +374,12 @@ export function rewriteNamespaceResponsePayload(payload, lookups, sessionModel) 
   return changed ? rewritten : undefined;
 }
 
-// Inject missing collaboration.interrupt_agent calls for children that already
-// finished (FINAL_ANSWER in the request input) when the model forgot to close
-// them. Codex 0.147 keeps those children Working until interrupt_agent runs or
-// the user opens the child. Sequence numbers continue after the last model
-// event so Codex accepts the spliced calls as part of the same response.
+// When explicit Codex 0.147 compatibility mode supplies pending targets,
+// inject missing collaboration.interrupt_agent calls for children whose
+// FINAL_ANSWER is already in request input. Current AppServer builds leave this
+// path unused because a real interrupt would contradict terminal completion.
+// Sequence numbers continue after the last model event so the legacy client
+// accepts the spliced calls as part of the same response.
 function nextSequence(event, lastSequence) {
   const value = Number(event?.sequence_number);
   return Number.isFinite(value) ? value : lastSequence;

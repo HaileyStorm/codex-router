@@ -1,8 +1,10 @@
 // Codex 0.147 keeps a finished child visually Working after FINAL_ANSWER while
-// the parent turn is still live. close_agent is not in the v2 toolset;
-// interrupt_agent is the only model-callable close path. Parents frequently
-// ignore the usage-hint text on long multi-agent turns (San Francisco is the
-// pathological case), so the router injects the missing interrupts itself.
+// the parent turn is still live. close_agent is not in the v2 toolset, so the
+// historical workaround injected interrupt_agent as a surrogate close.
+// Current AppServer builds correctly expose that call as an interruption even
+// when the child's authoritative state is already completed. Keep the old
+// behavior behind an explicit compatibility switch instead of downgrading a
+// terminal child by default.
 //
 // This module only decides *what* to inject. The response transform in
 // namespace-relay.mjs is what splices the calls into the stream without shifting
@@ -11,6 +13,10 @@
 const FINAL_ANSWER_HEADER =
   /Message Type:\s*FINAL_ANSWER\b[\s\S]*?\nSender:\s*(\S+)/gi;
 const NATIVE_ENCRYPTED_TOKEN = /^gAAAAA[A-Za-z0-9_-]+={0,2}$/;
+
+export function legacySubagentCompletionCleanupEnabled(env = process.env) {
+  return env?.CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP === "1";
+}
 
 // A close must always name a child. "/root" (and its bare and slashed forms)
 // is the parent itself, and interrupting it would cancel the turn that is
@@ -154,6 +160,7 @@ export function pendingInterruptTargets(
   input,
   {
     namespaces,
+    enabled = legacySubagentCompletionCleanupEnabled(),
     // Only enforce the tool check when the request actually advertised a
     // non-empty inventory. Empty/unknown inventories (native deferred tools)
     // still queue closes for finished children. That bypass is safe only
@@ -163,6 +170,7 @@ export function pendingInterruptTargets(
     requireCollaborationTool = namespaces instanceof Map && namespaces.size > 0,
   } = {},
 ) {
+  if (!enabled) return [];
   if (
     requireCollaborationTool &&
     namespaces &&

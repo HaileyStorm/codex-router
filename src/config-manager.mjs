@@ -26,6 +26,7 @@ import {
   privateFileIsProtected,
   protectPrivateFile,
 } from "./file-security.mjs";
+import { legacySubagentCompletionCleanupEnabled } from "./subagent-completion.mjs";
 import {
   activateNativeCatalogSource,
   catalogPathsEqual,
@@ -63,19 +64,22 @@ const multiAgentV2StartMarker = "# BEGIN codex-router-multi-agent-v2-managed";
 const multiAgentV2EndMarker = "# END codex-router-multi-agent-v2-managed";
 const createdAgentsTableMarker = "# codex-router-created-agents-table";
 const managedAgentMaxConcurrency = 6;
-// Codex 0.147 records a child's FINAL_ANSWER as subAgentActivity
-// `interacted` and keeps that child visually working for the whole live
-// parent turn. close_agent is not in the v2 toolset; interrupt_agent is the
-// only model-callable way to flip the badge to done without the user
-// clicking into the child. The usage hint is injected into the root
-// developer's collaboration preamble.
+// Codex 0.147 records a child's FINAL_ANSWER as subAgentActivity `interacted`.
+// Its interrupt_agent surrogate-close is retained only as an explicit legacy
+// compatibility mode: current AppServer versions project that real call as an
+// interruption even after the child is authoritatively completed.
 const managedSubagentCompletionHint =
   "When a child agent finishes (FINAL_ANSWER, task_complete, or an idle/errored wait snapshot), call interrupt_agent on that child so Codex can mark it done. Do not leave finished children in the working state.";
 
 export function managedMultiAgentV2FeatureLine() {
-  return (
+  const base =
     `multi_agent_v2 = { enabled = true, max_concurrent_threads_per_session = ${managedAgentMaxConcurrency}, ` +
-    `expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, ` +
+    "expose_spawn_agent_model_overrides = true";
+  if (!legacySubagentCompletionCleanupEnabled()) {
+    return `${base}, usage_hint_enabled = false }`;
+  }
+  return (
+    `${base}, usage_hint_enabled = true, ` +
     `root_agent_usage_hint_text = ${tomlValue(managedSubagentCompletionHint)} }`
   );
 }

@@ -7,6 +7,8 @@ import {
   pendingInterruptTargets,
   buildInterruptAgentCall,
   filterAlreadyInterrupted,
+  interruptTargetFromCall,
+  legacySubagentCompletionCleanupEnabled,
 } from "../src/subagent-completion.mjs";
 import {
   NamespaceToolCallTransform,
@@ -73,23 +75,44 @@ test("collectFinishedSubagentState finds FINAL_ANSWER authors and skips already 
   assert.deepEqual(state.pending, ["/root/metric_tiles"]);
 });
 
-test("pendingInterruptTargets requires the collaboration interrupt tool", () => {
+test("legacy subagent completion cleanup is disabled by default and opt-in only", () => {
+  assert.equal(legacySubagentCompletionCleanupEnabled({}), false);
+  assert.equal(
+    legacySubagentCompletionCleanupEnabled({
+      CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP: "1",
+    }),
+    true,
+  );
+  assert.equal(
+    legacySubagentCompletionCleanupEnabled({
+      CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP: "true",
+    }),
+    false,
+  );
+});
+
+test("pendingInterruptTargets requires legacy opt-in and the collaboration interrupt tool", () => {
   const input = [finalAnswerMessage("/root/child")];
-  assert.deepEqual(pendingInterruptTargets(input), ["/root/child"]);
+  assert.deepEqual(pendingInterruptTargets(input), []);
+  assert.deepEqual(pendingInterruptTargets(input, { enabled: true }), ["/root/child"]);
   // Empty inventory on a native deferred-tool turn still queues closes.
   assert.deepEqual(
-    pendingInterruptTargets(input, { namespaces: new Map() }),
+    pendingInterruptTargets(input, { namespaces: new Map(), enabled: true }),
     ["/root/child"],
   );
   // An inventory that omits interrupt_agent must not invent the call.
   assert.deepEqual(
     pendingInterruptTargets(input, {
       namespaces: new Map([["collaboration", new Set(["spawn_agent"])]]),
+      enabled: true,
     }),
     [],
   );
   assert.deepEqual(
-    pendingInterruptTargets(input, { namespaces: collaborationNamespaces() }),
+    pendingInterruptTargets(input, {
+      namespaces: collaborationNamespaces(),
+      enabled: true,
+    }),
     ["/root/child"],
   );
 });
@@ -118,7 +141,10 @@ test("ordinary prose quoting a FINAL_ANSWER envelope is not a finished child", (
   assert.equal(state.finished.size, 0);
   assert.deepEqual(state.pending, []);
   assert.deepEqual(pendingInterruptTargets(input), []);
-  assert.deepEqual(pendingInterruptTargets(input, { namespaces: new Map() }), []);
+  assert.deepEqual(
+    pendingInterruptTargets(input, { namespaces: new Map(), enabled: true }),
+    [],
+  );
 });
 
 test("the root itself is never an interrupt target", () => {
@@ -126,6 +152,80 @@ test("the root itself is never an interrupt target", () => {
   const state = collectFinishedSubagentState(input);
   assert.equal(state.finished.size, 0);
   assert.deepEqual(state.pending, []);
+});
+
+test("crash replay keeps completed children terminal without synthetic cleanup", async () => {
+  const namespaces = collaborationNamespaces();
+  const childA = "/root/api_key_scout";
+  const childB = "/root/civitai_scout";
+  const interruptedBeforeTerminal = "/root/cancelled_scout";
+  const replayInput = [
+    {
+      type: "function_call",
+      name: "spawn_agent",
+      namespace: "collaboration",
+      call_id: "call_spawn_a",
+      arguments: JSON.stringify({ task_name: "api_key_scout" }),
+    },
+    {
+      type: "function_call_output",
+      call_id: "call_spawn_a",
+      output: JSON.stringify({ child_thread_id: "child-a" }),
+    },
+    {
+      type: "function_call",
+      name: "spawn_agent",
+      namespace: "collaboration",
+      call_id: "call_spawn_b",
+      arguments: JSON.stringify({ task_name: "civitai_scout" }),
+    },
+    {
+      type: "function_call_output",
+      call_id: "call_spawn_b",
+      output: JSON.stringify({ child_thread_id: "child-b" }),
+    },
+    {
+      type: "function_call",
+      name: "interrupt_agent",
+      namespace: "collaboration",
+      call_id: "call_real_interrupt",
+      arguments: JSON.stringify({ target: interruptedBeforeTerminal }),
+    },
+    finalAnswerMessage(interruptedBeforeTerminal),
+    finalAnswerMessage(childA),
+    finalAnswerMessage(childA, "duplicate replay packet"),
+    finalAnswerMessage(childB),
+  ];
+
+  const state = collectFinishedSubagentState(replayInput);
+  assert.deepEqual([...state.finished].sort(), [childA, childB, interruptedBeforeTerminal].sort());
+  assert.deepEqual([...state.interrupted], [interruptedBeforeTerminal]);
+  assert.deepEqual(state.pending, [childA, childB]);
+
+  // Current AppServer owns terminal state. The router must not translate the
+  // two completed packets into real interrupt_agent calls after the replay.
+  const pending = pendingInterruptTargets(replayInput, {
+    namespaces,
+    enabled: false,
+  });
+  assert.deepEqual(pending, []);
+
+  const completed =
+    'event: response.completed\ndata: {"type":"response.completed","sequence_number":1,"response":{"output":[]}}\n\n';
+  const done =
+    'event: response.done\ndata: {"type":"response.done","sequence_number":2}\n\n';
+  const output = await collect(
+    Readable.from([completed, done]).pipe(
+      new NamespaceToolCallTransform(namespaces, "text/event-stream", undefined, {
+        pendingInterrupts: pending,
+        injectOnly: true,
+      }),
+    ),
+  );
+  assert.equal(output.trimEnd(), `${completed}${done}`.trimEnd());
+  assert.doesNotMatch(output, /call_router_interrupt_/);
+  // The genuine pre-terminal interruption remains immutable provenance.
+  assert.equal(interruptTargetFromCall(replayInput[4]), interruptedBeforeTerminal);
 });
 
 test("inject-only relay leaves unrelated native events byte-identical", async () => {

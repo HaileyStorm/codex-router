@@ -252,12 +252,11 @@ to `multi_agent_version: "v2"`; that capability requires the checked-in native
 collaboration proof. A model hidden from the picker is not exposed as a
 subagent. Each accordion also has select-all and unselect-all bulk actions.
 
-On Codex 0.147, a child's FINAL_ANSWER is recorded as `subAgentActivity`
-`interacted` and stays visually working for the whole live parent turn.
-`close_agent` is not in that v2 toolset. The managed `multi_agent_v2` block
-therefore also sets `usage_hint_enabled` and tells the root agent to call
-`interrupt_agent` on a finished child. Because long multi-agent parents
-still skip that call, the router additionally injects any missing
-`interrupt_agent` tool calls into the parent response when the request input
-already contains those children's FINAL_ANSWER messages. That is the only
-path that settles the badge without the user clicking into each child.
+Codex 0.147 could leave a finished child visually Working for the rest of a
+live parent turn. The router formerly used `interrupt_agent` as a surrogate
+close, both in the managed usage hint and as an injected response call. Current
+AppServer builds correctly project that real call as `interrupted`, even when
+the child's authoritative state is already `completed`, so the workaround is
+off by default. An installation deliberately retaining Codex 0.147 can set
+`CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP=1` in the router service environment and
+re-run configuration setup to restore both legacy behaviors together.

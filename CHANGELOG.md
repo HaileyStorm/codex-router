@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Completed subagents stay completed.** The Codex 0.147 compatibility shim
+  used `interrupt_agent` as a surrogate close after `FINAL_ANSWER`. Current
+  AppServer builds project that real call faithfully, producing a contradictory
+  `interrupted` activity marker after the child already completed. The managed
+  hint and automatic injection are now disabled together by default; older
+  0.147 installations can restore both explicitly with
+  `CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP=1`.
+
 - **The panel's local-model view surfaces LM Studio.** LM Studio arrived as a
   provider with exactly one door: `./bin/curate-models lmstudio` in an
   interactive terminal, while the panel's Local LLMs section read only

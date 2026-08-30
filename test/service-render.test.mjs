@@ -110,6 +110,53 @@ test("background service definitions render for macOS, Linux, and Windows", () =
   }
 });
 
+test("legacy subagent cleanup opt-in reaches every background service", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-legacy-cleanup-"));
+  const env = { CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP: "1" };
+  try {
+    const launchd = serviceCommand(
+      "service-macos.mjs",
+      "darwin",
+      testRoot,
+      "render",
+      "codex",
+      root,
+      env,
+    );
+    assert.match(
+      launchd,
+      /<key>CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP<\/key>\s*<string>1<\/string>/,
+    );
+
+    const systemd = serviceCommand(
+      "service-linux.mjs",
+      "linux",
+      testRoot,
+      "render",
+      "codex",
+      root,
+      env,
+    );
+    assert.match(
+      systemd,
+      /Environment="CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP=1"/,
+    );
+
+    const windows = serviceCommand(
+      "service-windows.mjs",
+      "win32",
+      testRoot,
+      "render",
+      "codex",
+      root,
+      env,
+    );
+    assert.match(windows, /set "CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP=1"/);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
 test("packaged services preserve wrapper and PATH values with service-safe quoting", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-packaged-service-"));
   const stableRoot = path.join(testRoot, "opt % router", "libexec");

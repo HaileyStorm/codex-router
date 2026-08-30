@@ -2218,6 +2218,95 @@ const untouchedHandoffItems = [
   },
 ];
 
+test("native and routed parents keep completed children terminal unless legacy cleanup is enabled", async () => {
+  const terminalStream = [
+    "event: response.output_item.done",
+    'data: {"type":"response.output_item.done","sequence_number":1,"item":{"type":"function_call","name":"exec_command","call_id":"call_work","arguments":"{}"}}',
+    "",
+    "event: response.completed",
+    'data: {"type":"response.completed","sequence_number":2,"response":{"status":"completed","output":[{"type":"function_call","name":"exec_command","call_id":"call_work","arguments":"{}"}]}}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const upstream = await mockServer(async (request, response) => {
+    if (request.method === "GET") return json(response, 200, { ok: true });
+    await bodyJson(request);
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(terminalStream);
+  });
+  const input = [{
+    type: "agent_message",
+    author: "/root/completed_child",
+    recipient: "/root",
+    content: [{
+      type: "input_text",
+      text: "Message Type: FINAL_ANSWER\nTask name: /root/completed_child\nSender: /root/completed_child\nPayload:\ndone",
+    }],
+  }];
+  const tools = [{
+    type: "namespace",
+    name: "collaboration",
+    tools: [{
+      type: "function",
+      name: "interrupt_agent",
+      description: "Interrupt a running child",
+      parameters: {
+        type: "object",
+        properties: { target: { type: "string" } },
+        required: ["target"],
+        additionalProperties: false,
+      },
+    }],
+  }];
+
+  async function runCase(legacyEnabled) {
+    const routerPort = await openPort();
+    const router = run("router.mjs", {
+      CODEX_ROUTER_PORT: String(routerPort),
+      CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+      CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${upstream.port}/health`,
+      CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${upstream.port}/health`,
+      CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${upstream.port}/backend-api/codex`,
+      CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP: legacyEnabled ? "1" : "",
+      CODEX_ROUTER_QUIET: "1",
+    });
+    try {
+      await waitFor(`${routerBase(routerPort)}/models`, router);
+      const outputs = [];
+      for (const model of ["gpt-5.6-sol", "deepseek/deepseek-v4-pro"]) {
+        const response = await fetch(`${routerBase(routerPort)}/responses`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, input, tools, stream: true }),
+        });
+        const output = await response.text();
+        assert.equal(response.status, 200, `${router.testErrors()}\n${output}`);
+        outputs.push(output);
+      }
+      return outputs;
+    } finally {
+      await stopChild(router);
+    }
+  }
+
+  try {
+    const current = await runCase(false);
+    for (const output of current) {
+      assert.doesNotMatch(output, /call_router_interrupt_|"name":"interrupt_agent"/);
+    }
+
+    const legacy = await runCase(true);
+    for (const output of legacy) {
+      assert.match(output, /call_router_interrupt_/);
+      assert.match(output, /"name":"interrupt_agent"/);
+      assert.match(output, /\/root\/completed_child/);
+    }
+  } finally {
+    await closeServer(upstream.server);
+  }
+});
+
 for (const endpoint of ["/responses", "/responses/compact"]) {
   test(`router converts readable routed-agent handoffs to input_text on ${endpoint}`, async () => {
     const nativeRequests = [];

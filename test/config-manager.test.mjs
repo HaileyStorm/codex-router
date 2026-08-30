@@ -83,6 +83,7 @@ function run(
         CODEX_HOME: codexHome,
         CODEX_ROUTER_STATE_DIR: stateDir,
         CODEX_ROUTER_PORT: "46192",
+        CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP: "",
         ...env,
       },
     }),
@@ -120,7 +121,7 @@ approval_policy = "never"
     assert.match(configured, /# BEGIN codex-router-multi-agent-v2-managed/);
     assert.match(
       configured,
-      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, root_agent_usage_hint_text = "When a child agent finishes \(FINAL_ANSWER, task_complete, or an idle\/errored wait snapshot\), call interrupt_agent on that child so Codex can mark it done\. Do not leave finished children in the working state\." \}/,
+      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = false \}/,
     );
     assert.doesNotMatch(configured, /codex-router-agent-concurrency-managed/);
     assert.doesNotMatch(configured, /^max_concurrent_threads_per_session\s*=/m);
@@ -355,7 +356,7 @@ test("config manager enables multi_agent_v2 and skips the legacy agents scalar w
     assert.match(enabled, /# BEGIN codex-router-multi-agent-v2-managed/);
     assert.match(
       enabled,
-      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, root_agent_usage_hint_text = "When a child agent finishes \(FINAL_ANSWER, task_complete, or an idle\/errored wait snapshot\), call interrupt_agent on that child so Codex can mark it done\. Do not leave finished children in the working state\." \}/,
+      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = false \}/,
     );
     assert.doesNotMatch(enabled, /codex-router-agent-concurrency-managed/);
     assert.doesNotMatch(enabled, /^max_concurrent_threads_per_session\s*=/m);
@@ -376,13 +377,30 @@ test("config manager enables multi_agent_v2 and skips the legacy agents scalar w
   }
 });
 
-test("the managed multi_agent_v2 line tells the parent to interrupt finished children", () => {
+test("the managed multi_agent_v2 line disables surrogate cleanup by default", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-v2-hint-"));
   const configPath = path.join(codexHome, "config.toml");
   writeFileSync(configPath, `model = "gpt-5.5"\n`, { mode: 0o600 });
 
   try {
     run("enable", codexHome);
+    const enabled = readFileSync(configPath, "utf8");
+    assert.match(enabled, /usage_hint_enabled = false/);
+    assert.doesNotMatch(enabled, /root_agent_usage_hint_text/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("the legacy cleanup switch restores the Codex 0.147 usage hint", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-v2-legacy-hint-"));
+  const configPath = path.join(codexHome, "config.toml");
+  writeFileSync(configPath, `model = "gpt-5.5"\n`, { mode: 0o600 });
+
+  try {
+    run("enable", codexHome, undefined, [], {
+      CODEX_ROUTER_LEGACY_SUBAGENT_CLEANUP: "1",
+    });
     const enabled = readFileSync(configPath, "utf8");
     assert.match(enabled, /usage_hint_enabled = true/);
     assert.match(enabled, /root_agent_usage_hint_text = "When a child agent finishes/);

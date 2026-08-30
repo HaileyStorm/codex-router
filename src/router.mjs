@@ -2181,8 +2181,9 @@ async function handleResponses(request, response, requestUrl) {
       if (namespacesFlattened) {
         routedInput = flattenNamespacedHistory(routedInput, flattenedNamespaces);
       }
-      // Close finished children the parent left Working. Only when the
-      // collaboration toolset is actually available on this turn.
+      // The Codex 0.147 surrogate-close is opt-in compatibility behavior. On
+      // current AppServer versions it would turn an authoritative completed
+      // child into a contradictory interrupted activity marker.
       pendingInterrupts = pendingInterruptTargets(input, {
         namespaces: flattenedNamespaces,
       });
@@ -2233,9 +2234,8 @@ async function handleResponses(request, response, requestUrl) {
           toolResultAging = aged.stats;
         }
       }
-      // SF and other native multi-agent parents hit this path (model_provider
-      // openai). They have the same Working-badge bug, so inventory the tools
-      // and queue missing interrupt_agent closes the same way as routed turns.
+      // Native parents share the same opt-in legacy cleanup behavior as routed
+      // parents; current AppServer child state remains authoritative by default.
       flattenedNamespaces = flattenNamespaceTools(payload.tools).namespaces;
       pendingInterrupts = pendingInterruptTargets(native.input ?? payload.input, {
         namespaces: flattenedNamespaces,
@@ -2356,9 +2356,9 @@ async function handleResponses(request, response, requestUrl) {
             : undefined,
       });
       const transforms = [usageObserver];
-      // Restore flattened namespace calls for routed chat-completions providers,
-      // and inject missing finished-child interrupts for both routed and native
-      // multi-agent parents (San Francisco uses native GPT).
+      // Restore flattened namespace calls for routed chat-completions providers.
+      // Explicit Codex 0.147 compatibility mode may also supply legacy
+      // finished-child interrupts for routed or native parents.
       if (route || pendingInterrupts.length > 0) {
         transforms.push(
           new NamespaceToolCallTransform(

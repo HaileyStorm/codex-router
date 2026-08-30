@@ -139,6 +139,35 @@ An OAuth session created while the executable was allowed is not a durable
 workaround. The router invokes the official CLI again near token expiry, so the
 session eventually stops refreshing if Windows blocks the executable later.
 
+## Grok Direct says it will use a tool but does not
+
+An HTTP 200 and text such as “I’ll inspect it” do not prove that Grok received,
+selected, or called a native Codex tool. While the Grok native-tool incident is
+open, the OAuth forwarder writes a separate owner-private diagnostic stream at
+`$CODEX_HOME/codex-router/provider-shape-events.jsonl`. Each bounded record
+contains only a schema version; an opaque request id; request start/finish
+timestamps and duration; the provider and validated registered model; the
+final provider-facing tool count; a host-keyed digest of the sorted tool
+inventory; upstream attempt count; allowlisted response output-item type
+counts; parser-error and response-completed indicators; the HTTP status; and
+terminal state. It never
+stores tool names, schemas, prompts, arguments, call ids, response text,
+reasoning, task/thread ids, or credentials, and it is not a usage or billing
+record.
+
+Do not paste that file into an issue. Compare its digest locally with a known
+synthetic inventory, then correlate the timestamp with the task's native tool
+call/output receipt. The diagnostic is passive: it does not change tools,
+request bytes, retries, routing, or response framing. It stops appending at
+4 MiB rather than rotating away incident provenance.
+
+This telemetry is temporary. Remove its default emission after one fresh Grok
+Direct `view_image` canary proves the provider-facing inventory, one upstream
+function call, its matching native tool output, and a grounded follow-up—or
+after the incident is closed with a different proven owner and regression.
+Set `MODEL_ROUTER_GROK_SHAPE_TELEMETRY=0` on the router service to disable new
+records without removing or rotating existing provenance.
+
 ## An API key is missing or invalid
 
 ```sh

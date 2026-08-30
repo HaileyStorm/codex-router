@@ -20,6 +20,11 @@ import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { normalizeSchemaLiterals, objectRootToolSchema } from "./tool-schema-root.mjs";
 import { VERSION } from "./version.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
+import {
+  appendProviderShapeEvent,
+  createProviderShapeTelemetry,
+  providerShapeTelemetryStatus,
+} from "./provider-shape-telemetry.mjs";
 
 installStableFetchTransport();
 
@@ -236,33 +241,45 @@ function upstreamHeaders(accessToken, model) {
 }
 
 // Parse the upstream Responses SSE and invoke callbacks per normalized event.
-async function consumeResponsesStream(upstreamBody, handlers) {
+async function consumeResponsesStream(upstreamBody, handlers, telemetry) {
   const reader = upstreamBody.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const consumeRawEvent = (rawEvent) => {
+    const dataLine = rawEvent
+      .split(/\r?\n/)
+      .find((line) => line.startsWith("data:"));
+    if (!dataLine) return;
+    const data = dataLine.slice(5).trim();
+    if (!data || data === "[DONE]") return;
+    let event;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      telemetry?.noteParserError();
+      return;
+    }
+    telemetry?.noteEvent(event);
+    handlers(event);
+  };
+  const consumeBufferedEvents = (flush = false) => {
+    for (;;) {
+      const match = /\r?\n\r?\n/.exec(buffer);
+      if (!match) break;
+      consumeRawEvent(buffer.slice(0, match.index));
+      buffer = buffer.slice(match.index + match[0].length);
+    }
+    if (flush && buffer.trim()) consumeRawEvent(buffer);
+    if (flush) buffer = "";
+  };
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    let boundary;
-    while ((boundary = buffer.indexOf("\n\n")) !== -1) {
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      const dataLine = rawEvent
-        .split("\n")
-        .find((line) => line.startsWith("data:"));
-      if (!dataLine) continue;
-      const data = dataLine.slice(5).trim();
-      if (!data || data === "[DONE]") continue;
-      let event;
-      try {
-        event = JSON.parse(data);
-      } catch {
-        continue;
-      }
-      handlers(event);
-    }
+    consumeBufferedEvents();
   }
+  buffer += decoder.decode();
+  consumeBufferedEvents(true);
 }
 
 const OPENAI_ROLE_CHUNK = (id, created, model, delta, finishReason = null) =>
@@ -281,6 +298,22 @@ async function handleChatCompletions(request, response) {
   const responsesRequest = toResponsesRequest(chat, {
     hostedSearchEnabled: hostedSearchEnabledFor(model),
   });
+  const telemetry = createProviderShapeTelemetry({
+    provider: "grok-oauth",
+    model: MODELS.some(
+      (entry) => entry.provider === "grok-oauth" && entry.upstreamModel === model,
+    )
+      ? model
+      : "unknown",
+    tools: responsesRequest.tools,
+  });
+  let telemetryFinished = false;
+  const finishTelemetry = (status, terminal) => {
+    if (telemetryFinished) return;
+    telemetryFinished = true;
+    const event = telemetry?.finish({ status, terminal });
+    if (event) appendProviderShapeEvent(event);
+  };
 
   const controller = new AbortController();
   request.once("aborted", () => controller.abort());
@@ -288,16 +321,20 @@ async function handleChatCompletions(request, response) {
     if (!response.writableEnded) controller.abort();
   });
 
-  const requestUpstream = (accessToken) => fetch(`${GROK_BASE}/responses`, {
-    method: "POST",
-    headers: upstreamHeaders(accessToken, model),
-    body: JSON.stringify(responsesRequest),
-    signal: controller.signal,
-  });
+  const requestUpstream = (accessToken) => {
+    telemetry?.noteAttempt();
+    return fetch(`${GROK_BASE}/responses`, {
+      method: "POST",
+      headers: upstreamHeaders(accessToken, model),
+      body: JSON.stringify(responsesRequest),
+      signal: controller.signal,
+    });
+  };
   let accessToken;
   try {
     accessToken = await ensureFreshGrokOAuthToken();
   } catch {
+    finishTelemetry(401, "auth_error");
     writeJson(response, 401, {
       error: {
         message: "Grok OAuth could not be refreshed; run `grok login --oauth`.",
@@ -307,13 +344,19 @@ async function handleChatCompletions(request, response) {
     });
     return;
   }
-  let upstream = await requestUpstream(accessToken);
+  let upstream;
+  try {
+    upstream = await requestUpstream(accessToken);
+  } catch (error) {
+    finishTelemetry(0, controller.signal.aborted ? "client_aborted" : "connect_error");
+    throw error;
+  }
   if (upstream.status === 401) {
     await upstream.arrayBuffer();
     try {
       accessToken = await ensureFreshGrokOAuthToken({ force: true });
-      upstream = await requestUpstream(accessToken);
     } catch {
+      finishTelemetry(401, "auth_error");
       writeJson(response, 401, {
         error: {
           message: "Grok OAuth could not be refreshed; run `grok login --oauth`.",
@@ -323,10 +366,17 @@ async function handleChatCompletions(request, response) {
       });
       return;
     }
+    try {
+      upstream = await requestUpstream(accessToken);
+    } catch (error) {
+      finishTelemetry(0, controller.signal.aborted ? "client_aborted" : "connect_error");
+      throw error;
+    }
   }
 
   if (!upstream.ok || !upstream.body) {
     const detail = await upstream.text().catch(() => "");
+    finishTelemetry(upstream.status, "upstream_error");
     writeJson(response, upstream.status === 401 ? 401 : 502, {
       error: {
         message:
@@ -430,7 +480,23 @@ async function handleChatCompletions(request, response) {
     }
   };
 
-  await consumeResponsesStream(upstream.body, wantsStream ? onEvent : onEventCollecting);
+  try {
+    await consumeResponsesStream(
+      upstream.body,
+      wantsStream ? onEvent : onEventCollecting,
+      telemetry,
+    );
+  } catch (error) {
+    finishTelemetry(
+      upstream.status,
+      controller.signal.aborted ? "client_aborted" : "stream_error",
+    );
+    throw error;
+  }
+  // The recorder observed `response.completed` on the same parsed stream when
+  // the provider supplied a terminal event; otherwise its default is the
+  // diagnostic `incomplete` state. It never changes the client response.
+  finishTelemetry(upstream.status);
 
   if (wantsStream) {
     response.write(OPENAI_ROLE_CHUNK(id, created, model, {}, finishReason));
@@ -480,6 +546,7 @@ async function handleRequest(request, response) {
       ok: true,
       service: "codex-router-grok-oauth-forwarder",
       credential_present: credentialPresent,
+      provider_shape_telemetry: providerShapeTelemetryStatus(),
     });
     return;
   }

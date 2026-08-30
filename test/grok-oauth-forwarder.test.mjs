@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -41,6 +41,7 @@ function startForwarder(port, backendPort, authPath) {
       GROK_CLI_CHAT_PROXY_BASE_URL: `http://127.0.0.1:${backendPort}`,
       GROK_CLI: path.join(root, "test", "fixtures", "missing-grok-cli"),
       GROK_AUTH_PATH: authPath,
+      MODEL_ROUTER_STATE_DIR: path.dirname(authPath),
       MODEL_ROUTER_QUIET: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -50,6 +51,22 @@ function startForwarder(port, backendPort, authPath) {
   child.stderr.on("data", (c) => (errors += c));
   child.testErrors = () => errors;
   return child;
+}
+
+async function readShapeEvents(directory) {
+  const eventsPath = path.join(directory, "provider-shape-events.jsonl");
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try {
+      return readFileSync(eventsPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("provider-shape telemetry was not written");
 }
 
 const auth = { Authorization: `Bearer ${INTERNAL_KEY}`, "Content-Type": "application/json" };
@@ -238,9 +255,154 @@ test("translates Chat Completions to Grok Responses and back (text + tools)", as
       captured.tools.filter((tool) => tool.type !== "function"),
       [{ type: "web_search" }, { type: "x_search" }],
     );
+    const shapeEvents = await readShapeEvents(dir);
+    const toolShape = shapeEvents.at(-1);
+    assert.equal(toolShape.provider, "grok-oauth");
+    assert.equal(toolShape.model, "grok-4.5");
+    assert.equal(toolShape.toolCount, 3);
+    assert.deepEqual(toolShape.responseOutputItemTypeCounts, { function_call: 1 });
+    assert.equal(toolShape.responseCompleted, true);
+    assert.equal(toolShape.terminal, "completed");
+    assert.equal(toolShape.upstreamAttempts, 1);
+    assert.doesNotMatch(JSON.stringify(toolShape), /get_weather|web_search|x_search/);
   } finally {
     await stop(child);
     await new Promise((r) => backend.server.close(r));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Grok provider-facing telemetry proves view_image exposure without naming it", async () => {
+  let captured;
+  const backend = await mockBackend(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    captured = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(
+      sse([
+        {
+          type: "response.output_item.added",
+          item: { type: "function_call", id: "fc_image", call_id: "call_image", name: "view_image" },
+        },
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            id: "fc_image",
+            call_id: "call_image",
+            name: "view_image",
+            arguments: '{"path":"/tmp/public.png"}',
+          },
+        },
+        { type: "response.completed", response: { usage: { input_tokens: 4, output_tokens: 2 } } },
+      ]),
+    );
+  });
+  const port = await openPort();
+  const dir = mkdtempSync(path.join(os.tmpdir(), "grok-view-image-shape-"));
+  const child = startForwarder(port, backend.port, writeSession(dir));
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitHealth(base, child);
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        model: "grok-4.6",
+        messages: [{ role: "user", content: "Inspect the image." }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "view_image",
+              parameters: {
+                type: "object",
+                properties: { path: { type: "string" } },
+                required: ["path"],
+              },
+            },
+          },
+        ],
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.choices[0].message.tool_calls[0].function.name, "view_image");
+    assert.equal(captured.tools[0].name, "view_image");
+    const [event] = await readShapeEvents(dir);
+    assert.equal(event.toolCount, 3);
+    assert.deepEqual(event.responseOutputItemTypeCounts, { function_call: 1 });
+    assert.equal(event.responseCompleted, true);
+    assert.equal(event.terminal, "completed");
+    assert.doesNotMatch(JSON.stringify(event), /view_image|public\.png/);
+  } finally {
+    await stop(child);
+    await new Promise((resolve) => backend.server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Grok telemetry records connection refusal without exposing caller model text", async () => {
+  const backendPort = await openPort();
+  const port = await openPort();
+  const dir = mkdtempSync(path.join(os.tmpdir(), "grok-connect-shape-"));
+  const child = startForwarder(port, backendPort, writeSession(dir));
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitHealth(base, child);
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        model: "secret-looking-unregistered-model-value",
+        messages: [{ role: "user", content: "ping" }],
+        tools: [{ type: "function", function: { name: "view_image" } }],
+      }),
+    });
+    assert.equal(response.status, 502);
+    const [event] = await readShapeEvents(dir);
+    assert.equal(event.model, "unknown");
+    assert.equal(event.terminal, "connect_error");
+    assert.equal(event.status, 0);
+    assert.equal(event.upstreamAttempts, 1);
+    assert.doesNotMatch(JSON.stringify(event), /secret-looking|view_image/);
+  } finally {
+    await stop(child);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Grok telemetry accepts CRLF and a terminal SSE frame without trailing delimiter", async () => {
+  const backend = await mockBackend((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(
+      'event: response.output_item.done\r\ndata: {"type":"response.output_item.done","item":{"id":"msg_1","type":"message"}}\r\n\r\n' +
+        'event: response.completed\r\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}',
+    );
+  });
+  const port = await openPort();
+  const dir = mkdtempSync(path.join(os.tmpdir(), "grok-crlf-shape-"));
+  const child = startForwarder(port, backend.port, writeSession(dir));
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitHealth(base, child);
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        model: "grok-4.6",
+        messages: [{ role: "user", content: "ping" }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    await response.json();
+    const [event] = await readShapeEvents(dir);
+    assert.equal(event.terminal, "completed");
+    assert.equal(event.responseCompleted, true);
+    assert.deepEqual(event.responseOutputItemTypeCounts, { message: 1 });
+  } finally {
+    await stop(child);
+    await new Promise((resolve) => backend.server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -39,6 +39,14 @@ const GROK_BASE = (
 const INTERNAL_KEY = process.env.MODEL_ROUTER_INTERNAL_KEY;
 const QUIET = process.env.MODEL_ROUTER_QUIET === "1";
 
+// Incident-scoped two-step diagnostic for one exact forced-function request
+// and its grounded follow-up. This is deliberately a header opt-in, not a
+// model request profile or provider default. Remove it after the Grok
+// tool-selection incident has a shared, accepted provider-level resolution.
+const EXACT_TOOL_CANARY_HEADER = "x-codex-router-grok-tool-canary";
+const EXACT_TOOL_CANARY_VALUE = "exact-function-v1";
+const FUNCTION_OUTPUT_CANARY_VALUE = "function-output-v1";
+
 // Hosted search tools run on xAI's Responses backend, matching Grok Build:
 // attach bare web_search + x_search and let the model choose when/how to search.
 // No router-side filters or search env config — that is agentic server-side work.
@@ -291,12 +299,123 @@ const OPENAI_ROLE_CHUNK = (id, created, model, delta, finishReason = null) =>
     choices: [{ index: 0, delta, finish_reason: finishReason }],
   })}\n\n`;
 
+function loopbackAddress(value) {
+  if (typeof value !== "string") return false;
+  const address = value.startsWith("::ffff:") ? value.slice("::ffff:".length) : value;
+  return address === "::1" || /^127(?:\.\d{1,3}){3}$/.test(address);
+}
+
+function loopbackHost(value) {
+  return value === "localhost" || loopbackAddress(value);
+}
+
+function exactKeys(value, expected) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value).sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
+function functionOutputHistoryMatches(chat) {
+  const zeroTools =
+    chat.tools === undefined || (Array.isArray(chat.tools) && chat.tools.length === 0);
+  if (!zeroTools || Object.hasOwn(chat, "tool_choice") || !Array.isArray(chat.messages)) {
+    return false;
+  }
+
+  const functionCalls = [];
+  const toolOutputs = [];
+  for (const [index, message] of chat.messages.entries()) {
+    if (message?.role === "assistant" && message.tool_calls !== undefined) {
+      if (!Array.isArray(message.tool_calls)) return false;
+      for (const call of message.tool_calls) functionCalls.push({ index, call });
+    } else if (message?.role === "tool") {
+      toolOutputs.push({ index, message });
+    }
+  }
+  if (functionCalls.length !== 1 || toolOutputs.length !== 1) return false;
+
+  const [{ index: callIndex, call }] = functionCalls;
+  const [{ index: outputIndex, message: output }] = toolOutputs;
+  return (
+    call?.type === "function" &&
+    typeof call.id === "string" &&
+    call.id.length > 0 &&
+    call.function?.name === "view_image" &&
+    typeof call.function.arguments === "string" &&
+    outputIndex > callIndex &&
+    output.tool_call_id === call.id
+  );
+}
+
+function exactToolCanary(request, chat) {
+  const header = request.headers[EXACT_TOOL_CANARY_HEADER];
+  if (header === undefined) return { enabled: false };
+  if (![EXACT_TOOL_CANARY_VALUE, FUNCTION_OUTPUT_CANARY_VALUE].includes(header)) {
+    return { enabled: false, status: 400, message: "The Grok diagnostic canary header is invalid." };
+  }
+  if (!loopbackHost(LISTEN_HOST) || !loopbackAddress(request.socket?.remoteAddress)) {
+    return {
+      enabled: false,
+      status: 403,
+      message: "The Grok diagnostic canary is available only through the authenticated loopback forwarder.",
+    };
+  }
+  if (chat.stream !== undefined && chat.stream !== false) {
+    return {
+      enabled: false,
+      status: 400,
+      message: "The Grok diagnostic canary requires a non-streaming request with stream omitted or false.",
+    };
+  }
+  if (header === FUNCTION_OUTPUT_CANARY_VALUE) {
+    if (!functionOutputHistoryMatches(chat)) {
+      return {
+        enabled: false,
+        status: 400,
+        message: "The Grok diagnostic follow-up requires one view_image function call and its subsequent matching tool result, with no advertised tools or tool_choice.",
+      };
+    }
+    return { enabled: true };
+  }
+
+  const tool = Array.isArray(chat.tools) && chat.tools.length === 1 ? chat.tools[0] : undefined;
+  const name = tool?.type === "function" && typeof tool.function?.name === "string"
+    ? tool.function.name
+    : "";
+  const choice = chat.tool_choice;
+  const choiceMatches =
+    name.length > 0 &&
+    exactKeys(choice, ["function", "type"]) &&
+    choice.type === "function" &&
+    exactKeys(choice.function, ["name"]) &&
+    choice.function.name === name;
+  if (!choiceMatches) {
+    return {
+      enabled: false,
+      status: 400,
+      message: "The Grok diagnostic canary requires exactly one function tool and an exact nested tool_choice for the same function.",
+    };
+  }
+  return { enabled: true };
+}
+
 async function handleChatCompletions(request, response) {
   const chat = JSON.parse((await readRequestBody(request)).toString("utf8"));
+  const canary = exactToolCanary(request, chat);
+  if (canary.status) {
+    writeJson(response, canary.status, {
+      error: {
+        message: canary.message,
+        type: "invalid_request_error",
+        code: null,
+      },
+    });
+    return;
+  }
   const wantsStream = chat.stream === true;
   const model = typeof chat.model === "string" ? chat.model : "";
   const responsesRequest = toResponsesRequest(chat, {
-    hostedSearchEnabled: hostedSearchEnabledFor(model),
+    hostedSearchEnabled: !canary.enabled && hostedSearchEnabledFor(model),
   });
   const telemetry = createProviderShapeTelemetry({
     provider: "grok-oauth",

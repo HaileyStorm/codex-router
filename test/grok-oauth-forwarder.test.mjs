@@ -70,6 +70,14 @@ async function readShapeEvents(directory) {
 }
 
 const auth = { Authorization: `Bearer ${INTERNAL_KEY}`, "Content-Type": "application/json" };
+const exactToolCanaryAuth = {
+  ...auth,
+  "x-codex-router-grok-tool-canary": "exact-function-v1",
+};
+const functionOutputCanaryAuth = {
+  ...auth,
+  "x-codex-router-grok-tool-canary": "function-output-v1",
+};
 
 async function waitHealth(base, child) {
   const deadline = Date.now() + 5_000;
@@ -342,6 +350,289 @@ test("Grok provider-facing telemetry proves view_image exposure without naming i
   }
 });
 
+test("Grok exact-tool canary sends one function, no hosted search, and preserves nested forced choice", async () => {
+  let captured;
+  let upstreamCalls = 0;
+  const backend = await mockBackend(async (req, res) => {
+    upstreamCalls += 1;
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    captured = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(
+      sse([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            id: "fc_image",
+            call_id: "call_image",
+            name: "view_image",
+            arguments: '{"path":"/tmp/public.png"}',
+          },
+        },
+        { type: "response.completed", response: { usage: { input_tokens: 4, output_tokens: 2 } } },
+      ]),
+    );
+  });
+  const port = await openPort();
+  const dir = mkdtempSync(path.join(os.tmpdir(), "grok-exact-tool-canary-"));
+  const child = startForwarder(port, backend.port, writeSession(dir));
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitHealth(base, child);
+    const forcedChoice = { type: "function", function: { name: "view_image" } };
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: exactToolCanaryAuth,
+      body: JSON.stringify({
+        model: "grok-4.6",
+        messages: [{ role: "user", content: "Inspect the image." }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "view_image",
+              parameters: {
+                type: "object",
+                properties: { path: { type: "string" } },
+                required: ["path"],
+              },
+            },
+          },
+        ],
+        tool_choice: forcedChoice,
+      }),
+    });
+    assert.equal(response.status, 200);
+    await response.json();
+    assert.equal(upstreamCalls, 1);
+    assert.equal(captured.tools.length, 1);
+    assert.equal(captured.tools[0].type, "function");
+    assert.equal(captured.tools[0].name, "view_image");
+    assert.equal(captured.tools.some((tool) => tool.type === "web_search"), false);
+    assert.equal(captured.tools.some((tool) => tool.type === "x_search"), false);
+    assert.deepEqual(captured.tool_choice, forcedChoice);
+  } finally {
+    await stop(child);
+    await new Promise((resolve) => backend.server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Grok exact-tool canary rejects malformed or mismatched requests before upstream", async () => {
+  let upstreamCalls = 0;
+  const backend = await mockBackend((_req, res) => {
+    upstreamCalls += 1;
+    res.writeHead(500).end();
+  });
+  const port = await openPort();
+  const dir = mkdtempSync(path.join(os.tmpdir(), "grok-invalid-tool-canary-"));
+  const child = startForwarder(port, backend.port, writeSession(dir));
+  const base = `http://127.0.0.1:${port}`;
+  const baseBody = {
+    model: "grok-4.6",
+    messages: [{ role: "user", content: "Inspect the image." }],
+    tools: [{ type: "function", function: { name: "view_image" } }],
+  };
+  try {
+    await waitHealth(base, child);
+    const cases = [
+      {
+        headers: { ...auth, "x-codex-router-grok-tool-canary": "wrong" },
+        body: { ...baseBody, tool_choice: { type: "function", function: { name: "view_image" } } },
+      },
+      { headers: exactToolCanaryAuth, body: { ...baseBody, tool_choice: "required" } },
+      {
+        headers: exactToolCanaryAuth,
+        body: { ...baseBody, tool_choice: { type: "function", function: { name: "read_file" } } },
+      },
+      {
+        headers: exactToolCanaryAuth,
+        body: {
+          ...baseBody,
+          tools: [...baseBody.tools, { type: "function", function: { name: "read_file" } }],
+          tool_choice: { type: "function", function: { name: "view_image" } },
+        },
+      },
+      {
+        headers: exactToolCanaryAuth,
+        body: {
+          ...baseBody,
+          tool_choice: { type: "function", function: { name: "view_image", extra: true } },
+        },
+      },
+      {
+        headers: exactToolCanaryAuth,
+        body: {
+          ...baseBody,
+          stream: true,
+          tool_choice: { type: "function", function: { name: "view_image" } },
+        },
+      },
+    ];
+    for (const fixture of cases) {
+      const response = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: fixture.headers,
+        body: JSON.stringify(fixture.body),
+      });
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).error.type, "invalid_request_error");
+    }
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    await stop(child);
+    await new Promise((resolve) => backend.server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Grok function-output canary forwards one ordered call/output pair without tools", async () => {
+  const captures = [];
+  const backend = await mockBackend(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    captures.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(
+      sse([
+        { type: "response.output_text.delta", delta: "grounded" },
+        { type: "response.completed", response: { usage: { input_tokens: 8, output_tokens: 2 } } },
+      ]),
+    );
+  });
+  const port = await openPort();
+  const dir = mkdtempSync(path.join(os.tmpdir(), "grok-function-output-canary-"));
+  const child = startForwarder(port, backend.port, writeSession(dir));
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    await waitHealth(base, child);
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: functionOutputCanaryAuth,
+      body: JSON.stringify({
+        model: "grok-4.6",
+        messages: [
+          { role: "user", content: "Inspect the image." },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_image",
+                type: "function",
+                function: { name: "view_image", arguments: '{"path":"/tmp/public.png"}' },
+              },
+            ],
+          },
+          { role: "tool", tool_call_id: "call_image", content: "The image contains 42." },
+        ],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).choices[0].message.content, "grounded");
+    assert.equal(Object.hasOwn(captures[0], "tools"), false);
+    assert.equal(Object.hasOwn(captures[0], "tool_choice"), false);
+    const toolHistory = captures[0].input.filter((item) =>
+      ["function_call", "function_call_output"].includes(item.type),
+    );
+    assert.deepEqual(toolHistory, [
+      {
+        type: "function_call",
+        call_id: "call_image",
+        name: "view_image",
+        arguments: '{"path":"/tmp/public.png"}',
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_image",
+        output: "The image contains 42.",
+      },
+    ]);
+
+    // The diagnostic is request-local: ordinary traffic still advertises the
+    // client function plus both hosted-search tools and preserves its choice.
+    const ordinary = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        model: "grok-4.6",
+        messages: [{ role: "user", content: "Inspect another image." }],
+        tools: [{ type: "function", function: { name: "view_image" } }],
+        tool_choice: "required",
+      }),
+    });
+    assert.equal(ordinary.status, 200);
+    await ordinary.json();
+    assert.deepEqual(captures[1].tools.map((tool) => tool.type), [
+      "function",
+      "web_search",
+      "x_search",
+    ]);
+    assert.equal(captures[1].tool_choice, "required");
+  } finally {
+    await stop(child);
+    await new Promise((resolve) => backend.server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Grok function-output canary rejects malformed history before upstream", async () => {
+  let upstreamCalls = 0;
+  const backend = await mockBackend((_req, res) => {
+    upstreamCalls += 1;
+    res.writeHead(500).end();
+  });
+  const port = await openPort();
+  const dir = mkdtempSync(path.join(os.tmpdir(), "grok-invalid-function-output-canary-"));
+  const child = startForwarder(port, backend.port, writeSession(dir));
+  const base = `http://127.0.0.1:${port}`;
+  const call = {
+    role: "assistant",
+    tool_calls: [
+      {
+        id: "call_image",
+        type: "function",
+        function: { name: "view_image", arguments: '{"path":"/tmp/public.png"}' },
+      },
+    ],
+  };
+  const output = { role: "tool", tool_call_id: "call_image", content: "pixels" };
+  const body = (messages, extra = {}) => ({
+    model: "grok-4.6",
+    messages,
+    ...extra,
+  });
+  try {
+    await waitHealth(base, child);
+    const cases = [
+      body([call, output], { tools: [{ type: "function", function: { name: "view_image" } }] }),
+      body([call, output], { tool_choice: "none" }),
+      body([{ ...call, tool_calls: [{ ...call.tool_calls[0], function: { name: "read_file", arguments: "{}" } }] }, output]),
+      body([call, { ...output, tool_call_id: "call_other" }]),
+      body([output, call]),
+      body([call, output, { ...output }]),
+      body([{ ...call, tool_calls: [...call.tool_calls, { ...call.tool_calls[0], id: "call_two" }] }, output]),
+      body([call, output], { stream: true }),
+    ];
+    for (const fixture of cases) {
+      const response = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: functionOutputCanaryAuth,
+        body: JSON.stringify(fixture),
+      });
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).error.type, "invalid_request_error");
+    }
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    await stop(child);
+    await new Promise((resolve) => backend.server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("Grok telemetry records connection refusal without exposing caller model text", async () => {
   const backendPort = await openPort();
   const port = await openPort();
@@ -531,6 +822,25 @@ test("toResponsesRequest omits hosted search tools when disabled", () => {
   assert.equal(request.tools.some((tool) => tool.type === "x_search"), false);
   assert.equal(request.tools.some((tool) => tool.type === "web_search"), false);
   assert.equal(request.tools.some((tool) => tool.name === "bash"), true);
+});
+
+test("toResponsesRequest leaves default, required, auto, and none tool choice unchanged", () => {
+  for (const toolChoice of [undefined, "required", "auto", "none"]) {
+    const chat = {
+      model: "grok-4.6",
+      messages: [{ role: "user", content: "Inspect the image." }],
+      tools: [{ type: "function", function: { name: "view_image" } }],
+    };
+    if (toolChoice !== undefined) chat.tool_choice = toolChoice;
+    const request = toResponsesRequest(chat);
+    if (toolChoice === undefined) {
+      assert.equal(Object.hasOwn(request, "tool_choice"), false);
+    } else {
+      assert.equal(request.tool_choice, toolChoice);
+    }
+    assert.equal(request.tools.some((tool) => tool.type === "web_search"), true);
+    assert.equal(request.tools.some((tool) => tool.type === "x_search"), true);
+  }
 });
 
 test("hostedSearchEnabledFor follows the registry searchTool declaration", () => {

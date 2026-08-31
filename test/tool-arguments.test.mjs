@@ -59,6 +59,35 @@ test("coerceFunctionCallArguments rewrites a complete JSON string only when need
   assert.equal(coerceFunctionCallArguments(quoted), '{"label":"20000.0","timeout_ms":20000}');
 });
 
+test("coerceFunctionCallArguments preserves code identifiers inside tool strings", () => {
+  const fixtures = {
+    patch: [
+      "*** Begin Patch",
+      " except InvalidAimoFixtureError as exc:",
+      "+    error = str(exc)",
+      "+    # the word cop is unrelated and must survive unchanged",
+      "*** End Patch",
+    ].join("\n"),
+    cmd: [
+      "python3 - <<'PY'",
+      "except InvalidAimoFixtureError as exc:",
+      "    error = str(exc)",
+      "# the word cop is unrelated and must survive unchanged",
+      "PY",
+    ].join("\n"),
+  };
+
+  for (const [key, value] of Object.entries(fixtures)) {
+    const escaped = JSON.stringify(value);
+    const original = `{"${key}":${escaped},"timeout_ms":20000.0}`;
+    const expected = `{"${key}":${escaped},"timeout_ms":20000}`;
+    const rewritten = coerceFunctionCallArguments(original);
+
+    assert.equal(rewritten, expected);
+    assert.equal(JSON.parse(rewritten)[key], value);
+  }
+});
+
 test("coerceFunctionCallArguments ignores non-strings", () => {
   assert.equal(coerceFunctionCallArguments(undefined), undefined);
   assert.deepEqual(coerceFunctionCallArguments({ timeout_ms: 1.0 }), { timeout_ms: 1.0 });

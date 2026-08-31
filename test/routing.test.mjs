@@ -1678,6 +1678,63 @@ test("router relays encrypted Codex subagent payloads before external routing", 
   }
 });
 
+test("router fails closed when a successful collaboration relay omits the task payload", async () => {
+  let nativeRequests = 0;
+  const native = await mockServer(async (_request, response) => {
+    nativeRequests += 1;
+    json(response, 200, {
+      id: "resp_relay_omitted",
+      object: "response",
+      output: [{ type: "message", content: [{ type: "output_text", text: "no tool" }] }],
+    });
+  });
+  let gatewayRequests = 0;
+  const gateway = await mockServer(async (_request, response) => {
+    gatewayRequests += 1;
+    json(response, 200, { route: "external" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-oauth/grok-4.5",
+        input: [
+          {
+            type: "agent_message",
+            content: [
+              { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
+              { type: "encrypted_content", encrypted_content: "gAAAAA-omitted-payload=" },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(response.status, 502);
+    assert.equal(nativeRequests, 1);
+    assert.equal(gatewayRequests, 0);
+
+    const health = await fetch(`${routerBase(routerPort)}/health`).then((value) => value.json());
+    assert.equal(health.activity.activeCount, 0);
+    assert.doesNotMatch(router.testErrors(), /gAAAAA-omitted-payload|no tool/);
+  } finally {
+    await stopChild(router);
+    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
+  }
+});
+
 test("router fails closed when an encrypted subagent payload cannot be relayed", async () => {
   const native = await mockServer(async (_request, response) => {
     json(response, 401, { error: { message: "native sign-in required" } });

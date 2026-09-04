@@ -502,6 +502,13 @@ test("merged catalog normalizes Astra and clones exactly one explicit long-conte
     default_reasoning_level: "medium",
     visibility: "hide",
     priority: 1,
+    model_messages: {
+      instructions_template:
+        "Astra instructions\n\n# Using skills\nCanonical skills.\n\n# Apps\nCanonical apps.\n\n# Plugins\nCanonical plugins.",
+    },
+    include_skills_usage_instructions: false,
+    include_apps_usage_instructions: false,
+    include_plugin_usage_instructions: false,
   };
   const native = mergeNativeCatalogs(
     { models: [nativeSol] },
@@ -518,6 +525,16 @@ test("merged catalog normalizes Astra and clones exactly one explicit long-conte
   assert.equal(normalizedAstra.auto_compact_token_limit, 512_000);
   assert.equal(normalizedAstra.default_reasoning_level, "low");
   assert.equal(normalizedAstra.visibility, "list");
+  assert.match(normalizedAstra.model_messages.instructions_template, /# Using skills/);
+  assert.match(normalizedAstra.model_messages.instructions_template, /# Apps/);
+  assert.match(normalizedAstra.model_messages.instructions_template, /# Plugins/);
+  for (const field of [
+    "include_skills_usage_instructions",
+    "include_apps_usage_instructions",
+    "include_plugin_usage_instructions",
+  ]) {
+    assert.equal(normalizedAstra[field], false, field);
+  }
   assert.equal(NATIVE_PROFILE_MANIFEST.version, 2);
   assert.equal(NATIVE_PROFILE_MANIFEST.profiles.length, 1);
 
@@ -545,6 +562,18 @@ test("merged catalog normalizes Astra and clones exactly one explicit long-conte
     assert.equal(profile.comp_hash, "3000", spec.slug);
     assert.equal(profile.multi_agent_version, "v2", spec.slug);
     assert.deepEqual(capabilities(profile), capabilities(normalizedAstra), spec.slug);
+    assert.equal(
+      profile.model_messages.instructions_template,
+      normalizedAstra.model_messages.instructions_template,
+      spec.slug,
+    );
+    for (const field of [
+      "include_skills_usage_instructions",
+      "include_apps_usage_instructions",
+      "include_plugin_usage_instructions",
+    ]) {
+      assert.equal(profile[field], false, `${spec.slug} ${field}`);
+    }
   }
   assert.match(
     bySlug.get("native-profile/gpt-6-astra-1m").display_name,

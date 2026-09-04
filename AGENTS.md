@@ -2,6 +2,21 @@
 
 These instructions apply when a user asks an agent to install this repository.
 
+## Codex controller and delegation
+
+- Inherit the global Astra-first Pareto routing envelope. Use GPT-6 Astra at
+  low/Light for unpinned controlling and user-facing Codex tasks. Explicit
+  user, picker, task, project, provider, and named-role selections always win.
+- Delegate only bounded independent work where parallelism saves time or
+  improves quality. Start with the smallest useful set, keep one writer per
+  file or symbol cluster, and keep synthesis and acceptance in the parent.
+- Apply the router's existing catalog, native-profile, tool-transport,
+  capability-proof, provider-privacy, and configuration-ownership invariants
+  to every route and delegated task.
+- Native Astra's embedded `# Using skills`, `# Apps`, and `# Plugins` sections
+  are canonical. Preserve their `model_messages` text and the false
+  `include_*_usage_instructions` flags that prevent duplicate injection.
+
 ## Choose the target
 
 - `codex` (the Codex CLI and desktop app) and `dsh` (DeepSeek Harness) are the

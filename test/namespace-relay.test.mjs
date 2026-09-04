@@ -49,8 +49,7 @@ function clientRoutedTools() {
                     enum: [
                       "gpt-5.6-sol",
                       "gpt-5.6-terra",
-                      "native-profile/gpt-5.6-sol-600k",
-                      "native-profile/gpt-5.6-sol-1m",
+                      "native-profile/gpt-6-astra-1m",
                     ],
                   },
                   { type: "null" },
@@ -414,10 +413,7 @@ test("response transform drops a spawn-agent model override not offered by the t
     model: "gpt-5.6-terra",
   });
 
-  for (const model of [
-    "native-profile/gpt-5.6-sol-600k",
-    "native-profile/gpt-5.6-sol-1m",
-  ]) {
+  for (const model of ["native-profile/gpt-6-astra-1m"]) {
     const explicitProfile = rewriteNamespaceResponsePayload(
       {
         output: [

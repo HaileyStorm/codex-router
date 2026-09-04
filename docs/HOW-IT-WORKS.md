@@ -66,14 +66,17 @@ each enabled external provider. Native GPT entries are included only when
 `codex login status` confirms an OpenAI login, so signed-out login-free users see
 only their authenticated external models.
 
-Signed-in catalogs also derive two deliberate Sol-only context profiles from
-the complete normalized native `gpt-5.6-sol` row. The 600K/480K and
-Experimental 1M/800K rows keep Sol's instructions, capabilities, reasoning
-levels, native authentication, and compaction compatibility hash. Their
-`native-profile/` slugs are never registry or LiteLLM routes: the router keeps
-the profile identity for attribution, then rewrites it to bare Sol immediately
+Signed-in catalogs normalize the native `gpt-6-astra` row to 602K context,
+512K auto-compaction, and Light (`low`) default reasoning. They also derive one
+experimental 1M/850K profile from that complete normalized row. The current
+native capture advertises an 872K maximum, so native acceptance above that
+boundary remains unverified. The profile keeps Astra's
+instructions, capabilities, reasoning levels, native authentication, and
+compaction compatibility hash. Its `native-profile/` slug is never a registry
+or LiteLLM route: the router keeps
+the profile identity for attribution, then rewrites it to bare Astra immediately
 before native normal or compact dispatch. Unknown profile slugs fail locally.
-They are explicit primary/subagent choices only and are excluded from
+It is an explicit primary/subagent choice only and is excluded from
 login-free aliases and DSH publication.
 
 Fast is resolved at the last safe native request boundary. The Desktop's

@@ -4,27 +4,17 @@
 // from MODEL_BY_SLUG prevents LiteLLM/provider routing from claiming them.
 
 export const NATIVE_PROFILE_MANIFEST = Object.freeze({
-  version: 1,
+  version: 2,
   profiles: Object.freeze([
     Object.freeze({
-      slug: "native-profile/gpt-5.6-sol-600k",
-      nativeModel: "gpt-5.6-sol",
-      displayName: "GPT-5.6 Sol 600K",
+      slug: "native-profile/gpt-6-astra-1m",
+      nativeModel: "gpt-6-astra",
+      displayName: "GPT-6 Astra 1M (Experimental)",
       description:
-        "Deliberate native Sol profile with a 600K context window; retains more history and may use allowance faster.",
-      priority: 90,
-      contextWindow: 600_000,
-      autoCompact: 480_000,
-    }),
-    Object.freeze({
-      slug: "native-profile/gpt-5.6-sol-1m",
-      nativeModel: "gpt-5.6-sol",
-      displayName: "GPT-5.6 Sol 1M (Experimental)",
-      description:
-        "Experimental native Sol profile with a 1M context window; exceeds the current captured 872K maximum and may use allowance faster.",
-      priority: 91,
+        "Experimental native Astra profile with a 1M context window and later compaction; the current native catalog advertises an 872K maximum, so use only for explicit acceptance testing or work that needs the larger envelope.",
+      priority: 2,
       contextWindow: 1_000_000,
-      autoCompact: 800_000,
+      autoCompact: 850_000,
     }),
   ]),
 });

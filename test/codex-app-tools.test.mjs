@@ -76,9 +76,9 @@ test("thread tools describe native profiles as explicit model choices", () => {
   for (const name of ["create_thread", "send_message_to_thread"]) {
     const fn = codexApp.tools.find((tool) => tool.name === name);
     const description = fn.inputSchema.properties.model.description;
-    assert.match(description, /native-profile\/gpt-5\.6-sol-600k/);
-    assert.match(description, /native-profile\/gpt-5\.6-sol-1m/);
-    assert.match(description, /Experimental native Sol 1M/);
+    assert.match(description, /native-profile\/gpt-6-astra-1m/);
+    assert.match(description, /native Astra 1M/);
+    assert.doesNotMatch(description, /native-profile\/gpt-5\.6-sol/);
   }
 });
 

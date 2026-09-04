@@ -471,7 +471,7 @@ test("merged catalog applies owner limits only to exact native GPT-5.6 tiers", (
   }
 });
 
-test("merged catalog clones exactly two explicit native Sol profiles", () => {
+test("merged catalog normalizes Astra and clones exactly one explicit long-context profile", () => {
   const nativeSol = {
     ...template,
     slug: "gpt-5.6-sol",
@@ -491,13 +491,35 @@ test("merged catalog clones exactly two explicit native Sol profiles", () => {
     supports_search_tool: true,
     experimental_supported_tools: ["apply_patch"],
   };
-  const merged = buildMergedCatalog({ models: [nativeSol] }, []);
+  const nativeAstra = {
+    ...nativeSol,
+    slug: "gpt-6-astra",
+    display_name: "GPT-6 Astra",
+    description: "Native Astra",
+    context_window: 272_000,
+    max_context_window: 872_000,
+    auto_compact_token_limit: null,
+    default_reasoning_level: "medium",
+    visibility: "hide",
+    priority: 1,
+  };
+  const native = mergeNativeCatalogs(
+    { models: [nativeSol] },
+    { models: [nativeAstra] },
+  );
+  const merged = buildMergedCatalog(native, []);
   const bySlug = new Map(merged.map((model) => [model.slug, model]));
-  const normalizedBase = bySlug.get(nativeSol.slug);
-  assert.equal(normalizedBase.context_window, 320_000);
-  assert.equal(normalizedBase.auto_compact_token_limit, 272_000);
-  assert.equal(NATIVE_PROFILE_MANIFEST.version, 1);
-  assert.equal(NATIVE_PROFILE_MANIFEST.profiles.length, 2);
+  const normalizedSol = bySlug.get(nativeSol.slug);
+  const normalizedAstra = bySlug.get(nativeAstra.slug);
+  assert.equal(normalizedSol.context_window, 320_000);
+  assert.equal(normalizedSol.auto_compact_token_limit, 272_000);
+  assert.equal(normalizedAstra.context_window, 602_000);
+  assert.equal(normalizedAstra.max_context_window, 872_000);
+  assert.equal(normalizedAstra.auto_compact_token_limit, 512_000);
+  assert.equal(normalizedAstra.default_reasoning_level, "low");
+  assert.equal(normalizedAstra.visibility, "list");
+  assert.equal(NATIVE_PROFILE_MANIFEST.version, 2);
+  assert.equal(NATIVE_PROFILE_MANIFEST.profiles.length, 1);
 
   const mutableFields = new Set([
     "slug",
@@ -519,31 +541,34 @@ test("merged catalog clones exactly two explicit native Sol profiles", () => {
     assert.equal(profile.max_context_window, spec.contextWindow, spec.slug);
     assert.equal(profile.auto_compact_token_limit, spec.autoCompact, spec.slug);
     assert.equal(profile.priority, spec.priority, spec.slug);
+    assert.equal(profile.visibility, "list", spec.slug);
     assert.equal(profile.comp_hash, "3000", spec.slug);
     assert.equal(profile.multi_agent_version, "v2", spec.slug);
-    assert.deepEqual(capabilities(profile), capabilities(normalizedBase), spec.slug);
+    assert.deepEqual(capabilities(profile), capabilities(normalizedAstra), spec.slug);
   }
-  assert.match(bySlug.get("native-profile/gpt-5.6-sol-1m").display_name, /Experimental/);
+  assert.match(
+    bySlug.get("native-profile/gpt-6-astra-1m").display_name,
+    /Astra 1M \(Experimental\)/,
+  );
   assert.deepEqual(
     merged
       .filter((model) => String(model.slug).startsWith("native-profile/"))
       .map((model) => model.slug),
-    [
-      "native-profile/gpt-5.6-sol-600k",
-      "native-profile/gpt-5.6-sol-1m",
-    ],
+    ["native-profile/gpt-6-astra-1m"],
   );
+  assert.equal(bySlug.has("native-profile/gpt-5.6-sol-600k"), false);
+  assert.equal(bySlug.has("native-profile/gpt-5.6-sol-1m"), false);
 });
 
 test("native profile namespace collisions fail before catalog publication", () => {
-  const nativeSol = { ...template, slug: "gpt-5.6-sol", comp_hash: "3000" };
+  const nativeAstra = { ...template, slug: "gpt-6-astra", comp_hash: "3000" };
   assert.throws(
     () =>
       buildMergedCatalog(
         {
           models: [
-            nativeSol,
-            { ...template, slug: "native-profile/gpt-5.6-sol-600k" },
+            nativeAstra,
+            { ...template, slug: "native-profile/gpt-6-astra-1m" },
           ],
         },
         [],
@@ -553,15 +578,15 @@ test("native profile namespace collisions fail before catalog publication", () =
   assert.throws(
     () =>
       buildMergedCatalog(
-        { models: [nativeSol] },
-        [{ ...grok, slug: "native-profile/gpt-5.6-sol-1m" }],
+        { models: [nativeAstra] },
+        [{ ...grok, slug: "native-profile/gpt-6-astra-1m" }],
       ),
     /reserved native profile namespace/,
   );
   assert.throws(
     () =>
       assertNativeProfilesDisjoint(
-        new Map([["native-profile/gpt-5.6-sol-600k", { provider: "future" }]]),
+        new Map([["native-profile/gpt-6-astra-1m", { provider: "future" }]]),
       ),
     /collides with the external model registry/,
   );

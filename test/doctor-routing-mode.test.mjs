@@ -28,6 +28,12 @@ function writeCodexStub(directory) {
         visibility: "list",
         priority: 10,
       },
+      {
+        slug: "gpt-6-astra",
+        display_name: "GPT-6 Astra",
+        visibility: "list",
+        priority: 1,
+      },
     ],
   });
   writeFileSync(
@@ -114,9 +120,9 @@ wire_api = "responses"
         readFileSync(path.join(stateDir, "merged-models.json"), "utf8"),
       );
       assert.deepEqual(merged.models.map((model) => model.slug), [
+        "gpt-6-astra",
+        "native-profile/gpt-6-astra-1m",
         "gpt-5.6-sol",
-        "native-profile/gpt-5.6-sol-600k",
-        "native-profile/gpt-5.6-sol-1m",
       ]);
       assert.equal(
         readdirSync(path.join(codexHome, "agents")).filter((name) =>

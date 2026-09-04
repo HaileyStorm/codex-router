@@ -558,10 +558,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
     assert.equal(model.autoCompact, 112_000, slug);
     assert.equal(model.compHash, undefined, slug);
   }
-  for (const slug of [
-    "native-profile/gpt-5.6-sol-600k",
-    "native-profile/gpt-5.6-sol-1m",
-  ]) {
+  for (const slug of ["native-profile/gpt-6-astra-1m"]) {
     assert.equal(MODEL_BY_SLUG.has(slug), false, slug);
     assert.equal(LISTED_MODELS.some((model) => model.slug === slug), false, slug);
   }

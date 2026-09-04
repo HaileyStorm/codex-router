@@ -1156,7 +1156,7 @@ export const CODEX_APP_TOOLS =
 // Add their explicit model choices without changing the app's omission rule:
 // an omitted model still inherits the existing thread/default configuration.
 const NATIVE_PROFILE_MODEL_DESCRIPTION =
-  " native-profile/gpt-5.6-sol-600k (Deliberate native Sol 600K context profile; supported reasoning efforts: low, medium, high, xhigh, max, ultra), native-profile/gpt-5.6-sol-1m (Experimental native Sol 1M context profile; supported reasoning efforts: low, medium, high, xhigh, max, ultra).";
+  " native-profile/gpt-6-astra-1m (Experimental native Astra 1M context profile; current native capture advertises an 872K maximum; supported reasoning efforts: low, medium, high, xhigh, max, ultra).";
 for (const namespace of CODEX_APP_TOOLS) {
   if (namespace?.name !== CODEX_APP_NAMESPACE) continue;
   for (const fn of namespace.tools || []) {
@@ -1164,7 +1164,7 @@ for (const namespace of CODEX_APP_TOOLS) {
     const modelSchema = fn.inputSchema?.properties?.model;
     if (
       typeof modelSchema?.description === "string" &&
-      !modelSchema.description.includes("native-profile/gpt-5.6-sol-600k")
+      !modelSchema.description.includes("native-profile/gpt-6-astra-1m")
     ) {
       modelSchema.description += NATIVE_PROFILE_MODEL_DESCRIPTION;
     }

@@ -496,6 +496,8 @@ const GPT_5_6_POLICY_SLUGS = new Set([
 ]);
 const GPT_5_6_CONTEXT_WINDOW = 320_000;
 const GPT_5_6_AUTO_COMPACT_TOKEN_LIMIT = 272_000;
+const GPT_6_ASTRA_CONTEXT_WINDOW = 602_000;
+const GPT_6_ASTRA_AUTO_COMPACT_TOKEN_LIMIT = 512_000;
 
 function normalizeNativeModel(model) {
   const next = {
@@ -515,6 +517,12 @@ function normalizeNativeModel(model) {
   if (GPT_5_6_POLICY_SLUGS.has(String(model.slug))) {
     next.context_window = GPT_5_6_CONTEXT_WINDOW;
     next.auto_compact_token_limit = GPT_5_6_AUTO_COMPACT_TOKEN_LIMIT;
+  }
+  if (String(model.slug) === "gpt-6-astra") {
+    next.context_window = GPT_6_ASTRA_CONTEXT_WINDOW;
+    next.auto_compact_token_limit = GPT_6_ASTRA_AUTO_COMPACT_TOKEN_LIMIT;
+    next.default_reasoning_level = "low";
+    next.visibility = "list";
   }
   return next;
 }
@@ -536,9 +544,9 @@ function nativeProfileModels(normalizedNativeModels, routedModelsList) {
       throw new Error(`Native profile slug collides with an existing model: ${profile.slug}`);
     }
     const base = nativeBySlug.get(profile.nativeModel);
-    // An account/binary catalog may legitimately omit Sol. In that case no
-    // native profile can be truthfully derived, so publish none rather than
-    // cloning an unrelated template or failing the whole catalog refresh.
+    // An account/binary catalog may legitimately omit the profile's base. In
+    // that case no native profile can be truthfully derived, so publish none
+    // rather than cloning an unrelated template or failing the whole refresh.
     if (!base) continue;
     profiles.push({
       ...base,

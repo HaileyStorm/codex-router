@@ -896,7 +896,7 @@ test("global Fast state governs native request boundaries and never leaks to rou
   }
 });
 
-test("native Sol profiles rewrite only at native normal and compact dispatch", async () => {
+test("native Astra profiles rewrite only at native normal and compact dispatch", async () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "native-profile-routing-"));
   writeFileSync(
     path.join(stateDir, "native-redirect.json"),
@@ -939,15 +939,15 @@ test("native Sol profiles rewrite only at native normal and compact dispatch", a
   try {
     await waitFor(`${routerBase(routerPort)}/models`, router);
     for (const [endpoint, model, input] of [
-      ["/responses", "native-profile/gpt-5.6-sol-600k", "normal"],
+      ["/responses", "native-profile/gpt-6-astra-1m", "normal"],
       [
         "/responses/compact",
-        "native-profile/gpt-5.6-sol-1m",
+        "native-profile/gpt-6-astra-1m",
         [{ type: "message", role: "user", content: [{ type: "input_text", text: "compact" }] }],
       ],
       [
         "/responses",
-        "native-profile/gpt-5.6-sol-600k",
+        "native-profile/gpt-6-astra-1m",
         [{ type: "compaction_trigger" }],
       ],
     ]) {
@@ -962,7 +962,7 @@ test("native Sol profiles rewrite only at native normal and compact dispatch", a
     assert.equal(nativeRequests.length, 3);
     assert.deepEqual(
       nativeRequests.map((request) => request.body.model),
-      ["gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol"],
+      ["gpt-6-astra", "gpt-6-astra", "gpt-6-astra"],
     );
     assert.deepEqual(
       nativeRequests.map((request) => request.url),
@@ -982,7 +982,7 @@ test("native Sol profiles rewrite only at native normal and compact dispatch", a
       method: "POST",
       headers,
       body: JSON.stringify({
-        model: "native-profile/gpt-5.6-sol-stale",
+        model: "native-profile/gpt-6-astra-stale",
         input: "must fail locally",
       }),
     });

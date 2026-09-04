@@ -66,13 +66,13 @@ test("explicit model always wins and stays untouched", () => {
     undefined,
     JSON.stringify({
       prompt: "long task",
-      model: "native-profile/gpt-5.6-sol-600k",
+      model: "native-profile/gpt-6-astra-1m",
     }),
   );
   assert.equal(injectSessionModelForSpawnCalls(profile, SESSION_MODEL), profile);
   assert.equal(
     JSON.parse(profile.arguments).model,
-    "native-profile/gpt-5.6-sol-600k",
+    "native-profile/gpt-6-astra-1m",
   );
 });
 

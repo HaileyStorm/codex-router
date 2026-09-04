@@ -182,24 +182,54 @@ The Codex catalog is credential-aware. It includes models only from enabled
 external providers with a stored credential or valid OAuth session. Native GPT
 models are included only when `codex login status` confirms an OpenAI login.
 
-### Native Sol context profiles
+### Native Astra context profiles
 
-Signed-in Codex catalogs add two explicit native Sol choices without changing
-the standard `gpt-5.6-sol` 320K/272K policy:
+Signed-in Codex catalogs normalize the standard `gpt-6-astra` choice to a
+602,000-token context window with auto-compaction at 512,000 tokens. Its
+default reasoning effort is Light (`low`). They also add one explicit
+long-context choice without changing the standard `gpt-5.6-sol` 320K/272K
+policy:
 
 | Picker label | Model ID | Context | Auto-compact |
 | --- | --- | ---: | ---: |
-| GPT-5.6 Sol 600K | `native-profile/gpt-5.6-sol-600k` | 600,000 | 480,000 |
-| GPT-5.6 Sol 1M (Experimental) | `native-profile/gpt-5.6-sol-1m` | 1,000,000 | 800,000 |
+| GPT-6 Astra 1M (Experimental) | `native-profile/gpt-6-astra-1m` | 1,000,000 | 850,000 |
 
-Choose these infrequently and deliberately for a primary task or an explicit
-subagent override that benefits from retaining more history. They use the same
-native OpenAI login and dispatch as bare Sol, not LiteLLM or an external
-provider. Longer retained input may consume the account's usage allowance
-faster. The 1M choice is marked Experimental because the currently captured
-native Sol row advertises an 872K maximum; upstream may reject a request beyond
-that captured limit. These profiles are not defaults, are not inherited by
-router-managed agents, and are not published in login-free or DSH catalogs.
+Choose it infrequently and deliberately for a primary task or an explicit
+subagent override that benefits from retaining more history. It uses the same
+native OpenAI login and dispatch as bare Astra, not LiteLLM or an external
+provider. [OpenAI documents Astra](https://developers.openai.com/api/docs/models/gpt-6-astra)
+with a 1,050,000-token API context window, but the current native Codex capture
+advertises an 872,000-token maximum. The local 1M profile is therefore
+experimental until a native live request accepts it. OpenAI's API applies
+long-context pricing to requests above 272K input tokens; the corresponding
+native ChatGPT-plan usage impact is unquantified, though longer retained input
+may consume allowance faster. This profile is not a default, is not inherited
+by router-managed agents, and is not published in login-free or DSH catalogs.
+
+### Pareto routing envelope
+
+Routing chooses a non-dominated fit across task success and output quality,
+end-to-end latency, total token and price cost (including cache effects and
+Astra's above-272K long-context tier), context fit, native tool and subagent
+reliability, quota availability, and privacy. No single model dominates those
+axes for every workload:
+
+- Use Astra at Light (`low`) for the primary controlling and user-interface
+  task; raise its effort only when task difficulty or consequence warrants it.
+- Select Astra 1M explicitly when the retained working set needs it. It is not
+  an automatic upgrade from the 602K default.
+- Use Sol at `high` for bounded implementation, review, and verification where
+  its quality/cost/latency point is the better fit.
+- Use Luna at `high` or `xhigh` for read-heavy scouting, documentation, and
+  concise synthesis.
+- Keep Terra at `xhigh` or `max` as a task-specific challenger until matched
+  evidence shows that it improves the relevant frontier.
+- Use Spark only as a bounded quota fallback for work already known to fit it.
+  Explicit external-provider routes keep their own provider, privacy, context,
+  and reliability gates; they are never silent fallbacks.
+
+An explicit user, project, task, or per-call model and effort selection always
+wins over this default envelope.
 
 ### Global Fast mode
 

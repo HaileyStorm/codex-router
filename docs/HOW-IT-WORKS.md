@@ -67,7 +67,7 @@ each enabled external provider. Native GPT entries are included only when
 only their authenticated external models.
 
 Signed-in catalogs normalize the native `gpt-6-astra` row to 602K context,
-512K auto-compaction, and Light (`low`) default reasoning. They also derive one
+512K auto-compaction, and Medium (`medium`) default reasoning. They also derive one
 experimental 1M/850K profile from that complete normalized row. The current
 native capture advertises an 872K maximum, so native acceptance above that
 boundary remains unverified. The profile keeps Astra's

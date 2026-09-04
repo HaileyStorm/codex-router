@@ -186,7 +186,7 @@ models are included only when `codex login status` confirms an OpenAI login.
 
 Signed-in Codex catalogs normalize the standard `gpt-6-astra` choice to a
 602,000-token context window with auto-compaction at 512,000 tokens. Its
-default reasoning effort is Light (`low`). They also add one explicit
+default reasoning effort is Medium (`medium`). They also add one explicit
 long-context choice without changing the standard `gpt-5.6-sol` 320K/272K
 policy:
 
@@ -200,22 +200,23 @@ native OpenAI login and dispatch as bare Astra, not LiteLLM or an external
 provider. [OpenAI documents Astra](https://developers.openai.com/api/docs/models/gpt-6-astra)
 with a 1,050,000-token API context window, but the current native Codex capture
 advertises an 872,000-token maximum. The local 1M profile is therefore
-experimental until a native live request accepts it. OpenAI's API applies
-long-context pricing to requests above 272K input tokens; the corresponding
-native ChatGPT-plan usage impact is unquantified, though longer retained input
-may consume allowance faster. This profile is not a default, is not inherited
-by router-managed agents, and is not published in login-free or DSH catalogs.
+experimental until a native live request accepts it. OpenAI's direct API
+applies long-context pricing to requests above 272K input tokens. That
+direct-API rule does not apply to Codex or ChatGPT Desktop; native plan
+allowance impact is unquantified, though longer retained input may consume
+allowance faster. This profile is not a default, is not inherited by
+router-managed agents, and is not published in login-free or DSH catalogs.
 
 ### Pareto routing envelope
 
 Routing chooses a non-dominated fit across task success and output quality,
-end-to-end latency, total token and price cost (including cache effects and
-Astra's above-272K long-context tier), context fit, native tool and subagent
-reliability, quota availability, and privacy. No single model dominates those
-axes for every workload:
+end-to-end latency, total tokens, cache effects, applicable price or allowance
+cost, context fit, native tool and subagent reliability, quota availability,
+and privacy. No single model dominates those axes for every workload:
 
-- Use Astra at Light (`low`) for the primary controlling and user-interface
-  task; raise its effort only when task difficulty or consequence warrants it.
+- Astra defaults to Medium (`medium`). Prefer Light (`low`) for routine primary
+  controlling and user-interface work when it is sufficient; raise effort only
+  when task difficulty or consequence warrants it.
 - Select Astra 1M explicitly when the retained working set needs it. It is not
   an automatic upgrade from the 602K default.
 - Use Sol at `high` for bounded implementation, review, and verification where

@@ -4,9 +4,10 @@ These instructions apply when a user asks an agent to install this repository.
 
 ## Codex controller and delegation
 
-- Inherit the global Astra-first Pareto routing envelope. Use GPT-6 Astra at
-  low/Light for unpinned controlling and user-facing Codex tasks. Explicit
-  user, picker, task, project, provider, and named-role selections always win.
+- Inherit the global Astra-first Pareto routing envelope. Astra defaults to
+  Medium (`medium`); prefer Light (`low`) for routine unpinned controlling and
+  user-facing Codex tasks when it is sufficient. Explicit user, picker, task,
+  project, provider, and named-role selections always win.
 - Delegate only bounded independent work where parallelism saves time or
   improves quality. Start with the smallest useful set, keep one writer per
   file or symbol cluster, and keep synthesis and acceptance in the parent.

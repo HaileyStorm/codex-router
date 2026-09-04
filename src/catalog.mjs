@@ -521,7 +521,7 @@ function normalizeNativeModel(model) {
   if (String(model.slug) === "gpt-6-astra") {
     next.context_window = GPT_6_ASTRA_CONTEXT_WINDOW;
     next.auto_compact_token_limit = GPT_6_ASTRA_AUTO_COMPACT_TOKEN_LIMIT;
-    next.default_reasoning_level = "low";
+    next.default_reasoning_level = "medium";
     next.visibility = "list";
   }
   return next;

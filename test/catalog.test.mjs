@@ -230,6 +230,26 @@ test("Threadspan routes render as visible conservative native-picker entries", (
   }
 });
 
+test("Nous DeepSeek V4.1 routes render long-context picker metadata", () => {
+  for (const mode of ["consult", "integrated"]) {
+    const slug = `${mode}/nous/deepseek/deepseek-v4.1-flash`;
+    const registry = MODEL_BY_SLUG.get(slug);
+    const picker = routedModel(template, registry);
+    assert.equal(picker.slug, slug);
+    assert.equal(picker.visibility, "list");
+    assert.equal(picker.context_window, 1_048_576);
+    assert.equal(picker.max_context_window, 1_048_576);
+    assert.equal(picker.auto_compact_token_limit, 891_289);
+    assert.equal(picker.default_reasoning_level, "max");
+    assert.deepEqual(picker.supported_reasoning_levels, [
+      { effort: "max", description: "Maximum reasoning depth" },
+    ]);
+    assert.equal(picker.comp_hash, undefined);
+    assert.equal(picker.supports_search_tool, false);
+    assert.deepEqual(picker.input_modalities, ["text"]);
+  }
+});
+
 test("routed models are native v2 spawn-agent model overrides", () => {
   const model = routedModel(template, grok);
   assert.equal(model.visibility, "list");

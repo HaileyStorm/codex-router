@@ -127,10 +127,12 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "qwen-plan/qwen3.7-plus",
       "qwen-plan/qwen3.8-max-preview",
       "qwen-plan/qwen3.8-max",
+      "consult/nous/deepseek/deepseek-v4.1-flash",
       "consult/nous/deepseek/deepseek-v4-flash-0731",
       "consult/nous/deepseek/deepseek-v4-pro-0813",
       "consult/grok-build/grok-4.6",
       "delegate/grok-build/grok-4.6",
+      "integrated/nous/deepseek/deepseek-v4.1-flash",
       "integrated/nous/deepseek/deepseek-v4-flash-0731",
       "integrated/nous/deepseek/deepseek-v4-pro-0813",
       "xiaomi-mimo/mimo-v2.5-pro",
@@ -571,6 +573,26 @@ test("provider registry exposes configured API and OAuth model families", () => 
     assert.match(model.description, /DeepSeek V4/);
     assert.deepEqual(model.inputModalities, ["text"]);
   }
+});
+
+test("Nous DeepSeek V4.1 routes preserve the official model identity", () => {
+  const officialModel = "deepseek/deepseek-v4.1-flash";
+  for (const mode of ["consult", "integrated"]) {
+    const slug = `${mode}/nous/${officialModel}`;
+    const model = MODEL_BY_SLUG.get(slug);
+    assert.ok(model, slug);
+    assert.equal(model.slug, slug);
+    assert.equal(model.upstreamModel, slug, `${slug} must preserve the mode/provider route for Threadspan`);
+    assert.equal(model.upstreamModel.slice(`${mode}/nous/`.length), officialModel);
+    assert.equal(model.gatewayModel, `threadspan-${mode}-nous-deepseek-v4-1-flash`);
+    assert.equal(model.contextWindow, 1_048_576);
+    assert.equal(model.autoCompact, 891_289);
+    assert.equal(model.defaultEffort, "max");
+    assert.deepEqual(model.reasoningLevels, [{ effort: "max", description: "Maximum reasoning depth" }]);
+    assert.equal(model.compHash, undefined);
+  }
+  assert.equal(MODEL_BY_SLUG.has(`direct/nous/${officialModel}`), false);
+  assert.equal(LISTED_MODELS.some((model) => model.slug.startsWith("direct/nous/")), false);
 });
 
 test("DeepSeek V4 Flash routes opt in to Codex standalone web search", () => {

@@ -303,7 +303,7 @@ function schtasks(args, options = {}) {
       )
     : "schtasks.exe";
   return execFileSync(executable, args, {
-    encoding: options.encoding ?? "utf8",
+    encoding: Object.hasOwn(options, "encoding") ? options.encoding : "utf8",
     maxBuffer: options.maxBuffer ?? 1024 * 1024,
     stdio: options.quiet ? ["ignore", "ignore", "ignore"] : ["ignore", "pipe", "pipe"],
   });

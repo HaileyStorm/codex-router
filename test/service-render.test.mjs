@@ -811,3 +811,18 @@ test(
     }
   },
 );
+
+// Execute the shipped command adapter against a recording child-process stub;
+// explicit null must request bytes for the rollback XML snapshot.
+test("Windows task snapshots retain explicit binary encoding", () => {
+  const source = readFileSync(path.join(root, "src", "service-windows.mjs"), "utf8");
+  const start = source.indexOf("function schtasks(");
+  const end = source.indexOf("\nfunction writeAtomic(", start);
+  assert.ok(start >= 0 && end > start);
+  const invoke = new Function("execFileSync", "process", `${source.slice(start, end)}; return schtasks;`)(
+    (_command, _args, options) => options.encoding === null ? Buffer.from("<Task/>") : "<Task/>",
+    { platform: "linux" },
+  );
+  assert.ok(Buffer.isBuffer(invoke(["/Query", "/XML"], { encoding: null })));
+  assert.equal(invoke(["/Query"]), "<Task/>");
+});

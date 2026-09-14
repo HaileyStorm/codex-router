@@ -12,12 +12,18 @@
       "priority": 1,
       "defaultEffort": "max",
       "reasoningLevels": [
-        { "effort": "max", "description": "Maximum reasoning depth" }
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
       ],
       "supportsApplyPatchTool": false,
       "contextWindow": 1048576,
       "autoCompact": 891289,
-      "inputModalities": ["text"]
+      "inputModalities": [
+        "text"
+      ],
+      "multiAgentVersion": "v2"
     }
   ]
 }

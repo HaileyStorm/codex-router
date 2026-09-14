@@ -73,12 +73,14 @@ function run(
   if (!existsSync(callerSecretPath)) {
     writeFileSync(callerSecretPath, `${CALLER_KEY}\n`, { mode: 0o600 });
   }
+  const inheritedEnvironment = { ...process.env };
+  for (const name of ["NOUS_API_KEY", "DEEPSEEK_API_KEY"]) delete inheritedEnvironment[name];
   return JSON.parse(
     execFileSync(process.execPath, [manager, command, ...commandArgs], {
       cwd: root,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...inheritedEnvironment,
         CODEX_BIN: scalarAcceptingCodex,
         CODEX_HOME: codexHome,
         CODEX_ROUTER_STATE_DIR: stateDir,
@@ -128,6 +130,8 @@ approval_policy = "never"
     assert.doesNotMatch(configured, /\[agents\]/);
     assert.match(configured, /\[model_providers\.codex-router\]/);
     assert.match(configured, /wire_api = "responses"/);
+    assert.match(configured, /request_max_retries = 0/);
+    assert.match(configured, /stream_max_retries = 0/);
     assert.match(configured, /supports_standalone_web_search = true/);
     assert.ok(
       configured.includes(
@@ -242,6 +246,35 @@ default_subagent_model = "gpt-5.6-terra"
     const restored = readFileSync(configPath, "utf8");
     assert.match(restored, /^max_concurrent_threads_per_session = 3$/m);
     assert.match(restored, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("config manager carries the legacy agents max_threads alias into v2", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-agent-alias-"));
+  const configPath = path.join(codexHome, "config.toml");
+  const original = `[agents]
+max_threads = 8
+default_subagent_model = "gpt-5.6-luna"
+default_subagent_reasoning_effort = "max"
+`;
+  writeFileSync(configPath, original, { mode: 0o600 });
+
+  try {
+    run("enable", codexHome);
+    const enabled = readFileSync(configPath, "utf8");
+    assert.match(enabled, /^max_threads = 8$/m);
+    assert.match(enabled, /^default_subagent_model = "gpt-5\.6-luna"$/m);
+    assert.match(enabled, /^default_subagent_reasoning_effort = "max"$/m);
+    assert.match(
+      enabled,
+      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 8,/,
+    );
+    assert.doesNotMatch(enabled, /max_concurrent_threads_per_session = 6/);
+
+    run("disable", codexHome);
+    assert.equal(readFileSync(configPath, "utf8").trimStart(), original);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }
@@ -924,6 +957,8 @@ Authorization = "Bearer PROVIDER_HEADER_SECRET"
     assert.doesNotMatch(configured, /\[model_providers\.codex-router-signed\]/);
     assert.match(configured, new RegExp(`base_url = "http://127\\.0\\.0\\.1:46192/_codex-router/${CALLER_KEY}/v1"`));
     assert.match(configured, /requires_openai_auth = true/);
+    assert.match(configured, /request_max_retries = 0/);
+    assert.match(configured, /stream_max_retries = 0/);
     assert.match(configured, /supports_websockets = false/);
     assert.match(configured, /supports_standalone_web_search = true/);
     assert.doesNotMatch(configured, /PROVIDER_(?:QUERY|AUTH|HEADER)_SECRET/);
@@ -957,6 +992,42 @@ Authorization = "Bearer PROVIDER_HEADER_SECRET"
         restored.indexOf("[model_providers.custom.http_headers]"),
     );
     assert.doesNotMatch(restored, /codex-router-signed-provider-managed/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("signed routing recognizes the prior standalone-search block while adding retry controls", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-provider-prior-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  const original = `model = "gpt-5.6-sol"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "CC Switch"
+base_url = "https://example.invalid/v1"
+wire_api = "responses"
+`;
+  writeFileSync(configPath, original, { mode: 0o600 });
+
+  try {
+    run("signed-enable", codexHome, stateDir);
+    const prior = readFileSync(configPath, "utf8")
+      .replace("request_max_retries = 0\n", "")
+      .replace("stream_max_retries = 0\n", "");
+    writeFileSync(configPath, prior, { mode: 0o600 });
+    const disabled = run("signed-disable", codexHome, stateDir);
+    assert.equal(disabled.signed_routing, false);
+    const unsigned = readFileSync(configPath, "utf8");
+    assert.match(unsigned, /\[model_providers\.custom\]/);
+    assert.doesNotMatch(unsigned, /codex-router-signed-provider-managed/);
+    assert.match(unsigned, /request_max_retries = 0/);
+    assert.match(unsigned, /stream_max_retries = 0/);
+
+    const native = run("disable", codexHome, stateDir);
+    assert.equal(native.mode, "native");
+    assert.equal(readFileSync(configPath, "utf8"), original);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }

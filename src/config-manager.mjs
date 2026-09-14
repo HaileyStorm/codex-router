@@ -71,9 +71,9 @@ const managedAgentMaxConcurrency = 6;
 const managedSubagentCompletionHint =
   "When a child agent finishes (FINAL_ANSWER, task_complete, or an idle/errored wait snapshot), call interrupt_agent on that child so Codex can mark it done. Do not leave finished children in the working state.";
 
-export function managedMultiAgentV2FeatureLine() {
+export function managedMultiAgentV2FeatureLine(maxConcurrency = managedAgentMaxConcurrency) {
   const base =
-    `multi_agent_v2 = { enabled = true, max_concurrent_threads_per_session = ${managedAgentMaxConcurrency}, ` +
+    `multi_agent_v2 = { enabled = true, max_concurrent_threads_per_session = ${maxConcurrency}, ` +
     "expose_spawn_agent_model_overrides = true";
   if (!legacySubagentCompletionCleanupEnabled()) {
     return `${base}, usage_hint_enabled = false }`;
@@ -346,7 +346,7 @@ function withManagedMultiAgentV2(input) {
   const cleaned = withoutManagedMultiAgentV2(input);
   if (hasModernMultiAgentConfig(cleaned)) return cleaned;
   if (!installedCodexSupportsMultiAgentV2()) return cleaned;
-  const featureLine = managedMultiAgentV2FeatureLine();
+  const featureLine = managedMultiAgentV2FeatureLine(configuredAgentConcurrency(cleaned));
   const managedLines = [
     multiAgentV2StartMarker,
     featureLine,
@@ -366,6 +366,28 @@ function withManagedMultiAgentV2(input) {
   while (tableEnd < lines.length && !/^\s*\[/.test(lines[tableEnd])) tableEnd += 1;
   lines.splice(tableEnd, 0, ...managedLines, "");
   return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function configuredAgentConcurrency(input) {
+  const { rootLines, tableLines } = splitRoot(input);
+  const parse = (lines) => {
+    for (const line of lines) {
+      if (!/^\s*(?:max_concurrent_threads_per_session|max_threads)\s*=/.test(line)) continue;
+      const value = Number(assignmentValue(line));
+      if (Number.isSafeInteger(value) && value > 0) return value;
+    }
+    return undefined;
+  };
+  const agentsHeader = tableLines.findIndex((line) =>
+    /^\s*\[\s*agents\s*\]\s*(?:#.*)?$/.test(line),
+  );
+  if (agentsHeader !== -1) {
+    let tableEnd = agentsHeader + 1;
+    while (tableEnd < tableLines.length && !/^\s*\[/.test(tableLines[tableEnd])) tableEnd += 1;
+    const configured = parse(tableLines.slice(agentsHeader + 1, tableEnd));
+    if (configured !== undefined) return configured;
+  }
+  return parse(rootLines) ?? managedAgentMaxConcurrency;
 }
 
 // Some Codex builds reject a managed concurrency scalar and block the whole
@@ -551,6 +573,8 @@ function managedSignedProviderBlock(providerId, baseUrl) {
     'name = "Codex Router (with ChatGPT)"',
     `base_url = ${JSON.stringify(baseUrl)}`,
     'wire_api = "responses"',
+    "request_max_retries = 0",
+    "stream_max_retries = 0",
     "requires_openai_auth = true",
     // Codex 0.146+ performs standalone web search on the client and sends
     // the resulting items back through the selected custom provider. Keep
@@ -581,9 +605,27 @@ function managedSignedProviderBlockLegacy(providerId, baseUrl) {
   ].join("\n");
 }
 
+function managedSignedProviderBlockPrior(providerId, baseUrl) {
+  const headerId = /^[A-Za-z0-9_-]+$/.test(providerId)
+    ? providerId
+    : JSON.stringify(providerId);
+  return [
+    signedProviderStartMarker,
+    `[model_providers.${headerId}]`,
+    'name = "Codex Router (with ChatGPT)"',
+    `base_url = ${JSON.stringify(baseUrl)}`,
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    "supports_standalone_web_search = true",
+    "supports_websockets = false",
+    signedProviderEndMarker,
+  ].join("\n");
+}
+
 function managedSignedProviderBlockMatches(actual, providerId, baseUrl) {
   return [
     managedSignedProviderBlock(providerId, baseUrl),
+    managedSignedProviderBlockPrior(providerId, baseUrl),
     managedSignedProviderBlockLegacy(providerId, baseUrl),
   ].includes(actual);
 }
@@ -898,13 +940,20 @@ function legacyManagedRouterProvider(contents) {
     fields.get("base_url") === rootBaseUrl &&
     isManagedRouterBaseUrl(rootBaseUrl) &&
     fields.get("wire_api") === "responses";
+  const retryFieldsMatch =
+    fields.get("request_max_retries") === "0" &&
+    fields.get("stream_max_retries") === "0";
   const currentShape =
     (fields.size === 3 ||
-      (fields.size === 4 && fields.get("supports_standalone_web_search") === "true")) &&
+      (fields.size === 4 && fields.get("supports_standalone_web_search") === "true") ||
+      (fields.size === 5 && retryFieldsMatch) ||
+      (fields.size === 6 && retryFieldsMatch && fields.get("supports_standalone_web_search") === "true")) &&
     fields.get("name") === "Codex Router (external models)";
   const prototypeShape =
     (fields.size === 4 ||
-      (fields.size === 5 && fields.get("supports_standalone_web_search") === "true")) &&
+      (fields.size === 5 && fields.get("supports_standalone_web_search") === "true") ||
+      (fields.size === 6 && retryFieldsMatch) ||
+      (fields.size === 7 && retryFieldsMatch && fields.get("supports_standalone_web_search") === "true")) &&
     fields.get("name") === "Codex Router (extra providers)" &&
     fields.get("requires_openai_auth") === "true";
   return commonFieldsMatch && (currentShape || prototypeShape)
@@ -1059,6 +1108,8 @@ function enabledContents(contents) {
     'name = "Codex Router (external models)"',
     `base_url = ${JSON.stringify(routerBaseUrl)}`,
     'wire_api = "responses"',
+    "request_max_retries = 0",
+    "stream_max_retries = 0",
     "supports_standalone_web_search = true",
     providerEndMarker,
   ];

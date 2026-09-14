@@ -1,20 +1,25 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
 import {
   createNousReasoningEnvelope,
+  decodeNousReasoningEnvelope,
   assertNousDirectCredentialMetadata,
   completionToResponsesBody,
   dispatchNousDirect,
   NOUS_BASE_URL,
+  NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+  NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE,
+  NOUS_DIRECT_PROVIDER_STOP_STATUS,
+  NOUS_DIRECT_RECONCILE_ERROR_TYPE,
   NOUS_GATEWAY_MODEL,
   NOUS_MODEL_SLUG,
   NOUS_PROVIDER_ID,
@@ -22,6 +27,7 @@ import {
   responsesInputToNousMessages,
   toNousChatRequest,
 } from "../src/nous-direct.mjs";
+import { createNousHostGateFetch } from "../src/nous-host-gate.mjs";
 
 const MODEL = {
   slug: NOUS_MODEL_SLUG,
@@ -72,9 +78,11 @@ async function requestJson(request) {
 }
 
 function child(script, env) {
+  const inheritedEnvironment = { ...process.env };
+  for (const name of ["NOUS_API_KEY", "DEEPSEEK_API_KEY"]) delete inheritedEnvironment[name];
   const processHandle = spawn(process.execPath, [path.join(ROOT, "src", script)], {
     cwd: ROOT,
-    env: { ...process.env, ...env },
+    env: { ...inheritedEnvironment, ...env },
     stdio: ["ignore", "ignore", "pipe"],
   });
   processHandle.stderr.setEncoding("utf8");
@@ -465,6 +473,52 @@ test("Nous Direct preserves returned reasoning, ordered call ids, and raw argume
   );
 });
 
+test("Nous Direct preserves present-empty reasoning_content on tool turns", () => {
+  const envelope = createNousReasoningEnvelope({
+    internalKey: INTERNAL_ROUTER_KEY,
+    model: MODEL.upstreamModel,
+    text: "",
+  });
+  assert.deepEqual(
+    decodeNousReasoningEnvelope(envelope, {
+      internalKey: INTERNAL_ROUTER_KEY,
+      expectedModel: MODEL.upstreamModel,
+      visibleText: "",
+    }),
+    { text: "", details: undefined },
+  );
+
+  const adapted = JSON.parse(
+    completionToResponsesBody(
+      completion({
+        role: "assistant",
+        content: null,
+        reasoning_content: "",
+        tool_calls: [{
+          id: "provider_call_empty_reasoning",
+          type: "function",
+          function: { name: "send", arguments: "{}" },
+        }],
+      }),
+      MODEL.upstreamModel,
+      false,
+      { internalKey: INTERNAL_ROUTER_KEY, toolNames: ["send"] },
+    ).body,
+  );
+  assert.equal(adapted.output[0].type, "reasoning");
+  assert.equal(adapted.output[0].summary[0].text, "");
+  assert.match(adapted.output[0].encrypted_content, /^cr-nous-r1:/);
+  const replay = toNousChatRequest({
+    input: [
+      adapted.output[0],
+      adapted.output[1],
+      { type: "function_call_output", call_id: "provider_call_empty_reasoning", output: "sent" },
+    ],
+    reasoning: { effort: "max" },
+  }, MODEL.upstreamModel, { internalKey: INTERNAL_ROUTER_KEY });
+  assert.equal(replay.messages[0].reasoning_content, "");
+});
+
 test("Nous Direct dispatches once to Chat Completions and never invents a Responses upstream", async () => {
   const attempts = [];
   const upstream = completion({ role: "assistant", content: "done", reasoning_content: "raw" });
@@ -569,6 +623,76 @@ test("Nous Direct bounds response bodies before allocating a completion", async 
   assert.equal(attempts, 1);
 });
 
+test("Nous Direct rejects malformed UTF-8 and bounds adapted encryption/SSE expansion", async () => {
+  await assert.rejects(
+    dispatchNousDirect({
+      payload: { input: "hello" },
+      model: MODEL,
+      provider: PROVIDER,
+      credential: "TEST_NOUS_KEY",
+      baseUrl: NOUS_BASE_URL,
+      internalKey: INTERNAL_ROUTER_KEY,
+      fetchImpl: async () => new Response(Buffer.from([0x7b, 0xc3, 0x28, 0x7d]), { status: 200 }),
+    }),
+    (error) =>
+      error?.type === NOUS_DIRECT_RECONCILE_ERROR_TYPE &&
+      error?.code === "nous_direct_invalid_utf8" &&
+      error?.status === 400 &&
+      error?.originalHttpStatus === 200,
+  );
+
+  const largeReasoning = "x".repeat(12 * 1024 * 1024);
+  await assert.rejects(
+    dispatchNousDirect({
+      payload: { input: "hello", reasoning: { effort: "max" }, stream: true },
+      model: MODEL,
+      provider: PROVIDER,
+      credential: "TEST_NOUS_KEY",
+      baseUrl: NOUS_BASE_URL,
+      internalKey: INTERNAL_ROUTER_KEY,
+      fetchImpl: async () => new Response(
+        JSON.stringify(completion({
+          role: "assistant",
+          content: "done",
+          reasoning_content: largeReasoning,
+        })),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    }),
+    (error) =>
+      error?.type === NOUS_DIRECT_RECONCILE_ERROR_TYPE &&
+      error?.code === "nous_direct_adapted_response_too_large" &&
+      error?.status === 400 &&
+      error?.originalHttpStatus === 200,
+  );
+});
+
+test("Nous Direct sanitizes postcontact HTTP failures before they can be retried", async () => {
+  const response = await dispatchNousDirect({
+    payload: { input: "hello", reasoning: { effort: "max" } },
+    model: MODEL,
+    provider: PROVIDER,
+    credential: "TEST_NOUS_KEY",
+    baseUrl: NOUS_BASE_URL,
+    internalKey: INTERNAL_ROUTER_KEY,
+    fetchImpl: async () => new Response(
+      JSON.stringify({ error: { message: "provider secret response must not escape" } }),
+      { status: 503, headers: { "X-Provider-Secret": "must-not-escape" } },
+    ),
+  });
+  assert.equal(response.status, 400);
+  assert.equal(response.headers.get("x-provider-secret"), null);
+  const body = await response.json();
+  assert.equal(body.error.type, NOUS_DIRECT_RECONCILE_ERROR_TYPE);
+  assert.equal(body.error.provider_contacted, true);
+  assert.equal(body.error.provider_execution_may_have_completed, true);
+  assert.equal(body.error.tools_not_exposed, true);
+  assert.equal(body.error.original_http_status, 503);
+  assert.equal(body.error.retryable, false);
+  assert.equal(body.error.no_resend, true);
+  assert.doesNotMatch(JSON.stringify(body), /provider secret|must-not-escape/);
+});
+
 test("Nous Direct terminal failures, redirects, transport errors, and empties never retry", async (t) => {
   await t.test("HTTP 402", async () => {
     let attempts = 0;
@@ -585,7 +709,11 @@ test("Nous Direct terminal failures, redirects, transport errors, and empties ne
       },
     });
     assert.equal(attempts, 1);
-    assert.equal(response.status, 402);
+    assert.equal(response.status, NOUS_DIRECT_PROVIDER_STOP_STATUS);
+    const body = await response.json();
+    assert.equal(body.error.type, NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE);
+    assert.equal(body.error.retryable, false);
+    assert.equal(body.error.no_resend, true);
   });
 
   await t.test("redirect", async () => {
@@ -604,7 +732,12 @@ test("Nous Direct terminal failures, redirects, transport errors, and empties ne
       },
     });
     assert.equal(attempts, 1);
-    assert.equal(response.status, 307);
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.error.type, NOUS_DIRECT_RECONCILE_ERROR_TYPE);
+    assert.equal(body.error.original_http_status, 307);
+    assert.equal(body.error.retryable, false);
+    assert.equal(body.error.no_resend, true);
   });
 
   await t.test("transport error", async () => {
@@ -622,7 +755,11 @@ test("Nous Direct terminal failures, redirects, transport errors, and empties ne
           throw new TypeError("fetch failed");
         },
       }),
-      /fetch failed/,
+      (error) =>
+        error?.type === NOUS_DIRECT_RECONCILE_ERROR_TYPE &&
+        error?.code === "nous_direct_reconcile_required" &&
+        error?.status === 400 &&
+        error?.providerContacted === true,
     );
     assert.equal(attempts, 1);
   });
@@ -645,7 +782,11 @@ test("Nous Direct terminal failures, redirects, transport errors, and empties ne
           });
         },
       }),
-      (error) => error?.status === 502 && error?.code === "nous_direct_empty_completion",
+      (error) =>
+        error?.status === 400 &&
+        error?.type === NOUS_DIRECT_RECONCILE_ERROR_TYPE &&
+        error?.code === "nous_direct_empty_completion" &&
+        error?.providerContacted === true,
     );
     assert.equal(attempts, 1);
   });
@@ -710,6 +851,8 @@ test("Nous Direct validates exact response identity, finish state, and reasoning
     reasoning: { effort: "max" },
   }, MODEL.upstreamModel, { internalKey: INTERNAL_ROUTER_KEY });
   assert.deepEqual(replay.messages[0].reasoning_details, reasoningDetails);
+  const envelopeLast = nativeSerdeReasoning.encrypted_content.at(-1);
+  const tamperedEnvelope = `${nativeSerdeReasoning.encrypted_content.slice(0, -1)}${envelopeLast === "A" ? "B" : "A"}`;
   assert.throws(
     () => toNousChatRequest({
       input: [{
@@ -725,7 +868,7 @@ test("Nous Direct validates exact response identity, finish state, and reasoning
       input: [{
         type: "reasoning",
         summary: [{ type: "summary_text", text: "visible replay text" }],
-        encrypted_content: nativeSerdeReasoning.encrypted_content.slice(0, -1) + "A",
+        encrypted_content: tamperedEnvelope,
       }, { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] }],
     }, MODEL.upstreamModel, { internalKey: INTERNAL_ROUTER_KEY }),
     /authentication failed|malformed/,
@@ -762,7 +905,7 @@ test("API forwarder refuses a noncanonical Nous origin before attaching the prov
     MODEL_ROUTER_STATE_DIR: path.join(testRoot, "state"),
     CODEX_ROUTER_API_PORT: String(port),
     CODEX_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
-    NOUS_API_KEY: "TEST_NOUS_ENVIRONMENT_ONLY_KEY",
+    NOUS_API_KEY: "",
     CODEX_ROUTER_QUIET: "1",
   });
   try {
@@ -805,7 +948,7 @@ test("API forwarder rejects file-backed Nous metadata before credential lookup o
   const forwarder = child("api-forwarder.mjs", {
     MODEL_ROUTER_REGISTRY: isolatedRegistry(
       testRoot,
-      `http://127.0.0.1:${upstream.port}/v1`,
+      NOUS_BASE_URL,
       { environmentOnly: undefined, file: "nous-api-key.secret" },
     ),
     MODEL_ROUTER_STATE_DIR: stateDir,
@@ -836,6 +979,157 @@ test("API forwarder rejects file-backed Nous metadata before credential lookup o
     await closeServer(upstream.server);
     rmSync(testRoot, { recursive: true, force: true });
   }
+});
+
+test("API forwarder reports a host-gate failure before provider contact", async () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "nous-forwarder-reconcile-"));
+  const preload = path.join(testRoot, "gate-failure-preload.mjs");
+  writeFileSync(preload, "process.env.SystemRoot = \"\";\n", { encoding: "utf8", mode: 0o600 });
+  const port = await openPort();
+  const forwarder = child("api-forwarder.mjs", {
+    MODEL_ROUTER_REGISTRY: isolatedRegistry(testRoot, NOUS_BASE_URL),
+    MODEL_ROUTER_STATE_DIR: path.join(testRoot, "state"),
+    CODEX_ROUTER_API_PORT: String(port),
+    CODEX_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
+    NOUS_API_KEY: "TEST_NOUS_ENVIRONMENT_ONLY_KEY",
+    CODEX_ROUTER_QUIET: "1",
+    // The preload changes SystemRoot after Node startup, making the production
+    // Windows command builder fail closed before it can spawn or contact a provider.
+    NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${port}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "responses/nous-deepseek-v4-1-flash",
+        input: "hello",
+        reasoning: { effort: "max" },
+      }),
+    });
+    assert.equal(response.status, 400, forwarder.testErrors());
+    const body = await response.json();
+    assert.equal(body.error.type, NOUS_DIRECT_HOST_GATE_ERROR_TYPE);
+    assert.equal(body.error.provider_contacted, false);
+    assert.equal(body.error.outcome_unknown, false);
+    assert.equal(body.error.provider_execution_may_have_completed, false);
+    assert.equal(body.error.retryable, false);
+    assert.equal(body.error.no_resend, true);
+  } finally {
+    await stopChild(forwarder);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+const composedBridge = process.env.NOUS_BRIDGE_SOURCE;
+const composedPython = process.env.NOUS_PYTHON;
+const composedAvailable = Boolean(
+  composedBridge &&
+  composedPython &&
+  existsSync(composedBridge) &&
+  existsSync(composedPython),
+);
+
+test("Nous Direct dispatch composes with the real provider lease and a provider-free network fixture", {
+  skip: !composedAvailable,
+}, async (t) => {
+  const isolated = mkdtempSync(path.join(os.tmpdir(), "nous-direct-composed-"));
+  t.after(() => rmSync(isolated, { recursive: true, force: true }));
+
+  const childEnvironment = { ...process.env };
+  for (const name of [
+    "NOUS_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "CODEX_NOUS_ALLOW_USER_ENV_CREDENTIAL",
+    "CODEX_NOUS_SERIALIZATION_PROOF",
+  ]) {
+    delete childEnvironment[name];
+  }
+  childEnvironment.HOME = isolated;
+  childEnvironment.USERPROFILE = isolated;
+  childEnvironment.CODEX_HOME = path.join(isolated, ".codex");
+  childEnvironment.LOCALAPPDATA = path.join(isolated, "LocalAppData");
+  childEnvironment.XDG_CACHE_HOME = path.join(isolated, "Cache");
+
+  const rawEvents = [];
+  const leaseArgs = [
+    "-I",
+    composedBridge,
+    "--provider-lease",
+    "--provider-lease-timeout",
+    "5",
+  ];
+  const spawnImpl = (_command, _args, options) => {
+    const child = spawn(composedPython, leaseArgs, {
+      ...options,
+      cwd: isolated,
+      env: childEnvironment,
+    });
+    child.stdout.on("data", (chunk) => rawEvents.push(Buffer.from(chunk)));
+    return child;
+  };
+
+  let observedRequest;
+  const gatedFetch = createNousHostGateFetch({
+    timeoutMs: 5_000,
+    spawnImpl,
+    fetchImpl: async (url, init) => {
+      observedRequest = {
+        url,
+        body: JSON.parse(init.body),
+        signalProvided: Boolean(init.signal),
+      };
+      return new Response(
+        JSON.stringify(completion({ role: "assistant", content: "provider-free composed" })),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    },
+  });
+
+  const response = await dispatchNousDirect({
+    payload: { input: "hello", reasoning: { effort: "max" } },
+    model: MODEL,
+    provider: PROVIDER,
+    credential: "fixture-only-not-a-provider-key",
+    baseUrl: NOUS_BASE_URL,
+    internalKey: INTERNAL_ROUTER_KEY,
+    fetchImpl: gatedFetch,
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.output.find((item) => item.type === "message").content[0].text, "provider-free composed");
+  assert.deepEqual(observedRequest, {
+    url: `${NOUS_BASE_URL}/chat/completions`,
+    body: {
+      model: NOUS_UPSTREAM_MODEL,
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+      reasoning_effort: "max",
+      max_tokens: 131072,
+    },
+    signalProvided: true,
+  });
+  const events = Buffer.concat(rawEvents)
+    .toString("utf8")
+    .trim()
+    .split(/\r?\n/u)
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(events.map((event) => event.event), ["ready", "released"]);
+  assert.equal(events[0].schema, "codex-nous-provider-lease-v1");
+  assert.equal(events[0].provider, "nous");
+  assert.equal(events[0].model, NOUS_UPSTREAM_MODEL);
+  assert.equal(events[1].status, 200);
+  assert.equal(
+    Object.keys(childEnvironment).some((name) =>
+      ["NOUS_API_KEY", "DEEPSEEK_API_KEY", "CODEX_NOUS_ALLOW_USER_ENV_CREDENTIAL"].includes(name)),
+    false,
+  );
 });
 
 test("router leaves Nous reasoning intact, flattens namespace tools, and cannot retry an empty turn", async () => {

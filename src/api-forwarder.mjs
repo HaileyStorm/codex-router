@@ -41,8 +41,11 @@ import {
 } from "./freetoken-local.mjs";
 import {
   assertNousDirectCredentialMetadata,
+  assertNousDirectBinding,
   dispatchNousDirect,
   NOUS_CHAT_ADAPTER,
+  NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+  NOUS_DIRECT_RECONCILE_ERROR_TYPE,
   NOUS_PROVIDER_ID,
 } from "./nous-direct.mjs";
 
@@ -685,6 +688,13 @@ async function handleRequest(request, response) {
     normalized.provider.id === NOUS_PROVIDER_ID ||
     normalized.provider.responseAdapter === NOUS_CHAT_ADAPTER
   ) {
+    // Bind the exact provider, model, and resolved origin before the generic
+    // resolver can inspect environment, files, keychains, or CLI sessions.
+    assertNousDirectBinding({
+      provider: normalized.provider,
+      model: normalized.model,
+      baseUrl: providerBaseUrl(normalized.provider),
+    });
     // Validate the adapter's environment-only contract before the generic
     // resolver can inspect files, keychains, sessions, or other credentials.
     assertNousDirectCredentialMetadata(normalized.provider);
@@ -794,6 +804,41 @@ async function handleRequest(request, response) {
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
+    if (error?.type === NOUS_DIRECT_HOST_GATE_ERROR_TYPE) {
+      writeJson(response, 400, {
+        error: {
+          type: NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+          provider: NOUS_PROVIDER_ID,
+          provider_contacted: false,
+          outcome_unknown: false,
+          provider_execution_may_have_completed: false,
+          tools_not_exposed: true,
+          retryable: false,
+          no_resend: true,
+          message: "Nous Direct host provider lease failed before provider contact.",
+        },
+      });
+      return;
+    }
+    if (error?.reconcileRequired === true) {
+      writeJson(response, 400, {
+        error: {
+          type: NOUS_DIRECT_RECONCILE_ERROR_TYPE,
+          provider: error.provider || NOUS_PROVIDER_ID,
+          provider_contacted: true,
+          outcome_unknown: true,
+          provider_execution_may_have_completed: true,
+          tools_not_exposed: true,
+          retryable: false,
+          no_resend: true,
+          ...(Number.isInteger(error.originalHttpStatus)
+            ? { original_http_status: error.originalHttpStatus }
+            : {}),
+          message: "Nous Direct provider contact has an unknown outcome; reconcile before resending.",
+        },
+      });
+      return;
+    }
     const status = httpErrorStatus(error);
     // Names and codes only: a forwarder failure can wrap upstream response
     // text in its message, and bodies never belong in the log. The code chain

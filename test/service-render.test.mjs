@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -100,11 +101,66 @@ test("background service definitions render for macOS, Linux, and Windows", () =
     const windows = render("service-windows.mjs", "win32", testRoot);
     assert.match(windows, /@echo off\r?\n/);
     assert.match(windows, /set "CODEX_ROUTER_STATE_DIR=/);
-    assert.match(windows, /litellm|start\.mjs/);
+    assert.match(windows, /start-codex-router-env\.ps1/);
+    assert.match(windows, /-WindowStyle Hidden -ExecutionPolicy Bypass -File/);
+    assert.match(
+      serviceCommand("service-windows.mjs", "win32", testRoot, "render-env-wrapper"),
+      /start\.mjs/,
+    );
     // The Python gateway must run with UTF-8 output even when the host
     // console code page is not UTF-8 (see service-windows.mjs).
     assert.match(windows, /set "PYTHONIOENCODING=utf-8"/);
     assert.match(windows, /set "PYTHONUTF8=1"/);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("the Windows environment wrapper selects Nous without embedding its key", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-nous-env-'wrapper-"));
+  try {
+    const script = serviceCommand(
+      "service-windows.mjs",
+      "win32",
+      testRoot,
+      "render-env-wrapper",
+    );
+
+    assert.match(script, /enabled-providers\.json/);
+    assert.match(script, /discovery-mode\.json/);
+    assert.match(
+      script,
+      /\[Environment\]::GetEnvironmentVariable\('NOUS_API_KEY', 'User'\)/,
+    );
+    assert.match(
+      script,
+      /\[Environment\]::SetEnvironmentVariable\('NOUS_API_KEY', \$null, 'Process'\)/,
+    );
+    assert.match(
+      script,
+      /\[Environment\]::SetEnvironmentVariable\('NOUS_API_KEY', \$userKey, 'Process'\)/,
+    );
+    assert.match(script, /\$selectedNous = .*-contains 'nous'/);
+    assert.match(script, /\$discoveryOverride = \$env:CODEX_ROUTER_NO_DISCOVERY/);
+    assert.match(script, /if \(\$discoveryOverride -eq '1'\)/);
+    assert.match(script, /\} elseif \(\$discoveryOverride -eq '0'\)/);
+    assert.match(
+      script,
+      /\$discoveryOverride -eq '1'[\s\S]*?\$discoveryOverride -eq '0'[\s\S]*?Test-Path -LiteralPath \$discoveryModePath/,
+    );
+    assert.match(script, /if \(-not \$discoveryEnabled\)/);
+    assert.match(script, /requires NOUS_API_KEY in the persistent user environment/);
+    assert.match(script, /SetEnvironmentVariable\('NOUS_API_KEY', \$userKey, 'Process'\)\r?\n  \$userKey = \$null/);
+    assert.match(script, /start\.mjs/);
+    assert.match(script, /exit \$LASTEXITCODE/);
+    assert.ok(
+      script.includes(testRoot.replaceAll("'", "''")),
+      "PowerShell paths must escape apostrophes in single-quoted literals",
+    );
+
+    const fakeKey = "nous-test-secret-value";
+    assert.doesNotMatch(script, new RegExp(fakeKey));
+    assert.doesNotMatch(script, /\$env:NOUS_API_KEY\s*=\s*['"][^'"]+['"]/);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }
@@ -397,6 +453,7 @@ test(
       const stateDir = windowsStateDir(testRoot);
       const wrapperPath = path.join(stateDir, "start-codex-router.cmd");
       const launcherPath = path.join(stateDir, "start-codex-router-hidden.vbs");
+      const powerShellWrapperPath = path.join(stateDir, "start-codex-router-env.ps1");
       const run = (command) =>
         JSON.parse(serviceCommand("service-windows.mjs", "win32", testRoot, command));
 
@@ -405,8 +462,11 @@ test(
       assert.equal(run("install").installed, true);
       assert.equal(existsSync(wrapperPath), true);
       assert.equal(existsSync(launcherPath), true);
+      assert.equal(existsSync(powerShellWrapperPath), true);
+      assert.equal(statSync(powerShellWrapperPath).mode & 0o777, 0o600);
 
       const bytes = readFileSync(launcherPath);
+      const powerShellBytes = readFileSync(powerShellWrapperPath);
       // wscript.exe falls back to the ANSI code page without this byte order
       // mark, which corrupts a state directory holding non-ASCII characters.
       assert.deepEqual([...bytes.subarray(0, 2)], [0xff, 0xfe]);
@@ -415,10 +475,12 @@ test(
       // Reinstalling over an existing pair overwrites instead of failing.
       assert.equal(run("install").installed, true);
       assert.equal(readFileSync(launcherPath).equals(bytes), true);
+      assert.equal(readFileSync(powerShellWrapperPath).equals(powerShellBytes), true);
 
       assert.equal(run("uninstall").installed, false);
       assert.equal(existsSync(wrapperPath), false);
       assert.equal(existsSync(launcherPath), false);
+      assert.equal(existsSync(powerShellWrapperPath), false);
 
       // Uninstalling again must not fail on the already-removed launchers.
       assert.equal(run("uninstall").installed, false);

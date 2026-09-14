@@ -117,7 +117,15 @@ import {
 import { VERSION } from "./version.mjs";
 import { nativeSessionHeaders } from "./codex-native-session.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
-import { isNousReasoningEnvelope } from "./nous-direct.mjs";
+import {
+  isNousReasoningEnvelope,
+  NOUS_CHAT_ADAPTER,
+  NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+  NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE,
+  NOUS_DIRECT_PROVIDER_STOP_STATUS,
+  NOUS_DIRECT_RECONCILE_ERROR_TYPE,
+  NOUS_PROVIDER_ID,
+} from "./nous-direct.mjs";
 
 // A profile slug is native authority. Refuse to start if a future external
 // registry entry claims the same identity; request-order precedence must never
@@ -308,6 +316,201 @@ Include current progress, key decisions, constraints, user preferences, remainin
 const SUMMARY_PREFIX =
   "Another language model started this task and produced a continuation summary. Use it to continue without repeating completed work:";
 const COMPACTION_PREFIX = "kcr1:";
+const NOUS_GATEWAY_ERROR_MAX_BYTES = 64 * 1024;
+const NOUS_HOST_GATE_FAILURE_MESSAGE =
+  "Nous Direct host provider lease failed before provider contact.";
+const NOUS_RECONCILE_MESSAGES = new Set([
+  "Nous Direct provider contact has an unknown outcome; reconcile before resending.",
+  "Nous Direct provider contact completed without a recoverable result; reconcile before resending.",
+]);
+const NOUS_PROVIDER_STOP_MESSAGE =
+  "Nous Direct reported HTTP 402; provider contact is stopped until the owner reconciles access.";
+
+function isNousDirectRoute(route) {
+  const provider = route && providerForModel(route);
+  return provider?.id === NOUS_PROVIDER_ID && provider.responseAdapter === NOUS_CHAT_ADAPTER;
+}
+
+function exactObjectKeys(value, expected) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => keys.includes(key));
+}
+
+function validNousOriginalStatus(value) {
+  return Number.isInteger(value) && value >= 100 && value <= 599;
+}
+
+function recognizedNousGatewayError(value, status) {
+  if (!exactObjectKeys(value, ["error"])) return undefined;
+  const error = value.error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const common =
+    error.provider === NOUS_PROVIDER_ID &&
+    error.retryable === false &&
+    error.no_resend === true &&
+    typeof error.message === "string";
+  if (!common) return undefined;
+
+  if (
+    error.type === NOUS_DIRECT_HOST_GATE_ERROR_TYPE &&
+    status === 400 &&
+    exactObjectKeys(error, [
+      "type",
+      "provider",
+      "provider_contacted",
+      "outcome_unknown",
+      "provider_execution_may_have_completed",
+      "tools_not_exposed",
+      "retryable",
+      "no_resend",
+      "message",
+    ]) &&
+    error.provider_contacted === false &&
+    error.outcome_unknown === false &&
+    error.provider_execution_may_have_completed === false &&
+    error.tools_not_exposed === true &&
+    error.message === NOUS_HOST_GATE_FAILURE_MESSAGE
+  ) {
+    return value;
+  }
+
+  if (
+    error.type === NOUS_DIRECT_RECONCILE_ERROR_TYPE &&
+    status === 400 &&
+    (exactObjectKeys(error, [
+      "type",
+      "provider",
+      "provider_contacted",
+      "outcome_unknown",
+      "provider_execution_may_have_completed",
+      "tools_not_exposed",
+      "retryable",
+      "no_resend",
+      "message",
+    ]) || exactObjectKeys(error, [
+      "type",
+      "provider",
+      "provider_contacted",
+      "outcome_unknown",
+      "provider_execution_may_have_completed",
+      "tools_not_exposed",
+      "retryable",
+      "no_resend",
+      "original_http_status",
+      "message",
+    ])) &&
+    error.provider_contacted === true &&
+    error.outcome_unknown === true &&
+    error.provider_execution_may_have_completed === true &&
+    error.tools_not_exposed === true &&
+    NOUS_RECONCILE_MESSAGES.has(error.message) &&
+    (error.original_http_status === undefined || validNousOriginalStatus(error.original_http_status))
+  ) {
+    return value;
+  }
+
+  if (
+    error.type === NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE &&
+    status === NOUS_DIRECT_PROVIDER_STOP_STATUS &&
+    exactObjectKeys(error, [
+      "type",
+      "provider",
+      "provider_contacted",
+      "provider_stop",
+      "retryable",
+      "no_resend",
+      "original_http_status",
+      "message",
+    ]) &&
+    error.provider_contacted === true &&
+    error.provider_stop === true &&
+    error.original_http_status === NOUS_DIRECT_PROVIDER_STOP_STATUS &&
+    error.message === NOUS_PROVIDER_STOP_MESSAGE
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+async function boundedGatewayErrorText(upstream) {
+  let contentLength;
+  try {
+    contentLength = upstream.headers.get("content-length");
+  } catch {
+    return undefined;
+  }
+  if (
+    contentLength !== null &&
+    (!/^\d+$/u.test(contentLength) || Number(contentLength) > NOUS_GATEWAY_ERROR_MAX_BYTES)
+  ) {
+    try {
+      await upstream.body?.cancel?.();
+    } catch {
+      // The body is already being rejected as an unknown local error shape.
+    }
+    return undefined;
+  }
+  if (!upstream.body) return "";
+  const chunks = [];
+  let total = 0;
+  try {
+    for await (const chunk of upstream.body) {
+      if (!(chunk instanceof Uint8Array) || chunk.byteLength > NOUS_GATEWAY_ERROR_MAX_BYTES - total) {
+        try {
+          await upstream.body.cancel?.();
+        } catch {
+          // Keep the bounded unknown-shape result.
+        }
+        return undefined;
+      }
+      total += chunk.byteLength;
+      chunks.push(Buffer.from(chunk));
+    }
+  } catch {
+    return undefined;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total));
+  } catch {
+    return undefined;
+  }
+}
+
+function unknownNousGatewayFailure(status) {
+  return {
+    status: 400,
+    body: {
+      error: {
+        type: NOUS_DIRECT_RECONCILE_ERROR_TYPE,
+        provider: NOUS_PROVIDER_ID,
+        provider_contacted: true,
+        outcome_unknown: true,
+        provider_execution_may_have_completed: true,
+        tools_not_exposed: true,
+        retryable: false,
+        no_resend: true,
+        ...(validNousOriginalStatus(status) ? { original_http_status: status } : {}),
+        message: "Nous Direct gateway returned an unrecognized failure; reconcile before resending.",
+      },
+    },
+  };
+}
+
+async function nousGatewayFailure(upstream) {
+  const text = await boundedGatewayErrorText(upstream);
+  if (text === undefined) return unknownNousGatewayFailure(upstream.status);
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return unknownNousGatewayFailure(upstream.status);
+  }
+  const recognized = recognizedNousGatewayError(parsed, upstream.status);
+  return recognized
+    ? { status: upstream.status, body: recognized }
+    : unknownNousGatewayFailure(upstream.status);
+}
 
 function parseBody(buffer) {
   try {
@@ -1839,7 +2042,12 @@ function requireCodexTransport(request, response) {
 // takes); transient failures — 429s, 5xx, disconnects — prove nothing either
 // way and leave the window open. Neither line is QUIET-gated: a promotion or
 // demotion that happens silently is how a picker entry becomes unexplainable.
-function observeSubagentOutcome(request, route, status, { emptyCompletion = false } = {}) {
+function observeSubagentOutcome(
+  request,
+  route,
+  status,
+  { emptyCompletion = false, skipStructuralDemotion = false } = {},
+) {
   if (!route) return;
   try {
     if (!request.headers["x-openai-subagent"]) return;
@@ -1849,7 +2057,7 @@ function observeSubagentOutcome(request, route, status, { emptyCompletion = fals
       console.error(
         `[codex-router] subagent proven: ${route.slug} completed a live child turn`,
       );
-    } else if (status === 400 || status === 422) {
+    } else if (!skipStructuralDemotion && (status === 400 || status === 422)) {
       recordSpawnFailure(route.slug, {
         status,
         reason: `child turn rejected with HTTP ${status}`,
@@ -2301,17 +2509,22 @@ async function handleResponses(request, response, requestUrl) {
     // provider path, so a stall here is the provider's, not the router's.
     upstreamLatencyMs = Date.now() - startedAt;
     // Gateway error bodies leak LiteLLM's internal exception chain, which
-    // reads like a router bug. Rewrite them to name the provider that failed.
-    // Native traffic passes through untouched: OpenAI errors are already clear.
+    // reads like a router bug. Rewrite ordinary routed errors to name the
+    // provider that failed; Nous Direct carries a separate bounded local
+    // contract whose no-resend fields must survive this hop.
     if (route && !upstream.ok) {
       const provider = providerForModel(route);
-      const retryAfterHeader = upstream.headers.get("retry-after");
-      const retryAfterSeconds = Number(retryAfterHeader);
-      if (retryAfterHeader) response.setHeader("Retry-After", retryAfterHeader);
-      writeJson(
-        response,
-        upstream.status,
-        translateGatewayError({
+      let outwardStatus = upstream.status;
+      let outwardBody;
+      if (isNousDirectRoute(route)) {
+        const failure = await nousGatewayFailure(upstream);
+        outwardStatus = failure.status;
+        outwardBody = failure.body;
+      } else {
+        const retryAfterHeader = upstream.headers.get("retry-after");
+        const retryAfterSeconds = Number(retryAfterHeader);
+        if (retryAfterHeader) response.setHeader("Retry-After", retryAfterHeader);
+        outwardBody = translateGatewayError({
           status: upstream.status,
           bodyText: await upstream.text(),
           modelName: route.displayName || route.slug,
@@ -2320,19 +2533,26 @@ async function handleResponses(request, response, requestUrl) {
           retryAfterSeconds: Number.isFinite(retryAfterSeconds)
             ? retryAfterSeconds
             : undefined,
-        }),
-      );
+        });
+      }
+      writeJson(response, outwardStatus, outwardBody);
       recordUsageEvent({
         model: route.slug,
         provider: canonicalProviderId(route.provider),
-        status: upstream.status,
+        status: outwardStatus,
         durationMs: Date.now() - startedAt,
         responseStartMs: upstreamLatencyMs,
         firstTokenMs,
       });
-      observeSubagentOutcome(request, route, upstream.status);
-      finalStatus = upstream.status;
-      activityStatus = upstream.status;
+      observeSubagentOutcome(request, route, outwardStatus, {
+        // Nous Direct's adapter translates every postcontact failure into a
+        // bounded 400 so the native client cannot resend it. That local
+        // contract is transport evidence, not a model structural rejection;
+        // preserve an experimental subagent proof through the translation.
+        skipStructuralDemotion: isNousDirectRoute(route),
+      });
+      finalStatus = outwardStatus;
+      activityStatus = outwardStatus;
       usageRecorded = true;
       if (!QUIET) {
         console.error(

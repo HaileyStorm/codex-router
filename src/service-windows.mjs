@@ -8,10 +8,13 @@ import {
 } from "node:fs";
 import path from "node:path";
 
+import { protectPrivateFile } from "./file-security.mjs";
 import {
   CODEX_HOME,
+  DISCOVERY_MODE_PATH,
   LOG_PATH,
   PORTS,
+  PROVIDER_SELECTION_PATH,
   SOURCE_ROOT,
   STATE_DIR,
   TARGET,
@@ -19,10 +22,19 @@ import {
 
 const effectivePlatform = process.env.CODEX_ROUTER_SERVICE_PLATFORM || process.platform;
 const command = process.argv[2] || "status";
-const renderCommands = new Set(["render", "render-launcher", "render-task"]);
+const renderCommands = new Set([
+  "render",
+  "render-env-wrapper",
+  "render-launcher",
+  "render-task",
+]);
 const taskName = "Codex Router";
 const wrapperPath = path.join(STATE_DIR, "start-codex-router.cmd");
+const powerShellWrapperPath = path.join(STATE_DIR, "start-codex-router-env.ps1");
 const launcherPath = path.join(STATE_DIR, "start-codex-router-hidden.vbs");
+const powerShellPath = process.env.SystemRoot
+  ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+  : "powershell.exe";
 
 if (effectivePlatform !== "win32" && !renderCommands.has(command)) {
   throw new Error("The Task Scheduler service manager runs on Windows only.");
@@ -34,6 +46,10 @@ function cmdEscape(value) {
 
 function vbsEscape(value) {
   return String(value).replaceAll('"', '""');
+}
+
+function psEscape(value) {
+  return String(value).replaceAll("'", "''");
 }
 
 function wrapper() {
@@ -66,7 +82,60 @@ function wrapper() {
   };
   return `@echo off\r\n${Object.entries(variables)
     .map(([key, value]) => `set "${key}=${cmdEscape(value)}"`)
-    .join("\r\n")}\r\n"${cmdEscape(process.execPath)}" "${cmdEscape(start)}" >> "${cmdEscape(LOG_PATH)}" 2>&1\r\n`;
+    .join("\r\n")}\r\n"${cmdEscape(powerShellPath)}" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${cmdEscape(powerShellWrapperPath)}" >> "${cmdEscape(LOG_PATH)}" 2>&1\r\n`;
+}
+
+function powerShellWrapper() {
+  const start = path.join(SOURCE_ROOT, "src", "start.mjs");
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$providerSelectionPath = '${psEscape(PROVIDER_SELECTION_PATH)}'`,
+    `$discoveryModePath = '${psEscape(DISCOVERY_MODE_PATH)}'`,
+    "$selectedNous = $false",
+    "if (Test-Path -LiteralPath $providerSelectionPath -PathType Leaf) {",
+    "  try {",
+    "    $selection = Get-Content -LiteralPath $providerSelectionPath -Raw | ConvertFrom-Json",
+    "    if ($selection.version -eq 1 -and $selection.providers -is [System.Array]) {",
+    "      $selectedNous = @($selection.providers | ForEach-Object { [string]$_ }) -contains 'nous'",
+    "    }",
+    "  } catch {",
+    "    $selectedNous = $false",
+    "  }",
+    "}",
+    // Match discovery-mode.mjs: the process override wins in either direction;
+    // only an absent/unknown override falls through to the persisted marker.
+    "$discoveryOverride = $env:CODEX_ROUTER_NO_DISCOVERY",
+    "$discoveryEnabled = $true",
+    "if ($discoveryOverride -eq '1') {",
+    "  $discoveryEnabled = $false",
+    "} elseif ($discoveryOverride -eq '0') {",
+    "  $discoveryEnabled = $true",
+    "} elseif (Test-Path -LiteralPath $discoveryModePath -PathType Leaf) {",
+    "  try {",
+    "    $discovery = Get-Content -LiteralPath $discoveryModePath -Raw | ConvertFrom-Json",
+    "    if ($discovery.version -eq 1 -and $discovery.discovery -eq 'disabled') {",
+    "      $discoveryEnabled = $false",
+    "    }",
+    "  } catch {",
+    "    $discoveryEnabled = $true",
+    "  }",
+    "}",
+    "[Environment]::SetEnvironmentVariable('NOUS_API_KEY', $null, 'Process')",
+    "if ($selectedNous) {",
+    "  if (-not $discoveryEnabled) {",
+    "    throw 'The selected Nous provider requires credential discovery to be enabled.'",
+    "  }",
+    "  $userKey = [Environment]::GetEnvironmentVariable('NOUS_API_KEY', 'User')",
+    "  if ([string]::IsNullOrWhiteSpace($userKey)) {",
+    "    throw 'The selected Nous provider requires NOUS_API_KEY in the persistent user environment.'",
+    "  }",
+    "  [Environment]::SetEnvironmentVariable('NOUS_API_KEY', $userKey, 'Process')",
+    "  $userKey = $null",
+    "}",
+    `& '${psEscape(process.execPath)}' '${psEscape(start)}'`,
+    "exit $LASTEXITCODE",
+    "",
+  ].join("\r\n");
 }
 
 // The scheduled task launches this script through `wscript.exe //B //NoLogo`,
@@ -108,16 +177,35 @@ function schtasks(args, options = {}) {
   });
 }
 
-function writeAtomic(target, contents) {
+function writeAtomic(target, contents, options = {}) {
   const temporary = `${target}.tmp.${process.pid}`;
-  writeFileSync(temporary, contents);
-  // renameSync replaces an existing destination on Windows, so reinstalling
-  // over an older launcher pair is a plain overwrite rather than a conflict.
-  renameSync(temporary, target);
+  if (options.protected) {
+    writeFileSync(temporary, contents, { mode: 0o600 });
+  } else {
+    writeFileSync(temporary, contents);
+  }
+  try {
+    if (options.protected) protectPrivateFile(temporary);
+    // renameSync replaces an existing destination on Windows, so reinstalling
+    // over an older launcher pair is a plain overwrite rather than a conflict.
+    renameSync(temporary, target);
+    if (options.protected) protectPrivateFile(target);
+  } catch (error) {
+    if (existsSync(temporary)) unlinkSync(temporary);
+    throw error;
+  }
 }
 
 function writeLaunchers() {
   mkdirSync(STATE_DIR, { recursive: true });
+  // The PowerShell layer reads the persistent user-scoped Nous key at launch;
+  // keep the generated source owner-protected even though it contains only
+  // credential names and metadata paths.
+  writeAtomic(
+    powerShellWrapperPath,
+    Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(powerShellWrapper(), "utf8")]),
+    { protected: true },
+  );
   writeAtomic(wrapperPath, Buffer.from(wrapper(), "utf8"));
   // wscript.exe parses a script file with the system ANSI code page unless the
   // file carries a UTF-16 byte order mark, so a state directory holding
@@ -269,18 +357,21 @@ if (
     "restart",
     "status",
     "render",
+    "render-env-wrapper",
     "render-launcher",
     "render-task",
   ]).has(command)
 ) {
   console.error(
-    "Usage: service-windows.mjs install|uninstall|start|stop|restart|status|render|render-launcher|render-task",
+    "Usage: service-windows.mjs install|uninstall|start|stop|restart|status|render|render-env-wrapper|render-launcher|render-task",
   );
   process.exit(2);
 }
 
 if (command === "render") {
   process.stdout.write(wrapper());
+} else if (command === "render-env-wrapper") {
+  process.stdout.write(powerShellWrapper());
 } else if (command === "render-launcher") {
   process.stdout.write(launcher());
 } else if (command === "render-task") {
@@ -322,7 +413,7 @@ if (command === "render") {
   } catch {
     // The task may not exist.
   }
-  for (const target of [launcherPath, wrapperPath]) {
+  for (const target of [launcherPath, wrapperPath, powerShellWrapperPath]) {
     try {
       if (existsSync(target)) unlinkSync(target);
     } catch {

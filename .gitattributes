@@ -17,3 +17,11 @@ bin/* text eol=lf
 # and are conventionally CRLF, but nothing here depends on their endings, so
 # they are normalized in the repository and left to the platform on checkout.
 *.ps1 text
+
+# Keep reviewed transport bytes stable when installed from Windows checkouts.
+/src/nous-host-gate.mjs text eol=lf
+/src/nous-direct.mjs text eol=lf
+/src/api-forwarder.mjs text eol=lf
+/src/router.mjs text eol=lf
+/src/config-manager.mjs text eol=lf
+/src/service-windows.mjs text eol=lf

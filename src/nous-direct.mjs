@@ -6,6 +6,8 @@ import {
   randomUUID,
 } from "node:crypto";
 
+import { createNousHostGateFetch } from "./nous-host-gate.mjs";
+
 export const NOUS_CHAT_ADAPTER = "nous-chat";
 export const NOUS_MAX_OUTPUT_TOKENS = 131072;
 export const NOUS_PROVIDER_ID = "nous";
@@ -16,6 +18,10 @@ export const NOUS_UPSTREAM_MODEL = "deepseek/deepseek-v4.1-flash";
 export const NOUS_REASONING_ENVELOPE_PREFIX = "cr-nous-r1:";
 export const NOUS_UPSTREAM_TIMEOUT_MS = 1_200_000;
 export const NOUS_CREDENTIAL_ENVIRONMENT_KEY = "NOUS_API_KEY";
+export const NOUS_DIRECT_RECONCILE_ERROR_TYPE = "nous_direct_reconcile_required";
+export const NOUS_DIRECT_HOST_GATE_ERROR_TYPE = "nous_direct_host_gate_failed";
+export const NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE = "nous_direct_provider_stop";
+export const NOUS_DIRECT_PROVIDER_STOP_STATUS = 402;
 
 const MAX_TOOL_CALLS = 16;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -99,7 +105,7 @@ export function createNousReasoningEnvelope({ internalKey, model, text, details 
   if (typeof model !== "string" || !model) {
     throw directError("Nous Direct reasoning envelope has no model binding.");
   }
-  if (typeof text !== "string" || !text) {
+  if (typeof text !== "string") {
     throw directError("Nous Direct reasoning envelope has no replayable text.");
   }
   const clonedDetails = cloneReasoningDetails(details, "Nous Direct envelope");
@@ -166,8 +172,7 @@ export function decodeNousReasoningEnvelope(
     decoded.version !== NOUS_REASONING_ENVELOPE_VERSION ||
     decoded.provider !== NOUS_PROVIDER_ID ||
     decoded.model !== expectedModel ||
-    typeof decoded.text !== "string" ||
-    !decoded.text
+    typeof decoded.text !== "string"
   ) {
     throw directError("Nous Direct reasoning envelope identity is invalid.");
   }
@@ -293,7 +298,7 @@ function reasoningText(item, index) {
       }
       text += part.text;
     }
-    if (text) return text;
+    return text;
   }
   throw directError(`input[${index}] reasoning has no replayable text.`);
 }
@@ -372,6 +377,12 @@ export function responsesInputToNousMessages(input, instructions, { upstreamMode
         throw error;
       }
       if (hasEncryptedContent && !ownEnvelope) {
+        if (!visibleText) {
+          throw directError(
+            "Nous Direct cannot replay foreign reasoning without a readable summary; provide a fresh task packet.",
+            { code: "nous_direct_foreign_reasoning_context" },
+          );
+        }
         messages.push({ role: "assistant", content: visibleText });
         index += 1;
         continue;
@@ -626,15 +637,110 @@ export function toNousChatRequest(payload, upstreamModel, { internalKey } = {}) 
   };
 }
 
+function reconcileError(message, code = NOUS_DIRECT_RECONCILE_ERROR_TYPE, originalHttpStatus) {
+  const error = directError(message, { status: 400, code });
+  Object.assign(error, {
+    type: NOUS_DIRECT_RECONCILE_ERROR_TYPE,
+    provider: NOUS_PROVIDER_ID,
+    reconcileRequired: true,
+    providerContacted: true,
+    outcomeUnknown: true,
+    providerExecutionMayHaveCompleted: true,
+    toolsNotExposed: true,
+    ...(Number.isInteger(originalHttpStatus)
+      ? { originalHttpStatus }
+      : {}),
+  });
+  return error;
+}
+
+function hostGatePrecontactError() {
+  const error = directError(
+    "Nous Direct host provider lease failed before provider contact.",
+    { status: 400, code: NOUS_DIRECT_HOST_GATE_ERROR_TYPE },
+  );
+  Object.assign(error, {
+    type: NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+    provider: NOUS_PROVIDER_ID,
+    reconcileRequired: true,
+    providerContacted: false,
+    outcomeUnknown: false,
+    providerExecutionMayHaveCompleted: false,
+    toolsNotExposed: true,
+    retryable: false,
+    noResend: true,
+  });
+  return error;
+}
+
+function isNousHostGateError(error) {
+  return typeof error?.code === "string" && error.code.startsWith("nous_host_gate_");
+}
+
 function responseError(message, code = "nous_direct_invalid_response") {
-  return directError(message, { status: 502, code });
+  return reconcileError(message, code);
+}
+
+function sanitizedProviderStopResponse() {
+  return new Response(
+    JSON.stringify({
+      error: {
+        type: NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE,
+        provider: NOUS_PROVIDER_ID,
+        provider_contacted: true,
+        provider_stop: true,
+        retryable: false,
+        no_resend: true,
+        original_http_status: NOUS_DIRECT_PROVIDER_STOP_STATUS,
+        message: "Nous Direct reported HTTP 402; provider contact is stopped until the owner reconciles access.",
+      },
+    }),
+    {
+      status: NOUS_DIRECT_PROVIDER_STOP_STATUS,
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    },
+  );
+}
+
+function sanitizedProviderFailureResponse(status) {
+  return new Response(
+    JSON.stringify({
+      error: {
+        type: NOUS_DIRECT_RECONCILE_ERROR_TYPE,
+        provider: NOUS_PROVIDER_ID,
+        provider_contacted: true,
+        outcome_unknown: true,
+        provider_execution_may_have_completed: true,
+        tools_not_exposed: true,
+        retryable: false,
+        no_resend: true,
+        ...(Number.isInteger(status) ? { original_http_status: status } : {}),
+        message: "Nous Direct provider contact completed without a recoverable result; reconcile before resending.",
+      },
+    }),
+    {
+      status: 400,
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    },
+  );
+}
+
+function bindOriginalHttpStatus(error, status) {
+  if (
+    error?.reconcileRequired === true &&
+    Number.isInteger(status) &&
+    error.originalHttpStatus === undefined
+  ) {
+    error.originalHttpStatus = status;
+  }
+  return error;
 }
 
 function providerReasoningTexts(message) {
   let text;
   for (const field of ["reasoning_content", "reasoning"]) {
     const value = message[field];
-    if (value === undefined || value === null || value === "") continue;
+    if (value === undefined || value === null) continue;
     if (typeof value !== "string") {
       throw responseError(`Nous Direct returned malformed ${field}.`);
     }
@@ -657,10 +763,10 @@ function providerReasoningTexts(message) {
       if (detailText) text = detailText;
     }
   }
-  if (details !== undefined && !text) {
+  if (details !== undefined && text === undefined) {
     throw responseError("Nous Direct returned reasoning_details without replayable text.");
   }
-  return { texts: text ? [text] : [], details };
+  return { texts: text === undefined ? [] : [text], details };
 }
 
 function parseCompletion(payload, model, { internalKey, toolNames } = {}) {
@@ -800,52 +906,68 @@ export function completionToResponsesBody(
   { internalKey, toolNames } = {},
 ) {
   const completed = parseCompletion(payload, model, { internalKey, toolNames });
-  if (!stream) return { contentType: "application/json; charset=utf-8", body: JSON.stringify(completed) };
+  if (!stream) {
+    const body = JSON.stringify(completed);
+    if (Buffer.byteLength(body, "utf8") > MAX_RESPONSE_BYTES) {
+      throw responseError("Nous Direct adapted response exceeded the local response limit.", "nous_direct_adapted_response_too_large");
+    }
+    return { contentType: "application/json; charset=utf-8", body };
+  }
 
   let sequence = 0;
   const created = { ...completed, status: "in_progress", output: [], usage: null };
-  let body = sseBlock("response.created", sequence++, { response: created });
-  body += sseBlock("response.in_progress", sequence++, { response: created });
+  let body = "";
+  let bodyBytes = 0;
+  const append = (chunk) => {
+    const chunkBytes = Buffer.byteLength(chunk, "utf8");
+    if (chunkBytes > MAX_RESPONSE_BYTES - bodyBytes) {
+      throw responseError("Nous Direct adapted response exceeded the local response limit.", "nous_direct_adapted_response_too_large");
+    }
+    body += chunk;
+    bodyBytes += chunkBytes;
+  };
+  append(sseBlock("response.created", sequence++, { response: created }));
+  append(sseBlock("response.in_progress", sequence++, { response: created }));
   for (const [outputIndex, item] of completed.output.entries()) {
     const addedItem = item.type === "function_call"
       ? { ...item, status: "in_progress", arguments: "" }
       : item.type === "message"
         ? { ...item, status: "in_progress", content: [] }
         : { ...item, status: "in_progress", summary: [] };
-    body += sseBlock("response.output_item.added", sequence++, { output_index: outputIndex, item: addedItem });
+    append(sseBlock("response.output_item.added", sequence++, { output_index: outputIndex, item: addedItem }));
     if (item.type === "message") {
       const text = item.content[0].text;
-      body += sseBlock("response.output_text.delta", sequence++, {
+      append(sseBlock("response.output_text.delta", sequence++, {
         item_id: item.id,
         output_index: outputIndex,
         content_index: 0,
         delta: text,
         logprobs: [],
-      });
-      body += sseBlock("response.output_text.done", sequence++, {
+      }));
+      append(sseBlock("response.output_text.done", sequence++, {
         item_id: item.id,
         output_index: outputIndex,
         content_index: 0,
         text,
         logprobs: [],
-      });
+      }));
     } else if (item.type === "function_call") {
-      body += sseBlock("response.function_call_arguments.delta", sequence++, {
+      append(sseBlock("response.function_call_arguments.delta", sequence++, {
         item_id: item.id,
         output_index: outputIndex,
         delta: item.arguments,
-      });
-      body += sseBlock("response.function_call_arguments.done", sequence++, {
+      }));
+      append(sseBlock("response.function_call_arguments.done", sequence++, {
         item_id: item.id,
         output_index: outputIndex,
         arguments: item.arguments,
-      });
+      }));
     }
-    body += sseBlock("response.output_item.done", sequence++, { output_index: outputIndex, item });
+    append(sseBlock("response.output_item.done", sequence++, { output_index: outputIndex, item }));
   }
-  body += sseBlock("response.completed", sequence++, { response: completed });
-  body += sseBlock("response.done", sequence++, { response: completed });
-  body += "data: [DONE]\n\n";
+  append(sseBlock("response.completed", sequence++, { response: completed }));
+  append(sseBlock("response.done", sequence++, { response: completed }));
+  append("data: [DONE]\n\n");
   return { contentType: "text/event-stream; charset=utf-8", body };
 }
 
@@ -866,7 +988,11 @@ function requestSignal(signal) {
 async function boundedResponseBytes(upstream) {
   const cancel = async () => {
     if (typeof upstream.body?.cancel === "function") {
-      await upstream.body.cancel().catch(() => undefined);
+      try {
+        await upstream.body.cancel();
+      } catch {
+        // Preserve the bounded protocol error if cleanup itself fails.
+      }
     }
   };
   const contentLength = upstream.headers.get("content-length");
@@ -905,6 +1031,14 @@ async function boundedResponseBytes(upstream) {
   return Buffer.concat(chunks, total);
 }
 
+function decodeUpstreamUtf8(bytes) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw responseError("Nous Direct returned invalid UTF-8.", "nous_direct_invalid_utf8");
+  }
+}
+
 export async function dispatchNousDirect({
   payload,
   model,
@@ -913,7 +1047,9 @@ export async function dispatchNousDirect({
   baseUrl,
   internalKey,
   signal,
-  fetchImpl = fetch,
+  // An omitted fetch uses the canonical host lease. Tests may inject a
+  // provider-free fetch (or an explicitly composed gate) through this seam.
+  fetchImpl,
 }) {
   const resolvedBaseUrl = assertNousDirectBinding({ provider, model, baseUrl });
   internalKeyBytes(internalKey);
@@ -924,29 +1060,89 @@ export async function dispatchNousDirect({
     });
   }
   const chat = toNousChatRequest(payload, model.upstreamModel, { internalKey });
-  const upstream = await fetchImpl(`${resolvedBaseUrl}/chat/completions`, {
-    method: "POST",
-    redirect: "error",
-    headers: {
-      Authorization: `Bearer ${credential}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(chat),
-    signal: requestSignal(signal),
-  });
-  if (!upstream.ok) return upstream;
-  const bytes = await boundedResponseBytes(upstream);
+  let providerFetchStarted = fetchImpl !== undefined;
+  const requestFetch = fetchImpl === undefined
+    ? createNousHostGateFetch({
+        fetchImpl: async (...args) => {
+          providerFetchStarted = true;
+          return fetch(...args);
+        },
+      })
+    : fetchImpl;
+  let upstream;
+  try {
+    upstream = await requestFetch(`${resolvedBaseUrl}/chat/completions`, {
+      method: "POST",
+      redirect: "error",
+      headers: {
+        Authorization: `Bearer ${credential}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(chat),
+      signal: requestSignal(signal),
+    });
+  } catch (error) {
+    if (isNousHostGateError(error)) {
+      if (!providerFetchStarted) throw hostGatePrecontactError();
+      throw reconcileError(
+        "Nous Direct host provider lease failed after provider contact; reconcile before resending.",
+        "nous_direct_host_gate_reconcile_required",
+      );
+    }
+    throw reconcileError(
+      "Nous Direct provider contact has an unknown outcome; reconcile before resending.",
+      "nous_direct_reconcile_required",
+    );
+  }
+  if (!upstream || typeof upstream.ok !== "boolean") {
+    throw reconcileError(
+      "Nous Direct provider contact returned no valid response; reconcile before resending.",
+      "nous_direct_reconcile_required",
+    );
+  }
+  if (!upstream.ok) {
+    const status = Number(upstream.status);
+    if (typeof upstream.body?.cancel === "function") {
+      try {
+        await upstream.body.cancel();
+      } catch {
+        // The fixed provider failure response remains the outward result.
+      }
+    }
+    if (status === NOUS_DIRECT_PROVIDER_STOP_STATUS) return sanitizedProviderStopResponse();
+    return sanitizedProviderFailureResponse(Number.isInteger(status) ? status : undefined);
+  }
+  let bytes;
+  try {
+    bytes = await boundedResponseBytes(upstream);
+  } catch (error) {
+    throw bindOriginalHttpStatus(error, upstream.status);
+  }
+  let text;
+  try {
+    text = decodeUpstreamUtf8(bytes);
+  } catch (error) {
+    throw bindOriginalHttpStatus(error, upstream.status);
+  }
   let completion;
   try {
-    completion = JSON.parse(bytes.toString("utf8"));
+    completion = JSON.parse(text);
   } catch {
-    throw responseError("Nous Direct returned invalid JSON.");
+    throw bindOriginalHttpStatus(
+      responseError("Nous Direct returned invalid JSON.", "nous_direct_invalid_json"),
+      upstream.status,
+    );
   }
-  const adapted = completionToResponsesBody(completion, model.upstreamModel, payload.stream === true, {
-    internalKey,
-    toolNames: chat.tools?.map((tool) => tool.function.name) || [],
-  });
+  let adapted;
+  try {
+    adapted = completionToResponsesBody(completion, model.upstreamModel, payload.stream === true, {
+      internalKey,
+      toolNames: chat.tools?.map((tool) => tool.function.name) || [],
+    });
+  } catch (error) {
+    throw bindOriginalHttpStatus(error, upstream.status);
+  }
   return new Response(adapted.body, {
     status: 200,
     headers: adaptedHeaders(upstream.headers, adapted.contentType),

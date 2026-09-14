@@ -13,12 +13,16 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
 import {
   createNousReasoningEnvelope,
+  NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+  NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE,
+  NOUS_DIRECT_PROVIDER_STOP_STATUS,
+  NOUS_DIRECT_RECONCILE_ERROR_TYPE,
   NOUS_UPSTREAM_MODEL,
 } from "../src/nous-direct.mjs";
 import { openPort } from "./port-pool.mjs";
@@ -68,10 +72,12 @@ function run(script, env) {
     env?.MODEL_ROUTER_STATE_DIR || env?.CODEX_ROUTER_STATE_DIR
       ? {}
       : { MODEL_ROUTER_STATE_DIR: mkdtempSync(path.join(os.tmpdir(), "routing-state-")) };
+  const inheritedEnvironment = { ...process.env };
+  for (const name of ["NOUS_API_KEY", "DEEPSEEK_API_KEY"]) delete inheritedEnvironment[name];
   const child = spawn(process.execPath, [path.join(root, "src", script)], {
     cwd: root,
     env: {
-      ...process.env,
+      ...inheritedEnvironment,
       ...stateIsolation,
       CODEX_ROUTER_CALLER_KEY: CALLER_KEY,
       CODEX_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
@@ -471,6 +477,174 @@ test("router rewrites gateway errors to name the failing provider", async () => 
   } finally {
     await stopChild(router);
     await closeServer(gateway.server);
+  }
+});
+
+test("router preserves the bounded Nous no-resend error contract across the gateway", async () => {
+  const replies = [
+    {
+      status: 400,
+      body: {
+        error: {
+          type: NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+          provider: "nous",
+          provider_contacted: false,
+          outcome_unknown: false,
+          provider_execution_may_have_completed: false,
+          tools_not_exposed: true,
+          retryable: false,
+          no_resend: true,
+          message: "Nous Direct host provider lease failed before provider contact.",
+        },
+      },
+    },
+    {
+      status: 400,
+      body: {
+        error: {
+          type: NOUS_DIRECT_RECONCILE_ERROR_TYPE,
+          provider: "nous",
+          provider_contacted: true,
+          outcome_unknown: true,
+          provider_execution_may_have_completed: true,
+          tools_not_exposed: true,
+          retryable: false,
+          no_resend: true,
+          original_http_status: 503,
+          message: "Nous Direct provider contact has an unknown outcome; reconcile before resending.",
+        },
+      },
+    },
+    {
+      status: NOUS_DIRECT_PROVIDER_STOP_STATUS,
+      body: {
+        error: {
+          type: NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE,
+          provider: "nous",
+          provider_contacted: true,
+          provider_stop: true,
+          retryable: false,
+          no_resend: true,
+          original_http_status: NOUS_DIRECT_PROVIDER_STOP_STATUS,
+          message: "Nous Direct reported HTTP 402; provider contact is stopped until the owner reconciles access.",
+        },
+      },
+    },
+    {
+      status: 503,
+      body: { error: { type: "server_error", message: "untrusted provider detail" } },
+    },
+  ];
+  const gateway = await mockServer(async (request, response) => {
+    await bodyJson(request);
+    const reply = replies.shift();
+    assert.ok(reply);
+    response.setHeader("Retry-After", "60");
+    json(response, reply.status, reply.body);
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const request = () => fetch(`${routerBase(routerPort)}/responses`, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer CODEX_CALLER_SECRET",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "nous/deepseek/deepseek-v4.1-flash",
+      input: "test",
+    }),
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    for (const expected of replies.slice(0, 3)) {
+      const response = await request();
+      assert.equal(response.status, expected.status);
+      assert.equal(response.headers.get("retry-after"), null);
+      assert.deepEqual(await response.json(), expected.body);
+    }
+    const unknown = await request();
+    assert.equal(unknown.status, 400);
+    assert.equal(unknown.headers.get("retry-after"), null);
+    const unknownBody = await unknown.json();
+    assert.equal(unknownBody.error.type, NOUS_DIRECT_RECONCILE_ERROR_TYPE);
+    assert.equal(unknownBody.error.provider_contacted, true);
+    assert.equal(unknownBody.error.original_http_status, 503);
+    assert.equal(unknownBody.error.retryable, false);
+    assert.equal(unknownBody.error.no_resend, true);
+    assert.doesNotMatch(JSON.stringify(unknownBody), /untrusted provider detail/);
+    assert.equal(replies.length, 0);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+  }
+});
+
+test("Nous postcontact translation does not demote an experimental subagent", async () => {
+  const proofsDirectory = mkdtempSync(path.join(os.tmpdir(), "nous-routing-proofs-"));
+  const proofsPath = path.join(proofsDirectory, "multi-agent-proofs.json");
+  writeFileSync(
+    proofsPath,
+    JSON.stringify({
+      version: 1,
+      proofs: {
+        "nous/deepseek/deepseek-v4.1-flash": { status: "experimental" },
+      },
+    }),
+    { mode: 0o600 },
+  );
+  const gateway = await mockServer(async (request, response) => {
+    await bodyJson(request);
+    response.setHeader("Retry-After", "60");
+    json(response, 503, { error: { message: "untrusted provider detail" } });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    MODEL_ROUTER_SUBAGENT_PROOFS: proofsPath,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+        "x-openai-subagent": "nous-child",
+      },
+      body: JSON.stringify({
+        model: "nous/deepseek/deepseek-v4.1-flash",
+        input: "test",
+      }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get("retry-after"), null);
+    const body = await response.json();
+    assert.equal(body.error.type, NOUS_DIRECT_RECONCILE_ERROR_TYPE);
+    assert.equal(body.error.provider_contacted, true);
+    assert.equal(body.error.outcome_unknown, true);
+    assert.equal(body.error.provider_execution_may_have_completed, true);
+    assert.equal(body.error.retryable, false);
+    assert.equal(body.error.no_resend, true);
+    assert.equal(body.error.original_http_status, 503);
+    assert.doesNotMatch(JSON.stringify(body), /untrusted provider detail/);
+
+    const proof = JSON.parse(readFileSync(proofsPath, "utf8")).proofs[
+      "nous/deepseek/deepseek-v4.1-flash"
+    ];
+    assert.equal(proof.status, "experimental");
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(proofsDirectory, { recursive: true, force: true });
   }
 });
 
@@ -2701,7 +2875,7 @@ test("API forwarder gates and serializes both on-demand Flash-Next surfaces", as
   const forwarder = run("api-forwarder.mjs", {
     CODEX_ROUTER_API_PORT: String(forwarderPort),
     CODEX_ROUTER_QUIET: "1",
-    NODE_OPTIONS: `--import=${path.join(root, "test", "freetoken-fetch-preload.mjs")}`,
+    NODE_OPTIONS: `--import=${pathToFileURL(path.join(root, "test", "freetoken-fetch-preload.mjs")).href}`,
     MODEL_ROUTER_TEST_FREETOKEN_REWRITE_ORIGIN: `http://127.0.0.1:${upstream.port}`,
   });
   const turn = (route, effort, input) => fetch(`http://127.0.0.1:${forwarderPort}/v1${route}`, {

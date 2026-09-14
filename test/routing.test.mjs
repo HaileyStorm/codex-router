@@ -20,6 +20,7 @@ import { callerBaseUrl } from "../src/caller-auth.mjs";
 import {
   createNousReasoningEnvelope,
   NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+  NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE,
   NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE,
   NOUS_DIRECT_PROVIDER_STOP_STATUS,
   NOUS_DIRECT_RECONCILE_ERROR_TYPE,
@@ -484,6 +485,16 @@ test("router preserves the bounded Nous no-resend error contract across the gate
   const replies = [
     {
       status: 400,
+      body: { error: {
+        type: NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE, provider: "nous",
+        provider_contacted: false, outcome_unknown: false,
+        provider_execution_may_have_completed: false, tools_not_exposed: true,
+        retryable: false, no_resend: true,
+        message: "Nous Direct rejected the request before provider contact.",
+      } },
+    },
+    {
+      status: 400,
       body: {
         error: {
           type: NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
@@ -562,7 +573,7 @@ test("router preserves the bounded Nous no-resend error contract across the gate
 
   try {
     await waitFor(`${routerBase(routerPort)}/models`, router);
-    for (const expected of replies.slice(0, 3)) {
+    for (const expected of replies.slice(0, -1)) {
       const response = await request();
       assert.equal(response.status, expected.status);
       assert.equal(response.headers.get("retry-after"), null);

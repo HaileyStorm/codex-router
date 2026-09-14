@@ -121,6 +121,7 @@ import {
   isNousReasoningEnvelope,
   NOUS_CHAT_ADAPTER,
   NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+  NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE,
   NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE,
   NOUS_DIRECT_PROVIDER_STOP_STATUS,
   NOUS_DIRECT_RECONCILE_ERROR_TYPE,
@@ -319,6 +320,7 @@ const COMPACTION_PREFIX = "kcr1:";
 const NOUS_GATEWAY_ERROR_MAX_BYTES = 64 * 1024;
 const NOUS_HOST_GATE_FAILURE_MESSAGE =
   "Nous Direct host provider lease failed before provider contact.";
+const NOUS_REQUEST_REJECTED_MESSAGE = "Nous Direct rejected the request before provider contact.";
 const NOUS_RECONCILE_MESSAGES = new Set([
   "Nous Direct provider contact has an unknown outcome; reconcile before resending.",
   "Nous Direct provider contact completed without a recoverable result; reconcile before resending.",
@@ -353,7 +355,7 @@ function recognizedNousGatewayError(value, status) {
   if (!common) return undefined;
 
   if (
-    error.type === NOUS_DIRECT_HOST_GATE_ERROR_TYPE &&
+    [NOUS_DIRECT_HOST_GATE_ERROR_TYPE, NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE].includes(error.type) &&
     status === 400 &&
     exactObjectKeys(error, [
       "type",
@@ -370,7 +372,7 @@ function recognizedNousGatewayError(value, status) {
     error.outcome_unknown === false &&
     error.provider_execution_may_have_completed === false &&
     error.tools_not_exposed === true &&
-    error.message === NOUS_HOST_GATE_FAILURE_MESSAGE
+    error.message === (error.type === NOUS_DIRECT_HOST_GATE_ERROR_TYPE ? NOUS_HOST_GATE_FAILURE_MESSAGE : NOUS_REQUEST_REJECTED_MESSAGE)
   ) {
     return value;
   }

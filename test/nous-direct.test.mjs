@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -17,6 +17,7 @@ import {
   dispatchNousDirect,
   NOUS_BASE_URL,
   NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+  NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE,
   NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE,
   NOUS_DIRECT_PROVIDER_STOP_STATUS,
   NOUS_DIRECT_RECONCILE_ERROR_TYPE,
@@ -233,6 +234,81 @@ test("Nous Direct translates exact max-effort request and complete multi-tool re
     { role: "user", content: "continue" },
   ]);
   assert.doesNotMatch(JSON.stringify(chat), /tool result unavailable|interrupted or omitted/);
+});
+
+test("Nous Direct catalog disables the unsupported apply_patch custom tool", () => {
+  const catalog = JSON.parse(readFileSync(path.join(ROOT, "config", "nous", "direct", "models.json"), "utf8"));
+  const model = catalog.models.find((entry) => entry.slug === NOUS_MODEL_SLUG);
+  assert.equal(model?.supportsApplyPatchTool, false);
+});
+
+test("Nous Direct maps plaintext agent handoffs to user messages without losing provenance", () => {
+  const newTask = {
+    type: "agent_message",
+    author: "/root",
+    recipient: "/root/critic",
+    content: [{
+      type: "input_text",
+      text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\nInspect the fixture.\n",
+    }],
+  };
+  const followup = {
+    type: "agent_message",
+    author: "/root",
+    recipient: "/root/critic",
+    content: [{
+      type: "input_text",
+      text: "Message Type: FOLLOWUP_TASK\nTask name: /root/critic\nSender: /root\nPayload:\nContinue the fixture.\n",
+    }],
+  };
+
+  const messages = responsesInputToNousMessages([newTask, followup]);
+  assert.deepEqual(messages, [
+    { role: "user", content: newTask.content[0].text },
+    { role: "user", content: followup.content[0].text },
+  ]);
+  assert.equal(newTask.type, "agent_message");
+  assert.deepEqual(newTask.content, [{
+    type: "input_text",
+    text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\nInspect the fixture.\n",
+  }]);
+});
+
+test("Nous Direct rejects unresolved agent-message encrypted content and keeps ordering guards", () => {
+  assert.throws(
+    () => responsesInputToNousMessages([{
+      type: "agent_message",
+      author: "/root",
+      recipient: "/root/critic",
+      content: [
+        { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
+        { type: "encrypted_content", encrypted_content: "plaintext-or-ciphertext" },
+      ],
+    }]),
+    /content\[1\] is not a supported text part/,
+  );
+  assert.throws(
+    () => responsesInputToNousMessages([
+      { type: "reasoning", summary: [{ type: "summary_text", text: "pending" }] },
+      { type: "agent_message", content: [{ type: "input_text", text: "Message Type: FOLLOWUP_TASK\nPayload:\n" }] },
+    ]),
+    /interrupts an assistant reasoning turn/,
+  );
+  assert.throws(
+    () => responsesInputToNousMessages([
+      { type: "function_call", call_id: "call_pending", name: "exec_command", arguments: "{}" },
+      { type: "agent_message", content: [{ type: "input_text", text: "Message Type: FOLLOWUP_TASK\nPayload:\n" }] },
+    ]),
+    /before all prior tool results/,
+  );
+  assert.throws(
+    () => responsesInputToNousMessages([{
+      type: "agent_message",
+      content: [{ type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" }],
+      tool_calls: [{ id: "must-not-be-dropped" }],
+    }]),
+    /agent_message tool_calls must use function_call items/,
+  );
 });
 
 test("Nous Direct rejects malformed or unknown replay instead of repairing it", () => {
@@ -549,6 +625,47 @@ test("Nous Direct dispatches once to Chat Completions and never invents a Respon
   assert.match(response.headers.get("content-type"), /application\/json/);
   const body = await response.json();
   assert.equal(body.output.find((item) => item.type === "message").content[0].text, "done");
+});
+
+test("Nous Direct types request rejection before any provider fetch", async () => {
+  let fetchCalls = 0;
+  const assertRejectedBeforeFetch = async (payload, expectedStatus = 400) => {
+    await assert.rejects(
+      dispatchNousDirect({
+        payload,
+        model: MODEL,
+        provider: PROVIDER,
+        credential: "TEST_NOUS_KEY",
+        baseUrl: NOUS_BASE_URL,
+        internalKey: INTERNAL_ROUTER_KEY,
+        fetchImpl: async () => {
+          fetchCalls += 1;
+          throw new Error("must not fetch");
+        },
+      }),
+      (error) =>
+        error?.type === NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE &&
+        error?.code === "nous_direct_invalid_request" &&
+        error?.status === expectedStatus,
+    );
+  };
+
+  await assertRejectedBeforeFetch({
+    input: "hello",
+    tools: [{ type: "custom", name: "apply_patch", parameters: { type: "object" } }],
+  });
+  await assertRejectedBeforeFetch({
+    input: [{
+      type: "agent_message",
+      author: "/root",
+      recipient: "/root/critic",
+      content: [
+        { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
+        { type: "encrypted_content", encrypted_content: "unresolved" },
+      ],
+    }],
+  });
+  assert.equal(fetchCalls, 0);
 });
 
 test("Nous Direct rejects returned tools outside the flattened request set", () => {

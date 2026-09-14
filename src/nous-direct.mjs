@@ -21,6 +21,7 @@ export const NOUS_CREDENTIAL_ENVIRONMENT_KEY = "NOUS_API_KEY";
 export const NOUS_DIRECT_RECONCILE_ERROR_TYPE = "nous_direct_reconcile_required";
 export const NOUS_DIRECT_HOST_GATE_ERROR_TYPE = "nous_direct_host_gate_failed";
 export const NOUS_DIRECT_PROVIDER_STOP_ERROR_TYPE = "nous_direct_provider_stop";
+export const NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE = "nous_direct_request_rejected";
 export const NOUS_DIRECT_PROVIDER_STOP_STATUS = 402;
 
 const MAX_TOOL_CALLS = 16;
@@ -339,8 +340,16 @@ function inputItems(input) {
   return input;
 }
 
+function normalizeAgentMessageItem(item, index) {
+  if (item?.type !== "agent_message") return item;
+  if (item.tool_calls !== undefined) {
+    throw directError(`input[${index}] agent_message tool_calls must use function_call items.`);
+  }
+  return { ...item, type: "message", role: "user" };
+}
+
 export function responsesInputToNousMessages(input, instructions, { upstreamModel, internalKey } = {}) {
-  const items = inputItems(input);
+  const items = inputItems(input).map((item, index) => normalizeAgentMessageItem(item, index));
   const messages = [];
   if (instructions !== undefined) {
     if (typeof instructions !== "string") throw directError("Responses instructions must be text.");
@@ -1059,7 +1068,15 @@ export async function dispatchNousDirect({
       code: "nous_direct_credential_missing",
     });
   }
-  const chat = toNousChatRequest(payload, model.upstreamModel, { internalKey });
+  let chat;
+  try {
+    chat = toNousChatRequest(payload, model.upstreamModel, { internalKey });
+  } catch (error) {
+    if (error?.code === "nous_direct_invalid_request") {
+      error.type = NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE;
+    }
+    throw error;
+  }
   let providerFetchStarted = fetchImpl !== undefined;
   const requestFetch = fetchImpl === undefined
     ? createNousHostGateFetch({

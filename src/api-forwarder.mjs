@@ -45,6 +45,7 @@ import {
   dispatchNousDirect,
   NOUS_CHAT_ADAPTER,
   NOUS_DIRECT_HOST_GATE_ERROR_TYPE,
+  NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE,
   NOUS_DIRECT_RECONCILE_ERROR_TYPE,
   NOUS_PROVIDER_ID,
 } from "./nous-direct.mjs";
@@ -835,6 +836,22 @@ const server = http.createServer((request, response) => {
             ? { original_http_status: error.originalHttpStatus }
             : {}),
           message: "Nous Direct provider contact has an unknown outcome; reconcile before resending.",
+        },
+      });
+      return;
+    }
+    if (error?.type === NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE) {
+      writeJson(response, 400, {
+        error: {
+          type: NOUS_DIRECT_REQUEST_REJECTED_ERROR_TYPE,
+          provider: NOUS_PROVIDER_ID,
+          provider_contacted: false,
+          outcome_unknown: false,
+          provider_execution_may_have_completed: false,
+          tools_not_exposed: true,
+          retryable: false,
+          no_resend: true,
+          message: "Nous Direct rejected the request before provider contact.",
         },
       });
       return;

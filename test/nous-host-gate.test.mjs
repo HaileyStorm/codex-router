@@ -494,7 +494,7 @@ test("composed provider-free gate accepts the reviewed bridge CLI contract", {
   let fetchCalls = 0;
   let signalProvided = false;
   const gate = createNousHostGateFetch({
-    timeoutMs: 5_000,
+    timeoutMs: process.platform === "win32" ? 30_000 : 5_000,
     spawnImpl,
     fetchImpl: async (_input, init) => {
       fetchCalls += 1;

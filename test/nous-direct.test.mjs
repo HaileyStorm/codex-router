@@ -95,7 +95,7 @@ function child(script, env) {
 }
 
 async function waitFor(url, processHandle, headers = {}) {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + (process.platform === "win32" ? 30_000 : 5_000);
   while (Date.now() < deadline) {
     if (processHandle.exitCode !== null) {
       throw new Error(`Child exited early (${processHandle.exitCode}): ${processHandle.testErrors()}`);
@@ -1077,7 +1077,7 @@ test("Nous Direct dispatch composes with the real provider lease and a provider-
 
   let observedRequest;
   const gatedFetch = createNousHostGateFetch({
-    timeoutMs: 5_000,
+    timeoutMs: process.platform === "win32" ? 30_000 : 5_000,
     spawnImpl,
     fetchImpl: async (url, init) => {
       observedRequest = {

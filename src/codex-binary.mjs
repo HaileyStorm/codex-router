@@ -41,13 +41,16 @@ function candidates() {
       ),
     "/Applications/ChatGPT.app/Contents/Resources/codex",
     "/Applications/Codex.app/Contents/Resources/codex",
-    "/opt/homebrew/bin/codex",
-    "/usr/local/bin/codex",
     localAppData && path.join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
     localAppData && path.join(localAppData, "Programs", "Codex", "resources", "codex.exe"),
     localAppData && path.join(localAppData, "Programs", "Codex", "resources", "app", "bin", "codex.exe"),
     desktopAppBundledCodex(),
+    // Respect the active CLI before legacy global installs. Desktop updates
+    // can introduce settings that an older npm CLI cannot parse.
+    commandOnPath("codex"),
     path.join(os.homedir(), ".local", "bin", process.platform === "win32" ? "codex.exe" : "codex"),
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
   ].filter(Boolean);
 }
 
@@ -134,19 +137,24 @@ export function codexAuthStatus() {
     execFileSync(target.command, target.args, {
       ...target.options,
       timeout: 10_000,
-      stdio: "ignore",
+      encoding: "utf8",
+      maxBuffer: 64 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
     return { authenticated: true, reason: "authenticated", binary };
   } catch (error) {
-    // A numeric status means Codex ran and reported a signed-out session.
-    // Anything else (ENOENT, EACCES, timeout) means the probe never completed.
-    const probeFailed = typeof error?.status !== "number";
+    // Configuration errors also exit nonzero. Only the explicit CLI signed-out
+    // response is evidence that native models should disappear. Keep captured
+    // diagnostics local: they may contain private configuration values.
+    const output = [error?.stdout, error?.stderr]
+      .map((value) => String(value || "").trim()).filter(Boolean).join("\n");
+    const probeFailed = error?.status !== 1 || output !== "Not logged in";
     return {
       authenticated: false,
       reason: probeFailed ? "probe-failed" : "signed-out",
       binary,
-      ...(probeFailed && error?.code ? { code: error.code } : {}),
+      ...(probeFailed ? { code: error?.code || `exit-${error?.status ?? "unknown"}` } : {}),
     };
   }
 }

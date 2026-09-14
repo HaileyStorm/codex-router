@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { findCodexBinary, preferSpawnablePath, spawnableCommand } from "../src/codex-binary.mjs";
+import { codexAuthStatus, findCodexBinary, preferSpawnablePath, spawnableCommand } from "../src/codex-binary.mjs";
 
 // Reported in #46: `where.exe codex` on an npm global install lists the
 // extensionless POSIX shim before the batch shim. Node cannot spawn the former
@@ -116,3 +116,55 @@ test(
     }
   },
 );
+
+// A nonzero process exit alone must never remove native models. Use executable
+// fixtures to exercise the actual spawn/error path without touching auth.
+for (const [label, output, status, reason] of [
+  ["authenticated", "Logged in using ChatGPT", 0, "authenticated"],
+  ["signed out", "Not logged in", 1, "signed-out"],
+  ["old CLI configuration error", "Error loading configuration: invalid type: map, expected a boolean", 1, "probe-failed"],
+  ["unexplained nonzero exit", "", 1, "probe-failed"],
+  ["failed launcher", "Not logged in", 2, "probe-failed"],
+]) {
+  test(`auth probe distinguishes ${label}`, { skip: process.platform === "win32" }, () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "codex-auth-probe-"));
+    const binary = path.join(root, "codex");
+    writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' '${output}' >&2\nexit ${status}\n`, { mode: 0o700 });
+    const saved = process.env.CODEX_BIN;
+    try {
+      process.env.CODEX_BIN = binary;
+      const result = codexAuthStatus();
+      assert.equal(result.reason, reason);
+      assert.equal(result.authenticated, status === 0);
+      assert.equal(result.binary, binary);
+      assert.equal("stderr" in result, false);
+      assert.equal("stdout" in result, false);
+    } finally {
+      if (saved === undefined) delete process.env.CODEX_BIN;
+      else process.env.CODEX_BIN = saved;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("active PATH CLI outranks legacy global installs while CODEX_BIN still wins", { skip: process.platform !== "linux" }, () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-path-priority-"));
+  const binary = path.join(root, "codex");
+  const explicit = path.join(root, "explicit-codex");
+  for (const file of [binary, explicit]) writeFileSync(file, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  const saved = Object.fromEntries(["CODEX_BIN", "CODEX_INSTALL_DIR", "PATH"].map((key) => [key, process.env[key]]));
+  try {
+    delete process.env.CODEX_BIN;
+    delete process.env.CODEX_INSTALL_DIR;
+    process.env.PATH = `${root}${path.delimiter}${saved.PATH}`;
+    assert.equal(findCodexBinary(), binary);
+    process.env.CODEX_BIN = explicit;
+    assert.equal(findCodexBinary(), explicit);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});

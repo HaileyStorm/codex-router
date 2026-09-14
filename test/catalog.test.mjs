@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -1284,4 +1285,30 @@ test("a bridged text-only model advertises image input, and only through the bri
   assert.equal(entry.visionBridgeEngine, undefined);
   // Advertising image input is not a claim about detail handling.
   assert.equal(entry.supports_image_detail_original, false);
+});
+
+
+test("configuration failure preserves every published catalog artifact", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "catalog-auth-failure-"));
+  const state = path.join(root, "state");
+  mkdirSync(state);
+  const binary = path.join(root, "codex");
+  writeFileSync(binary, "#!/bin/sh\necho 'Error loading configuration: invalid type: map, expected a boolean' >&2\nexit 1\n", { mode: 0o700 });
+  const files = ["merged-models.json", "native-models.json", "native-aliases.json", "announced-models.json"];
+  const baseline = JSON.stringify({ models: [template] });
+  for (const name of files) writeFileSync(path.join(state, name), baseline);
+  try {
+    const result = spawnSync(process.execPath, ["src/catalog.mjs"], {
+      cwd: path.resolve("."), encoding: "utf8",
+      env: { ...process.env, CODEX_HOME: root, CODEX_BIN: binary,
+        MODEL_ROUTER_STATE_DIR: state, CODEX_ROUTER_STATE_DIR: state,
+        CODEX_ROUTER_NO_DISCOVERY: "0", MODEL_ROUTER_NO_DISCOVERY: "0" },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing to rebuild the catalog/);
+    assert.doesNotMatch(result.stderr, /invalid type: map/);
+    for (const name of files) assert.equal(readFileSync(path.join(state, name), "utf8"), baseline);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

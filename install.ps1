@@ -23,8 +23,32 @@ param(
   # Deliberately never touches untracked files -- see Reset-ManagedCheckout.
   [switch]$Force,
   [string]$InstallDir = $(
-    if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "codex-router" }
-    else { Join-Path $HOME ".local\share\codex-router" }
+    $ProfileHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+    $ConfiguredHome = $null
+    $ConfiguredHomeIsLocalAppData = $false
+    if ($env:CODEX_HOME -and [IO.Path]::IsPathRooted($env:CODEX_HOME)) {
+      $ConfiguredHome = [IO.Path]::GetFullPath($env:CODEX_HOME).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar
+      )
+      if ($env:LOCALAPPDATA) {
+        $LocalAppDataRoot = [IO.Path]::GetFullPath($env:LOCALAPPDATA).TrimEnd(
+          [IO.Path]::DirectorySeparatorChar,
+          [IO.Path]::AltDirectorySeparatorChar
+        )
+        $ConfiguredHomeIsLocalAppData =
+          $ConfiguredHome.Equals($LocalAppDataRoot, [StringComparison]::OrdinalIgnoreCase) -or
+          $ConfiguredHome.StartsWith(
+            "$LocalAppDataRoot$([IO.Path]::DirectorySeparatorChar)",
+            [StringComparison]::OrdinalIgnoreCase
+          )
+      }
+    }
+    if ($ConfiguredHome -and -not $ConfiguredHomeIsLocalAppData) {
+      Join-Path $ConfiguredHome "apps\codex-router"
+    } else {
+      Join-Path $ProfileHome ".codex\apps\codex-router"
+    }
   )
 )
 

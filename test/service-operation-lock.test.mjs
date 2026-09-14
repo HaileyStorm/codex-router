@@ -16,6 +16,18 @@ test("only a final service shutdown stops router-managed Ollama", () => {
   assert.equal(declaration, '["stop", "uninstall"]');
 });
 
+test("Windows service readiness covers the launcher and gateway startup budget", () => {
+  const service = readFileSync(path.join(root, "src", "service.mjs"), "utf8");
+  const waitHealth = readFileSync(path.join(root, "src", "wait-health.mjs"), "utf8");
+
+  // The Windows chain adds VBS, CMD, PowerShell, forwarders, and frontend
+  // startup around LiteLLM's 300-second cold-start allowance. Keep the shorter
+  // existing budget on other hosts and preserve an explicit CLI override.
+  assert.match(service, /const READINESS_TIMEOUT_MS = platform === "win32" \? 600_000 : 300_000;/);
+  assert.match(waitHealth, /const defaultTimeoutMs = platform === "win32" \? 600_000 : 300_000;/);
+  assert.match(waitHealth, /process\.argv\[3\] \|\| defaultTimeoutMs/);
+});
+
 test("service operation lock rejects overlap and releases afterward", { timeout: 5_000 }, async () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-service-lock-"));
   let allowFirstToFinish;

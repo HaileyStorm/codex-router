@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -221,6 +222,81 @@ test(
       encoding: "utf8",
       stdio: ["ignore", "pipe", "inherit"],
     });
+  },
+);
+
+test(
+  "Windows installer defaults to a profile checkout outside virtualized AppData",
+  { skip: process.platform !== "win32" },
+  () => {
+    // Execute the real installer only through its clone call. The fake Git
+    // command records the resolved default and fails before any repository,
+    // dependency, service, or provider operation can begin. Isolated profile
+    // roots make the assertion deterministic and leave the user's checkout
+    // untouched.
+    const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-install-default-"));
+    const fakeBin = path.join(testRoot, "fake bin");
+    const profile = path.join(testRoot, "profile");
+    const localAppData = path.join(testRoot, "LocalAppData");
+    const logPath = path.join(testRoot, "git-clone-args.log");
+    const fakeGit = path.join(fakeBin, "git.cmd");
+    const installer = path.join(testRoot, "install.ps1");
+    const powershell = path.join(
+      process.env.SystemRoot || process.env.WINDIR || "C:\\Windows",
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    const baseEnv = { ...process.env };
+    const pathKey = Object.keys(baseEnv).find((key) => key.toLowerCase() === "path") || "Path";
+    delete baseEnv.CODEX_HOME;
+    try {
+      mkdirSync(fakeBin, { recursive: true });
+      writeFileSync(installer, readFileSync(path.join(root, "install.ps1")), "utf8");
+      writeFileSync(
+        fakeGit,
+        [
+          "@echo off",
+          `>"${logPath}" echo %*`,
+          "exit /b 1",
+          "",
+        ].join("\r\n"),
+        "utf8",
+      );
+      const env = {
+        ...baseEnv,
+        HOME: profile,
+        USERPROFILE: profile,
+        LOCALAPPDATA: localAppData,
+        [pathKey]: `${fakeBin}${path.delimiter}${baseEnv[pathKey] || ""}`,
+        CODEX_ROUTER_REPOSITORY_URL: "https://example.invalid/codex-router.git",
+      };
+      const result = spawnSync(
+        powershell,
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          installer,
+          "-Auto",
+        ],
+        { cwd: testRoot, encoding: "utf8", env },
+      );
+
+      assert.equal(typeof result.status, "number", result.error?.message || result.stderr);
+      assert.notEqual(result.status, 0, "the fake clone must stop before installation");
+      assert.ok(existsSync(logPath), result.stderr || result.stdout);
+      const cloneArgs = readFileSync(logPath, "utf8").trim();
+      const expected = path.join(profile, ".codex", "apps", "codex-router");
+      assert.match(cloneArgs, new RegExp(expected.replaceAll("\\", "\\\\")));
+      assert.doesNotMatch(cloneArgs, /LocalAppData[\\/]+codex-router/i);
+    } finally {
+      rmSync(testRoot, { recursive: true, force: true });
+    }
   },
 );
 

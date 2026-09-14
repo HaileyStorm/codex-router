@@ -15,6 +15,10 @@ const kimi = {
   slug: "kimi-oauth/k3",
   displayName: "Kimi K3 (OAuth)",
 };
+const nousDeepSeekV41Flash = {
+  slug: "nous/deepseek/deepseek-v4.1-flash",
+  displayName: "Nous Direct · DeepSeek V4.1 Flash",
+};
 
 test("routed agent definitions select the router provider and exact model slug", () => {
   const definition = routedAgentDefinition(kimi);
@@ -27,6 +31,29 @@ test("routed agent definitions select the router provider and exact model slug",
   assert.match(definition.contents, /Before claiming that something is absent/);
   assert.match(definition.contents, /Never invent or reuse a stale name/);
   assert.match(definition.contents, /Do not stop after merely announcing a next action/);
+});
+
+test("Nous DeepSeek V4.1 generated roles pin Max effort and bounded task scope", () => {
+  const definition = routedAgentDefinition(nousDeepSeekV41Flash);
+  assert.match(definition.contents, /model_reasoning_effort = "max"/);
+  assert.match(
+    definition.contents,
+    /routine assigned implementation, facts, and invariants within a fresh bounded task packet/,
+  );
+  assert.match(definition.contents, /Do not rely on inherited private history/);
+  assert.match(
+    definition.contents,
+    /only explicitly approved files and data plus commands needed for the task/,
+  );
+  assert.match(
+    definition.contents,
+    /Own ordinary minor bugs in the assigned scope; escalate architectural decisions or disputed safety matters to Astra/,
+  );
+
+  const other = routedAgentDefinition(kimi);
+  assert.doesNotMatch(other.contents, /model_reasoning_effort/);
+  assert.doesNotMatch(other.contents, /inherited private history/);
+  assert.match(other.contents, /Complete the bounded task assigned by the parent agent/);
 });
 
 test("agent sync writes one private definition for every routed model", () => {

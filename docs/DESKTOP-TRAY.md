@@ -212,9 +212,13 @@ companion looks like it never started.
 
 The app discovers the router checkout from `MODEL_ROUTER_SOURCE_ROOT`, a saved
 bundle pointer, the source tree during development, or the standard install
-location (`%LOCALAPPDATA%\codex-router` on Windows and
-`~/.local/share/codex-router` on Linux). It displays a useful offline state when
-the checkout or router service is unavailable.
+location (`%USERPROFILE%\.codex\apps\codex-router` on Windows and
+`~/.local/share/codex-router` on Linux). When `CODEX_HOME` is explicitly set to
+an absolute path outside `%LOCALAPPDATA%`, Windows uses its `apps\codex-router`
+child instead. The profile default keeps the checkout visible to Task Scheduler
+when an MSIX-launched installer virtualizes `%LOCALAPPDATA%` into the package.
+It displays a useful offline state when the checkout or router service is
+unavailable.
 
 ## Credential safety
 

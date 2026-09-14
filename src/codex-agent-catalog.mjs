@@ -29,6 +29,7 @@ function tomlString(value) {
 // Only files matching this belong to the sync. Everything else in the agents
 // directory is the user's own and is never read or removed here.
 const MANAGED_AGENT_FILE = /^router-model-[a-z0-9-]+\.toml$/;
+const NOUS_DEEPSEEK_V41_FLASH = "nous/deepseek/deepseek-v4.1-flash";
 
 function managedAgentFiles(agentsDir) {
   try {
@@ -54,12 +55,14 @@ export function routedAgentDefinition(model) {
   const fileStem = `router-model-${safeIdentifier(slug, "-")}`;
   const agentName = `router_${safeIdentifier(slug, "_")}`;
   const displayName = String(model.displayName || model.display_name || slug).trim();
+  const isNousDeepSeekV41Flash = slug === NOUS_DEEPSEEK_V41_FLASH;
   const contents = [
     "# Managed by Codex Router. Refresh the model catalog to update this file.",
     `name = ${tomlString(agentName)}`,
     `description = ${tomlString(`${displayName} agent routed through an authenticated Codex Router provider.`)}`,
     'model_provider = "codex-router"',
     `model = ${tomlString(slug)}`,
+    ...(isNousDeepSeekV41Flash ? ['model_reasoning_effort = "max"'] : []),
     "",
     'developer_instructions = """',
     "Complete the bounded task assigned by the parent agent.",
@@ -67,6 +70,13 @@ export function routedAgentDefinition(model) {
     "For inspection or review claims, cite the exact file and line. Before claiming that something is absent, search the relevant names and paths; before finishing, reopen every cited location and drop any claim that does not hold.",
     "Use only tool names, agent types, and model overrides offered by the current tool schema. Never invent or reuse a stale name; omit an optional override when no offered value fits.",
     "Do not stop after merely announcing a next action. Execute it when it is within scope, or report the exact blocker or decision needed.",
+    ...(isNousDeepSeekV41Flash
+      ? [
+          "Handle routine assigned implementation, facts, and invariants within a fresh bounded task packet.",
+          "Do not rely on inherited private history. Use only explicitly approved files and data plus commands needed for the task.",
+          "Own ordinary minor bugs in the assigned scope; escalate architectural decisions or disputed safety matters to Astra.",
+        ]
+      : []),
     "Return a concise summary of work completed, checks run, and remaining risks.",
     '"""',
     "",

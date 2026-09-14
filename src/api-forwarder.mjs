@@ -44,6 +44,7 @@ import {
   dispatchNousDirect,
   NOUS_CHAT_ADAPTER,
   NOUS_PROVIDER_ID,
+  safeNousDirectError,
 } from "./nous-direct.mjs";
 
 installStableFetchTransport();
@@ -794,7 +795,8 @@ async function handleRequest(request, response) {
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
-    const status = httpErrorStatus(error);
+    const localNousError = safeNousDirectError(error);
+    const status = localNousError?.status ?? httpErrorStatus(error);
     // Names and codes only: a forwarder failure can wrap upstream response
     // text in its message, and bodies never belong in the log. The code chain
     // is what distinguishes a dead socket from a refused connect (#171).
@@ -802,6 +804,15 @@ const server = http.createServer((request, response) => {
       `[api-forwarder] request failed: ${formatErrorChain(error, { messages: false })}`,
     );
     if (!response.headersSent) {
+      if (localNousError) {
+        writeJson(response, status, {
+          error: {
+            type: localNousError.type,
+            message: localNousError.message,
+          },
+        });
+        return;
+      }
       if (error?.type?.startsWith("local_model_")) {
         writeJson(response, status, {
           error: {

@@ -26,12 +26,26 @@ const NOUS_REASONING_ENVELOPE_DOMAIN = "codex-router/nous-direct/reasoning-envel
 const NOUS_REASONING_NONCE_BYTES = 12;
 const NOUS_REASONING_TAG_BYTES = 16;
 const TEXT_PART_TYPES = new Set(["input_text", "output_text", "text"]);
+const DIRECT_ERROR_TYPE = "local_nous_direct_error";
+// Only locally authored diagnostics may cross the HTTP boundary. Snapshot
+// them now: neither a matching error code nor a later mutable message is trust.
+const DIRECT_ERROR_DETAILS = new WeakMap();
 
 function directError(message, { status = 400, code = "nous_direct_invalid_request" } = {}) {
   const error = new Error(message);
   error.status = status;
   error.code = code;
+  DIRECT_ERROR_DETAILS.set(error, Object.freeze({
+    status,
+    type: DIRECT_ERROR_TYPE,
+    message,
+  }));
   return error;
+}
+
+export function safeNousDirectError(error) {
+  const details = DIRECT_ERROR_DETAILS.get(error);
+  return details ? { ...details } : undefined;
 }
 
 function internalKeyBytes(internalKey) {

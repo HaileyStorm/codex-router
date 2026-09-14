@@ -20,6 +20,7 @@ import {
   NOUS_PROVIDER_ID,
   NOUS_UPSTREAM_MODEL,
   responsesInputToNousMessages,
+  safeNousDirectError,
   toNousChatRequest,
 } from "../src/nous-direct.mjs";
 
@@ -276,6 +277,43 @@ test("Nous Direct rejects malformed or unknown replay instead of repairing it", 
   );
 });
 
+test("Nous Direct safe diagnostics are marker-bound and retain their original snapshot", () => {
+  let error;
+  try {
+    toNousChatRequest({
+      input: "hello",
+      tools: [{ type: "custom", name: "raw-secret-tool" }],
+    }, MODEL.upstreamModel);
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(error);
+  const expected = {
+    status: 400,
+    type: "local_nous_direct_error",
+    message: "tools[0] is not a flattened function tool.",
+  };
+  assert.deepEqual(safeNousDirectError(error), expected);
+
+  error.message = "raw-secret-message";
+  error.status = 599;
+  error.code = "nous_direct_invalid_request";
+  assert.deepEqual(safeNousDirectError(error), expected);
+
+  const returned = safeNousDirectError(error);
+  returned.message = "mutated-copy";
+  assert.equal(safeNousDirectError(error).message, expected.message);
+  assert.equal(
+    safeNousDirectError({
+      code: "nous_direct_invalid_request",
+      message: "raw-secret-message",
+      status: 400,
+    }),
+    undefined,
+  );
+  assert.equal(safeNousDirectError(new Error("raw-secret-message")), undefined);
+});
+
 test("Nous Direct preserves readable foreign reasoning as assistant context", () => {
   const summaryContext = responsesInputToNousMessages([
     {
@@ -495,6 +533,38 @@ test("Nous Direct dispatches once to Chat Completions and never invents a Respon
   assert.match(response.headers.get("content-type"), /application\/json/);
   const body = await response.json();
   assert.equal(body.output.find((item) => item.type === "message").content[0].text, "done");
+});
+
+test("Nous Direct rejects invalid custom tools before any upstream fetch", async () => {
+  let attempts = 0;
+  let error;
+  await assert.rejects(
+    dispatchNousDirect({
+      payload: {
+        input: "hello",
+        tools: [{ type: "custom", name: "raw-secret-tool" }],
+      },
+      model: MODEL,
+      provider: PROVIDER,
+      credential: "TEST_NOUS_KEY",
+      baseUrl: NOUS_BASE_URL,
+      internalKey: INTERNAL_ROUTER_KEY,
+      fetchImpl: async () => {
+        attempts += 1;
+        throw new Error("must not fetch");
+      },
+    }),
+    (caught) => {
+      error = caught;
+      return true;
+    },
+  );
+  assert.equal(attempts, 0);
+  assert.deepEqual(safeNousDirectError(error), {
+    status: 400,
+    type: "local_nous_direct_error",
+    message: "tools[0] is not a flattened function tool.",
+  });
 });
 
 test("Nous Direct rejects returned tools outside the flattened request set", () => {
@@ -834,6 +904,44 @@ test("API forwarder rejects file-backed Nous metadata before credential lookup o
   } finally {
     await stopChild(forwarder);
     await closeServer(upstream.server);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("API forwarder surfaces actionable local Nous validation errors", async () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "nous-forwarder-validation-"));
+  const port = await openPort();
+  const forwarder = child("api-forwarder.mjs", {
+    MODEL_ROUTER_REGISTRY: isolatedRegistry(testRoot, NOUS_BASE_URL),
+    MODEL_ROUTER_STATE_DIR: path.join(testRoot, "state"),
+    CODEX_ROUTER_API_PORT: String(port),
+    CODEX_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
+    NOUS_API_KEY: "TEST_NOUS_ENVIRONMENT_ONLY_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${port}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "responses/nous-deepseek-v4-1-flash",
+        input: "hello",
+        tools: [{ type: "custom", name: "raw-secret-tool" }],
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 400, forwarder.testErrors());
+    assert.equal(body.error.type, "local_nous_direct_error");
+    assert.equal(body.error.message, "tools[0] is not a flattened function tool.");
+    assert.doesNotMatch(JSON.stringify(body), /raw-secret-tool/);
+  } finally {
+    await stopChild(forwarder);
     rmSync(testRoot, { recursive: true, force: true });
   }
 });

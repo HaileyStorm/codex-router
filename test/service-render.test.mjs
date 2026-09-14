@@ -16,6 +16,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const nativeWindows = os.type() === "Windows_NT";
 
 function serviceEnv(platform, testRoot, target = "codex") {
   return {
@@ -463,6 +464,8 @@ test("the Windows service installs a staged protected supervisor action", () => 
   assert.match(source, /captureManagedFileSnapshot/);
   assert.match(source, /restoreManagedFileSnapshot/);
   assert.match(source, /restart: previous\.state === "running"/);
+  assert.match(source, /NTAccount/);
+  assert.match(source, /principalSid/);
   assert.match(source, /The existing Windows service task is foreign or malformed/);
   assert.match(source, /process\.exitCode = 1/);
   assert.match(source, /stageProtectedLauncher\(wrapperPath/);
@@ -491,6 +494,7 @@ function schedulerStubs(directory, options = {}) {
     initialTask = "missing",
     initialAction = "native",
     initialPrincipal = "fixture-user",
+    initialPrincipalSid = "fixture-sid",
   } = options;
   mkdirSync(directory, { recursive: true });
   const logPath = path.join(directory, "calls.log");
@@ -553,7 +557,7 @@ function schedulerStubs(directory, options = {}) {
       '      argument=""',
       '      if [ "$action" = legacy ]; then execute=wscript.exe; argument=$(printf \'//B //NoLogo "%s/start-codex-router-hidden.vbs"\' "$CODEX_ROUTER_STATE_DIR"); elif [ "$action" = foreign ]; then execute=foreign.exe; argument=--foreign; fi',
       '      escaped=$(printf \'%s\' "$argument" | sed \'s/"/\\\\"/g\')',
-      `      printf '{"kind":"present","principal":"${initialPrincipal}","currentPrincipal":"fixture-user","currentSid":"","actions":[{"execute":"%s","argument":"%s"}]}' "$execute" "$escaped"`,
+      `      printf '{"kind":"present","principal":"${initialPrincipal}","principalSid":"${initialPrincipalSid}","currentPrincipal":"fixture-user","currentSid":"${initialPrincipalSid}","actions":[{"execute":"%s","argument":"%s"}]}' "$execute" "$escaped"`,
       '    fi; exit 0 ;;',
       "  *Get-ScheduledTask*)",
       "    count=0",
@@ -599,6 +603,9 @@ function schedulerStubs(directory, options = {}) {
 }
 
 function runWindowsService(testRoot, command, extraEnv = {}) {
+  if (nativeWindows) {
+    throw new Error("POSIX scheduler stubs are prohibited on a native Windows host.");
+  }
   return spawnSync(
     process.execPath,
     [path.join(root, "src", "service-windows.mjs"), command],
@@ -613,7 +620,7 @@ function runWindowsService(testRoot, command, extraEnv = {}) {
 
 test(
   "a run failure restores the recognized task and reports failure",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || nativeWindows },
   () => {
     const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-win-recover-"));
     try {
@@ -649,7 +656,7 @@ test(
 
 test(
   "a registration failure that leaves no task does not start one",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || nativeWindows },
   () => {
     const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-win-no-task-"));
     try {
@@ -676,7 +683,7 @@ test(
 
 test(
   "a foreign same-named task is refused before any scheduler mutation",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || nativeWindows },
   () => {
     const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-win-foreign-"));
     try {
@@ -701,7 +708,7 @@ test(
 
 test(
   "install waits for the ended instance before starting the new one",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || nativeWindows },
   () => {
     const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-win-stop-wait-"));
     try {
@@ -734,7 +741,7 @@ test(
 
 test(
   "an instance that never stops cannot hang the install",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || nativeWindows },
   () => {
     const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-win-stuck-"));
     try {
@@ -767,7 +774,7 @@ test(
 
 test(
   "stopping a service that was never installed is not an error",
-  { skip: process.platform === "win32" },
+  { skip: process.platform === "win32" || nativeWindows },
   () => {
     const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-win-stop-"));
     try {

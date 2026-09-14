@@ -125,6 +125,20 @@ function fixtureTaskDetails(taskName) {
 }
 
 test(
+  "Windows task owner normalization resolves a short principal to the current SID",
+  { skip: !windows },
+  () => {
+    const record = JSON.parse(
+      runPowerShell(
+        "$identity = [Security.Principal.WindowsIdentity]::GetCurrent(); $account = New-Object Security.Principal.NTAccount($env:USERNAME); $sid = $account.Translate([Security.Principal.SecurityIdentifier]).Value; [Console]::Out.Write(( [pscustomobject]@{ short = $env:USERNAME; principalSid = $sid; currentSid = $identity.User.Value } | ConvertTo-Json -Compress ))",
+      ),
+    );
+    assert.equal(record.principalSid, record.currentSid);
+    assert.equal(record.short.length > 0, true);
+  },
+);
+
+test(
   "native supervisor keeps its temporary task descendants in an owned job",
   { skip: !windows, timeout: 90_000 },
   async () => {

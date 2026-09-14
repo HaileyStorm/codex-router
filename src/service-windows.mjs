@@ -440,8 +440,10 @@ function taskMetadata() {
     "try {",
     "  $task = Get-ScheduledTask -TaskName $env:CODEX_ROUTER_TASK -ErrorAction Stop",
     "  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()",
+    "  $principalSid = ''",
+    "  try { $principalSid = (New-Object Security.Principal.NTAccount([string]$task.Principal.UserId)).Translate([Security.Principal.SecurityIdentifier]).Value } catch { try { $principalSid = (New-Object Security.Principal.SecurityIdentifier([string]$task.Principal.UserId)).Value } catch { $principalSid = '' } }",
     "  $actions = @($task.Actions | ForEach-Object { [pscustomobject]@{ execute = [string]$_.Execute; argument = [string]$_.Arguments } })",
-    "  $result = [pscustomobject]@{ kind = 'present'; principal = [string]$task.Principal.UserId; currentPrincipal = [string]$identity.Name; currentSid = [string]$identity.User.Value; actions = $actions }",
+    "  $result = [pscustomobject]@{ kind = 'present'; principal = [string]$task.Principal.UserId; principalSid = [string]$principalSid; currentPrincipal = [string]$identity.Name; currentSid = [string]$identity.User.Value; actions = $actions }",
     "  [Console]::Out.Write(($result | ConvertTo-Json -Compress -Depth 5))",
     "} catch {",
     "  $category = [string]$_.CategoryInfo.Category",
@@ -532,10 +534,8 @@ function legacyTaskArgument() {
 
 function isManagedTaskMetadata(metadata) {
   if (metadata?.kind !== "present") return false;
-  const currentPrincipals = [metadata.currentPrincipal, metadata.currentSid]
-    .filter(Boolean)
-    .map((value) => String(value).trim().toLowerCase());
-  if (!metadata.principal || !currentPrincipals.includes(String(metadata.principal).trim().toLowerCase())) return false;
+  if (!metadata.principalSid || !metadata.currentSid) return false;
+  if (!sameWindowsText(metadata.principalSid, metadata.currentSid)) return false;
   const actions = Array.isArray(metadata.actions)
     ? metadata.actions
     : metadata.actions

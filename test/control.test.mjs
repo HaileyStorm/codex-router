@@ -965,6 +965,22 @@ test("toggle rejects an unknown provider", () => {
   assert.throws(() => probeSet("codex", ["deepseek"], "not-a-provider", "on"));
 });
 
+// Node is available on every supported platform. Preload only the synthetic
+// login-status answer; a module-not-found exit is a probe failure, not sign-out.
+function mockCodexAuth(stateDir, authenticated = false) {
+  const hook = path.join(stateDir, "codex-login-fixture.cjs");
+  writeFileSync(hook, `
+    if (require("node:path").basename(process.argv[1] || "") === "login" && process.argv[2] === "status") {
+      process.stderr.write(${JSON.stringify(authenticated ? "Logged in using ChatGPT\n" : "Not logged in\n")});
+      process.exit(${authenticated ? 0 : 1});
+    }
+  `);
+  return {
+    CODEX_BIN: process.execPath,
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require ${JSON.stringify(hook)}`.trim(),
+  };
+}
+
 test("login-free control selects a ready external model and restores Codex defaults", () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-login-free-"));
   writeFileSync(path.join(stateDir, "config.toml"), `model = "gpt-5.6-sol"\n`, {
@@ -1008,7 +1024,7 @@ test("login-free control selects a ready external model and restores Codex defau
           env: {
             ...process.env,
             CODEX_HOME: stateDir,
-            CODEX_BIN: process.execPath,
+            ...mockCodexAuth(stateDir),
             MODEL_ROUTER_TARGET: "codex",
             MODEL_ROUTER_STATE_DIR: stateDir,
           },
@@ -1090,7 +1106,7 @@ test("login-free aliasing applies even when a ChatGPT credential is still stored
             // A real Codex install must not leak into this test on Windows,
             // where /usr/bin/true does not exist. Node is runnable everywhere
             // and produces no Codex catalog, so the seeded fixture is reused.
-            CODEX_BIN: process.execPath,
+            ...mockCodexAuth(stateDir, true),
             MODEL_ROUTER_TARGET: "codex",
             MODEL_ROUTER_STATE_DIR: stateDir,
           },
@@ -1146,7 +1162,7 @@ test("model-set switches the login-free model and rejects unavailable models", (
   const environment = {
     ...process.env,
     CODEX_HOME: stateDir,
-    CODEX_BIN: process.execPath,
+    ...mockCodexAuth(stateDir),
     KIMI_CODE_HOME: path.join(stateDir, "kimi-code"),
     MODEL_ROUTER_TARGET: "codex",
     MODEL_ROUTER_STATE_DIR: stateDir,
@@ -1256,7 +1272,7 @@ api_key = "ROLLBACK_QUERY_SECRET"
   const environment = {
     ...process.env,
     CODEX_HOME: stateDir,
-    CODEX_BIN: process.execPath,
+    ...mockCodexAuth(stateDir, true),
     MODEL_ROUTER_TARGET: "codex",
     MODEL_ROUTER_STATE_DIR: stateDir,
     MODEL_ROUTER_TEST_FAIL_AFTER_CATALOG_WRITE: "1",

@@ -858,6 +858,18 @@ function main() {
   // that does not own this state directory is how the picker ends up
   // advertising models the running gateway has no route for.
   assertStateOwnership("write the Codex model catalog");
+  // Dropping every native model is destructive, so only do it when Codex
+  // actually answered that the session is signed out. If the probe could not
+  // finish (including configuration errors) we do not know. Guessing "signed
+  // out" previously emptied the picker on both Windows and Linux.
+  const auth = codexAuthStatus();
+  if (auth.reason === "probe-failed" || auth.reason === "codex-not-found") {
+    throw new Error(
+      `Could not ask Codex whether it is signed in (${auth.code || auth.reason} running ${auth.binary || "unresolved CLI"}). ` +
+        "Refusing to rebuild the catalog, because assuming a signed-out session would remove every native model. " +
+        "Set CODEX_BIN to a runnable Codex CLI and try again.",
+    );
+  }
   const userSlugs = new Set(readUserModels().map((model) => String(model.slug)));
   const hiddenModels = readHiddenModels();
   const selectedModels = selectedConfiguredListedModels();
@@ -885,18 +897,6 @@ function main() {
     ...captured,
     models: promoteNativeMultiAgent(captured.models, multiAgentSettings, hiddenModels),
   };
-  // Dropping every native model is destructive, so only do it when Codex
-  // actually answered that the session is signed out. If the probe could not
-  // run at all we do not know, and guessing "signed out" is what silently
-  // emptied the picker for Windows npm installs.
-  const auth = codexAuthStatus();
-  if (auth.reason === "probe-failed") {
-    throw new Error(
-      `Could not ask Codex whether it is signed in (${auth.code || "spawn failed"} running ${auth.binary}). ` +
-        "Refusing to rebuild the catalog, because assuming a signed-out session would remove every native model. " +
-        "Set CODEX_BIN to a runnable Codex CLI and try again.",
-    );
-  }
   const openaiAuthenticated = auth.authenticated;
   const loginFree = loginFreeConfigured();
   const routedCatalog = routedCatalogActive();

@@ -14,12 +14,14 @@ import test from "node:test";
 const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-credentials-"));
 process.env.CODEX_HOME = path.join(testRoot, "codex");
 process.env.CODEX_ROUTER_STATE_DIR = path.join(testRoot, "state");
-for (const name of ["ANTHROPIC_API_KEY", "CHUTES_API_KEY", "CLINE_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY", "GROK_API_KEY"]) {
+for (const name of ["ANTHROPIC_API_KEY", "CHUTES_API_KEY", "CLINE_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "NOUS_API_KEY", "XAI_API_KEY", "GROK_API_KEY"]) {
   delete process.env[name];
 }
 
 const {
   credentialFileMode,
+  credentialPaths,
+  credentialSetupHint,
   keychainProbeCount,
   removeProviderCredential,
   resetKeychainCache,
@@ -27,6 +29,7 @@ const {
   writeProviderCredential,
 } = await import("../src/provider-credentials.mjs");
 const { privateFileIsProtected } = await import("../src/file-security.mjs");
+const { PROVIDERS } = await import("../src/model-registry.mjs");
 
 test("provider credentials use protected files and remove legacy managed keys", () => {
   try {
@@ -111,6 +114,28 @@ test("provider credentials use protected files and remove legacy managed keys", 
     assert.equal(existsSync(chutesPath), false);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("environment-only credentials never fall back to a router-managed file", () => {
+  process.env.NOUS_API_KEY = "TEST_NOUS_ENVIRONMENT_ONLY_KEY";
+  try {
+    const credential = resolveProviderCredential("nous", { persistent: true });
+    assert.deepEqual(credential, {
+      value: "TEST_NOUS_ENVIRONMENT_ONLY_KEY",
+      source: "environment (NOUS_API_KEY)",
+      persistent: false,
+    });
+    assert.deepEqual(credentialPaths("nous"), []);
+    assert.match(credentialSetupHint(PROVIDERS.get("nous")), /NOUS_API_KEY/);
+    assert.throws(
+      () => writeProviderCredential("nous", "MUST_NOT_BE_STORED"),
+      /Unknown API-key provider/,
+    );
+    assert.throws(() => removeProviderCredential("nous"), /Unknown API-key provider/);
+    assert.equal(existsSync(path.join(process.env.CODEX_ROUTER_STATE_DIR, "nous-api-key.secret")), false);
+  } finally {
+    delete process.env.NOUS_API_KEY;
   }
 });
 

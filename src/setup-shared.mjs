@@ -18,7 +18,7 @@ import { PROVIDERS } from "./model-registry.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { SOURCE_ROOT } from "./paths.mjs";
-import { credentialStatus } from "./provider-credentials.mjs";
+import { credentialSetupHint, credentialStatus } from "./provider-credentials.mjs";
 import {
   defaultReadyProviderPositions,
   providerOnboardingSnapshot,
@@ -277,6 +277,12 @@ function onboardGrokOauth() {
 // providerKeyCommand(id) yields the target-specific hint for the non-guided path.
 export function configureProvider(provider, { guided, providerKeyCommand }) {
   if (providerConfigured(provider)) return;
+  if (provider.credential?.environmentOnly) {
+    throw new Error(
+      `${provider.displayName} is selected but its environment credential is unavailable; ` +
+        `${credentialSetupHint(provider)}.`,
+    );
+  }
   if (!guided) {
     const setup =
       provider.kind === "oauth"

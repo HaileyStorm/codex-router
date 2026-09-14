@@ -39,6 +39,12 @@ import {
   normalizeFlashNextInput,
   normalizeFlashNextReasoning,
 } from "./freetoken-local.mjs";
+import {
+  assertNousDirectCredentialMetadata,
+  dispatchNousDirect,
+  NOUS_CHAT_ADAPTER,
+  NOUS_PROVIDER_ID,
+} from "./nous-direct.mjs";
 
 installStableFetchTransport();
 
@@ -387,7 +393,7 @@ function normalizeBody(buffer, contentType, route) {
   // Fireworks rejects this OpenAI search parameter instead of ignoring it.
   // Other provider payloads keep it unchanged.
   if (provider.id === "fireworks") delete payload.web_search_options;
-  if (Array.isArray(payload.messages)) {
+  if (Array.isArray(payload.messages) && provider.responseAdapter !== NOUS_CHAT_ADAPTER) {
     payload.messages = sanitizeChatToolHistory(payload.messages, provider);
   }
   if (provider.authProfile === "github-copilot") {
@@ -675,6 +681,14 @@ async function handleRequest(request, response) {
 
   const original = await readRequestBody(request);
   const normalized = normalizeBody(original, request.headers["content-type"], route);
+  if (
+    normalized.provider.id === NOUS_PROVIDER_ID ||
+    normalized.provider.responseAdapter === NOUS_CHAT_ADAPTER
+  ) {
+    // Validate the adapter's environment-only contract before the generic
+    // resolver can inspect files, keychains, sessions, or other credentials.
+    assertNousDirectCredentialMetadata(normalized.provider);
+  }
   const credential = resolveProviderCredential(normalized.provider);
   if (!credential) {
     const setup = credentialStatus(normalized.provider).setup;
@@ -706,18 +720,28 @@ async function handleRequest(request, response) {
       : normalized.body;
     let session = await upstreamSession(normalized.provider, credential, normalized.payload);
     let target = `${session.baseUrl}${route}${requestUrl.search}`;
-    let upstream = await fetch(target, {
-      method: request.method,
-      headers: upstreamHeaders(
-        request.headers,
-        upstreamBody,
-        session.apiKey,
-        normalized.provider,
-        session.headers,
-      ),
-      body: upstreamBody,
-      signal: controller.signal,
-    });
+    let upstream = normalized.provider.responseAdapter === NOUS_CHAT_ADAPTER
+      ? await dispatchNousDirect({
+          payload: normalized.payload,
+          model: normalized.model,
+          provider: normalized.provider,
+          credential: session.apiKey,
+          baseUrl: session.baseUrl,
+          internalKey: INTERNAL_KEY,
+          signal: controller.signal,
+        })
+      : await fetch(target, {
+          method: request.method,
+          headers: upstreamHeaders(
+            request.headers,
+            upstreamBody,
+            session.apiKey,
+            normalized.provider,
+            session.headers,
+          ),
+          body: upstreamBody,
+          signal: controller.signal,
+        });
     // Account routing can change with plan or policy. Re-resolve and replay once
     // before any response byte reaches the caller; every other status is relayed.
     if (normalized.provider.authProfile === "github-copilot" && upstream.status === 401) {

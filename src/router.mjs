@@ -117,6 +117,7 @@ import {
 import { VERSION } from "./version.mjs";
 import { nativeSessionHeaders } from "./codex-native-session.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
+import { isNousReasoningEnvelope } from "./nous-direct.mjs";
 
 // A profile slug is native authority. Refuse to start if a future external
 // registry entry claims the same identity; request-order precedence must never
@@ -1483,6 +1484,10 @@ function isOpaqueEncryptedContent(value) {
 
 function sanitizeReasoningForNative(item) {
   if (item?.encrypted_content === undefined) return item;
+  if (isNousReasoningEnvelope(item.encrypted_content)) {
+    const { encrypted_content, ...rest } = item;
+    return rest;
+  }
   if (isOpaqueEncryptedContent(item.encrypted_content)) return item;
   const { encrypted_content, ...rest } = item;
   return rest;
@@ -2137,15 +2142,15 @@ async function handleResponses(request, response, requestUrl) {
       // into the following assistant function_call message's content so the
       // translation carries it; the forwarder then attaches it as
       // `reasoning_content` on the tool-call message.
-      carryReasoningThroughInput(input);
       const provider = providerForModel(route);
+      if (provider?.responseAdapter !== "nous-chat") carryReasoningThroughInput(input);
       // LiteLLM's Responses -> Chat Completions bridge drops namespace tools,
       // which is how the client ships the collaboration runtime, the app
       // toolset (threads, automations, navigation), and every MCP server
       // (node_repl, peekaboo, github, ...). Chat-completions providers need
       // every namespace flattened into ordinary functions; the response
       // transform maps calls back to the client's native namespace shape.
-      if (provider?.protocol !== "openai-responses") {
+      if (provider?.protocol !== "openai-responses" || provider?.responseAdapter === "nous-chat") {
         // Relay the app's full native toolset (threads, automations, app
         // navigation) to the provider. The client registers these tools with
         // deferLoading and executes the calls natively, but only sends a
@@ -2379,7 +2384,8 @@ async function handleResponses(request, response, requestUrl) {
         route &&
         EMPTY_COMPLETION_RETRY &&
         !isThreadspanRoute(route) &&
-        route.slug !== "freetoken/qwen3.8-flash-next"
+        route.slug !== "freetoken/qwen3.8-flash-next" &&
+        providerForModel(route)?.responseAdapter !== "nous-chat"
           ? new EmptyCompletionGuard(contentType)
           : undefined;
       if (guard) transforms.push(guard);

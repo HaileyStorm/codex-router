@@ -2,10 +2,9 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { PROVIDERS } from "./model-registry.mjs";
-import { cliSessionDescriptor } from "./cli-session-credential.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
-import { credentialStatus } from "./provider-credentials.mjs";
+import { credentialSetupHint, credentialStatus } from "./provider-credentials.mjs";
 import { providerNeedsCuration } from "./provider-onboarding.mjs";
 import {
   canonicalProviderId,
@@ -15,7 +14,6 @@ import {
 } from "./provider-selection.mjs";
 import {
   refreshTargetPickerIfInstalled,
-  targetCli,
   targetPickerName,
   targetRestartHint,
 } from "./target-integration.mjs";
@@ -73,13 +71,9 @@ function main() {
     throw new Error("Usage: providers [list [--json]|enable ID|disable ID]");
   }
   if (command === "enable" && !configured(provider)) {
-    const session = cliSessionDescriptor(provider);
-    const keySetup = `run \`${targetCli(`provider-key ${provider.id} set`)}\``;
     const setup = provider.kind === "oauth"
       ? SIGN_IN_STATUS[provider.id]?.setup || "sign in with the provider CLI"
-      : session
-        ? `run \`${session.loginCommand}\` or ${keySetup}`
-        : keySetup;
+      : credentialSetupHint(provider);
     throw new Error(`${provider.displayName} is not configured; ${setup} first.`);
   }
   const providers = command === "enable"

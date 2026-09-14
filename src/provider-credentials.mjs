@@ -38,7 +38,8 @@ export function apiProvider(providerId) {
     !provider ||
     provider.kind !== "openai-compatible" ||
     provider.authMode === "anonymous" ||
-    provider.credential?.externalFile
+    provider.credential?.externalFile ||
+    provider.credential?.environmentOnly
   ) {
     throw new Error(`Unknown API-key provider: ${providerId}`);
   }
@@ -49,6 +50,9 @@ export function primaryCredentialPath(provider) {
   if (provider.credential?.externalFile) {
     throw new Error(`Provider ${provider.id} reads an external owner credential and stores no copy.`);
   }
+  if (provider.credential?.environmentOnly) {
+    throw new Error(`Provider ${provider.id} accepts an environment credential and stores no copy.`);
+  }
   if (!provider.credential) {
     throw new Error(`Provider ${provider.id} stores no credential.`);
   }
@@ -58,7 +62,11 @@ export function primaryCredentialPath(provider) {
 export function credentialPaths(provider) {
   // A keyless provider stores nothing, so there is no file to look for and
   // nothing for a support bundle to redact.
-  if (!provider.credential || provider.credential.externalFile) return [];
+  if (
+    !provider.credential ||
+    provider.credential.externalFile ||
+    provider.credential.environmentOnly
+  ) return [];
   const names = [provider.credential.file, ...(provider.credential.legacyFiles || [])];
   const candidates = names.flatMap((name) => [
     path.join(STATE_DIR, name),
@@ -215,7 +223,7 @@ export function resolveProviderCredential(providerOrId, options = {}) {
   // before everything that does.
   if (discoveryDisabled()) return undefined;
   if (provider.credential?.externalFile) return readExternalCredential(provider);
-  if (!options.persistent) {
+  if (!options.persistent || provider.credential.environmentOnly) {
     for (const name of provider.credential.environment) {
       const value = process.env[name]?.trim();
       if (value) {
@@ -259,6 +267,10 @@ export function credentialSetupHint(provider) {
   if (provider.keyless) return "No key needed; it runs on this machine.";
   if (provider.credential?.externalFile) {
     return "Start Threadspan with its owner-only token file; Codex Router reads it in place and stores no copy.";
+  }
+  if (provider.credential?.environmentOnly) {
+    const names = provider.credential.environment.map((name) => `\`${name}\``).join(" or ");
+    return `Set ${names} in the router service environment, then restart the router service`;
   }
   const keyCommand = targetCli(`provider-key ${provider.id} set`);
   const session = cliSessionDescriptor(provider);

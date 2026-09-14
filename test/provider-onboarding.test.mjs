@@ -47,6 +47,7 @@ function isolatedEnvironment(testRoot) {
     DEEPSEEK_API_KEY: "",
     MINIMAX_API_KEY: "",
     MINIMAX_TOKEN_PLAN_API_KEY: "",
+    NOUS_API_KEY: "",
     XAI_API_KEY: "",
     GROK_API_KEY: "",
     ANTHROPIC_API_KEY: "",
@@ -77,6 +78,8 @@ test("provider onboarding reports install, login, and API key actions without se
     assert.equal(byId["minimax-token-plan"].action, "add-key");
     assert.equal(byId["github-copilot"].action, "add-key");
     assert.equal(byId["github-copilot"].credentialLabel, "GitHub token");
+    assert.equal(byId.nous.action, "blocked");
+    assert.match(byId.nous.setup, /NOUS_API_KEY/);
     assert.equal(byId.freetoken.configured, true);
     assert.equal(byId.freetoken.action, "ready");
     assert.equal(byId.freetoken.defaultEnabled, false);

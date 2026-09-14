@@ -9,7 +9,7 @@ import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
 import { SOURCE_ROOT, TARGET } from "./paths.mjs";
-import { credentialStatus } from "./provider-credentials.mjs";
+import { credentialSetupHint, credentialStatus } from "./provider-credentials.mjs";
 import {
   defaultReadyProviderPositions,
   hasSignInCli,
@@ -263,6 +263,12 @@ function configureProvider(provider) {
     throw incomplete(
       `${provider.displayName} is selected but Threadspan owner authentication is unavailable; ` +
       "start Threadspan and restore its owner-only token file, then run setup again.",
+    );
+  }
+  if (provider.credential?.environmentOnly) {
+    throw incomplete(
+      `${provider.displayName} is selected but its environment credential is unavailable; ` +
+        `${credentialSetupHint(provider)}.`,
     );
   }
   const session = cliSessionDescriptor(provider);
@@ -553,6 +559,9 @@ async function main() {
           .map(({ provider }) => {
             if (provider.kind === "oauth") {
               return `  ${provider.displayName}: sign in with the provider's official CLI\n`;
+            }
+            if (provider.credential?.environmentOnly) {
+              return `  ${provider.displayName}: ${credentialSetupHint(provider)}\n`;
             }
             const session = cliSessionDescriptor(provider);
             const key = `./bin/provider-key ${provider.id} set`;

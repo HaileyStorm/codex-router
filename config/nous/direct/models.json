@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "nous/deepseek/deepseek-v4.1-flash",
+      "gatewayModel": "nous-deepseek-v4-1-flash",
+      "upstreamModel": "deepseek/deepseek-v4.1-flash",
+      "provider": "nous",
+      "listed": true,
+      "displayName": "Nous Direct · DeepSeek V4.1 Flash",
+      "description": "Calls DeepSeek V4.1 Flash directly through the Nous Portal API using the router's strict single-attempt Responses-to-Chat adapter.",
+      "priority": 1,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        { "effort": "max", "description": "Maximum reasoning depth" }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 891289,
+      "inputModalities": ["text"]
+    }
+  ]
+}

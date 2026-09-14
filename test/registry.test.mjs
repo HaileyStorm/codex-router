@@ -94,6 +94,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "meta/muse-spark-1.2-contributor",
       "meta/muse-spark-1.2",
       "minimax-token-plan/minimax-m3",
+      "nous/deepseek/deepseek-v4.1-flash",
       "ollama-cloud/deepseek-v4-flash",
       "ollama-cloud/deepseek-v4-pro",
       "ollama-cloud/glm-5.2",
@@ -591,6 +592,22 @@ test("Nous DeepSeek V4.1 routes preserve the official model identity", () => {
     assert.deepEqual(model.reasoningLevels, [{ effort: "max", description: "Maximum reasoning depth" }]);
     assert.equal(model.compHash, undefined);
   }
+  const direct = MODEL_BY_SLUG.get(`nous/${officialModel}`);
+  assert.ok(direct);
+  assert.equal(direct.upstreamModel, officialModel);
+  assert.equal(direct.gatewayModel, "nous-deepseek-v4-1-flash");
+  assert.equal(direct.contextWindow, 1_048_576);
+  assert.equal(direct.autoCompact, 891_289);
+  assert.equal(direct.defaultEffort, "max");
+  assert.deepEqual(direct.reasoningLevels, [{ effort: "max", description: "Maximum reasoning depth" }]);
+  assert.equal(direct.compHash, undefined);
+  const provider = PROVIDERS.get("nous");
+  assert.equal(provider.baseUrl, "https://inference-api.nousresearch.com/v1");
+  assert.equal(provider.protocol, "openai-responses");
+  assert.equal(provider.responseAdapter, "nous-chat");
+  assert.deepEqual(provider.credential.environment, ["NOUS_API_KEY"]);
+  assert.equal(provider.credential.environmentOnly, true);
+  assert.equal(provider.credential.file, undefined);
   assert.equal(MODEL_BY_SLUG.has(`direct/nous/${officialModel}`), false);
   assert.equal(LISTED_MODELS.some((model) => model.slug.startsWith("direct/nous/")), false);
 });
@@ -740,7 +757,14 @@ test("LiteLLM configuration is generated from every registry route", () => {
   assert.doesNotMatch(flashBlock, /use_chat_completions_api/);
   assert.match(flashBlock, /num_retries: 0/);
   assert.match(flashBlock, /timeout: 1200/);
-  assert.equal([...rendered.matchAll(/^\s+num_retries: 0$/gm)].length, 1);
+  const nousStart = rendered.indexOf('model_name: "nous-deepseek-v4-1-flash"');
+  const nousEnd = rendered.indexOf("\n  - model_name:", nousStart + 1);
+  const nousBlock = rendered.slice(nousStart, nousEnd === -1 ? undefined : nousEnd);
+  assert.match(nousBlock, /model: "openai\/responses\/nous-deepseek-v4-1-flash"/);
+  assert.doesNotMatch(nousBlock, /use_chat_completions_api/);
+  assert.match(nousBlock, /num_retries: 0/);
+  assert.match(nousBlock, /timeout: 1200/);
+  assert.equal([...rendered.matchAll(/^\s+num_retries: 0$/gm)].length, 2);
 });
 
 test("curated upgrade prompts point at listed generational successors", () => {
@@ -803,7 +827,7 @@ test("visionBridge may only be set to false", async () => {
   }
 });
 
-test("only Threadspan and uncertified FreeToken listed models may omit compHash", async () => {
+test("only explicit adapter and uncertified provider models may omit compHash", async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const nodePath = (await import("node:path")).default;

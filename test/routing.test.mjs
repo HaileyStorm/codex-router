@@ -17,6 +17,10 @@ import { fileURLToPath } from "node:url";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
+import {
+  createNousReasoningEnvelope,
+  NOUS_UPSTREAM_MODEL,
+} from "../src/nous-direct.mjs";
 import { openPort } from "./port-pool.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -2091,6 +2095,58 @@ test("router strips non-OpenAI reasoning encrypted_content before replaying to n
     assert.equal(sentBogus.encrypted_content, undefined);
     assert.deepEqual(sentBogus.summary, bogusReasoning.summary);
     assert.equal(sentGenuine.encrypted_content, genuineReasoning.encrypted_content);
+  } finally {
+    await stopChild(router);
+    await closeServer(native.server);
+  }
+});
+
+test("router strips the authenticated Nous reasoning envelope before native fallback", async () => {
+  const nativeRequests = [];
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push({ body: await bodyJson(request) });
+    json(response, 200, { route: "native" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const envelope = createNousReasoningEnvelope({
+    internalKey: INTERNAL_KEY,
+    model: NOUS_UPSTREAM_MODEL,
+    text: "Nous visible reasoning summary",
+    details: [{ type: "reasoning.text", text: "provider detail" }],
+  });
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.6-sol",
+        input: [{
+          type: "reasoning",
+          id: "rs_nous",
+          status: "completed",
+          summary: [{ type: "summary_text", text: "Nous visible reasoning summary" }],
+          encrypted_content: envelope,
+        }, {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "continue" }],
+        }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(nativeRequests.length, 1);
+    const reasoning = nativeRequests[0].body.input.find((item) => item?.id === "rs_nous");
+    assert.equal(reasoning.encrypted_content, undefined);
+    assert.deepEqual(reasoning.summary, [{ type: "summary_text", text: "Nous visible reasoning summary" }]);
   } finally {
     await stopChild(router);
     await closeServer(native.server);

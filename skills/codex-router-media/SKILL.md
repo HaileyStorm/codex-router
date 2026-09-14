@@ -1,9 +1,12 @@
 ---
 name: codex-router-media
-description: Generate video, music, speech, or images with the operator's MiniMax Token Plan subscription through the codex-router media CLI. Use when the session runs a MiniMax custom (non-OpenAI) model (for example minimax-m3) with the MiniMax Token Plan provider connected, and the user explicitly asks to create a video, a song or music track, spoken audio, or an image. Do not use for reading or analyzing existing media.
+description: Use when a verified MiniMax custom (non-OpenAI) model generates requested media through its Token Plan.
 ---
 
 # MiniMax media generation (codex-router)
+
+Use the currently exposed tool schema when it differs from the compatibility examples below. Missing tools are unavailable; do not invent an endpoint or side-channel driver. Preserve the user's selected model, permissions and workspace.
+
 
 The router stores the operator's MiniMax Token Plan API key. The `media`
 command resolves that key itself — you never see or handle the credential.

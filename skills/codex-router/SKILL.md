@@ -1,11 +1,11 @@
 ---
 name: codex-router
-description: Orientation for custom (non-OpenAI) models running in the Codex app through the codex-router proxy. Explains that the app's native tools arrive as flattened codex_app__ and mcp__ names, that the router restores them so the app executes them, and which companion skills to read before threads, browser, or computer-use work. Use when the session uses a custom (non-OpenAI) model, for example deepseek-v4-flash or mimo-v2.5, when codex_app__ or mcp__ tool names appear in the tool list, or when thread, browser, or computer-use work is requested.
+description: Use when a verified custom (non-OpenAI) model needs Codex native tool routing or model-inheritance guidance.
 ---
 
 # Codex Router (custom models in the Codex app)
 
-You are a custom model. The Codex app routes your traffic through codex-router.
+Apply this skill only when runtime model/provider evidence identifies a custom route through codex-router. Tool names alone do not identify the provider. For native OpenAI sessions, use the available native tool schemas directly.
 
 ## How your tools work
 
@@ -22,7 +22,7 @@ You are a custom model. The Codex app routes your traffic through codex-router.
   process, do not fake MCP metadata, do not write driver scripts. The tools
   you need are already in your tool list.
 
-## Before each kind of work, read the matching skill
+## Task-specific references
 
 - Threads, automations, navigation: read `codex-app-threads`.
 - In-app browser: read `codex-in-app-browser`.
@@ -43,9 +43,7 @@ turns.
 
 ## Spawned threads and model inheritance
 
-For a new local Codex thread, omit the `model` field unless the user
-explicitly requested one. The router selects the parent routed model. An
-explicit model is never overridden. Follow-up messages retain the target
+For a new local Codex thread, preserve an explicit user model. Otherwise follow the shared role policy: Astra controls design and synthesis; eligible bounded work prefers Nous V4.1 Flash Max, with Luna Max fallback. Do not accidentally inherit an external parent model into private or incompatible work. The router preserves explicit model choices. Follow-up messages retain the target
 thread's settings, and cloud tasks choose their model outside this relay.
 
 ## What the token and usage numbers mean
@@ -65,8 +63,7 @@ thread's settings, and cloud tasks choose their model outside this relay.
 
 ## If the session seems to stop mid-task
 
-Check the meter at `~/.codex/codex-router/usage-events.jsonl` for the
-session's model first. Causes, in order of likelihood: a spawned thread died
+If provider diagnosis needs the meter, check its size first and read a bounded tail of `~/.codex/codex-router/usage-events.jsonl`, projecting only relevant fields. Causes, in order of likelihood: a spawned thread died
 on a native usage limit while the parent waited; an upstream stream dropped
 mid-flight; the app compacted early on inflated estimated totals; the router
 restarted. The router service restarts are normally supervised by launchd

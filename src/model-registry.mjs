@@ -280,9 +280,26 @@ function loadRegistry() {
         provider.authMode !== "anonymous" &&
         (!provider.credential ||
           !Array.isArray(provider.credential.environment) ||
-          (!provider.credential.file && !provider.credential.externalFile))
+          (!provider.credential.file &&
+            !provider.credential.externalFile &&
+            provider.credential.environmentOnly !== true))
       ) {
         fail(`provider ${provider.id} requires credential metadata`);
+      }
+      if (provider.credential?.environmentOnly !== undefined) {
+        if (provider.credential.environmentOnly !== true) {
+          fail(`provider ${provider.id} has an invalid credential.environmentOnly flag`);
+        }
+        if (
+          provider.credential.environment.length === 0 ||
+          provider.credential.file !== undefined ||
+          provider.credential.externalFile !== undefined ||
+          provider.credential.legacyFiles !== undefined ||
+          provider.credential.keychainServices !== undefined ||
+          provider.credential.cliSession !== undefined
+        ) {
+          fail(`provider ${provider.id} environment-only credential must declare only environment sources`);
+        }
       }
       if (
         provider.credential?.label !== undefined &&
@@ -308,6 +325,14 @@ function loadRegistry() {
         !["openai", "anthropic", "openai-responses"].includes(provider.protocol)
       ) {
         fail(`provider ${provider.id} has an unsupported API protocol`);
+      }
+      if (
+        provider.responseAdapter !== undefined &&
+        (provider.responseAdapter !== "nous-chat" ||
+          provider.id !== "nous" ||
+          provider.protocol !== "openai-responses")
+      ) {
+        fail(`provider ${provider.id} has an unsupported Responses adapter`);
       }
       if (provider.transport !== undefined && provider.transport !== "ollama") {
         fail(`provider ${provider.id} has an unsupported transport`);
@@ -558,9 +583,13 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     // compacted-history class, and the on-demand FreeToken route has not yet
     // passed a native compact/resume acceptance. Omission deliberately leaves
     // compatibility unknown until that exact wire path earns a certificate.
+    // Nous Direct has an exact chat replay contract but no certified compacted
+    // history class yet, so it carries the same explicit unknown state.
     // Every other checked-in provider keeps the stronger established rule.
     const compHashMayBeUnknown =
-      provider.variantOf === "threadspan" || model.slug === "freetoken/qwen3.8-flash-next";
+      provider.variantOf === "threadspan" ||
+      provider.responseAdapter === "nous-chat" ||
+      model.slug === "freetoken/qwen3.8-flash-next";
     if (model.compHash === undefined && !compHashMayBeUnknown) {
       return `listed model ${model.slug} is missing compHash`;
     }

@@ -1,9 +1,12 @@
 ---
 name: codex-computer-use
-description: Control local apps through Computer Use (the @oai/sky runtime) inside the Codex app. Use when the session uses a custom (non-OpenAI) model, for example deepseek-v4-flash or mimo-v2.5, and the user asks to control the computer, operate a desktop app's UI, use Safari or Chrome through computer use, click or type in an app, or take a screenshot of an app. Prefer purpose-built connectors, APIs, or CLIs when they exist.
+description: Use when a verified custom (non-OpenAI) model controls desktop apps through Codex.
 ---
 
 # Codex Computer Use
+
+Use the currently exposed tool schema when it differs from the compatibility examples below. Missing tools are unavailable; do not invent an endpoint or side-channel driver. Preserve the user's selected model, permissions and workspace.
+
 
 The runtime is `@oai/sky`, imported through `mcp__node_repl__js` (available
 in this session).

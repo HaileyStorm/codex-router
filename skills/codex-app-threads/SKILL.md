@@ -1,11 +1,14 @@
 ---
 name: codex-app-threads
-description: Create, list, read, message, wait on, fork, rename, archive, and pin Codex threads (sidebar tasks), plus automations and app navigation, using the app-native codex_app tools. Use when the session uses a custom (non-OpenAI) model, for example deepseek-v4-flash or mimo-v2.5, and the user asks to create a thread or a new task or agent, list or read threads, send a message to a thread, wait for a thread, fork or rename a thread, archive or pin a thread, set up an automation or reminder, or open something in the Codex app.
+description: Use when a verified custom (non-OpenAI) model operates Codex threads or automations.
 ---
 
 <!-- codex-router-required-fields: {"create_thread":["prompt","target"],"read_thread":["threadId"],"send_message_to_thread":["threadId","prompt"]} -->
 
 # Codex App Threads
+
+Use the currently exposed tool schema when it differs from the compatibility examples below. Missing tools are unavailable; do not invent an endpoint or side-channel driver. Preserve the user's selected model, permissions and workspace.
+
 
 The tools are `codex_app__*` (for example `codex_app__create_thread`). Use these exact shapes.
 
@@ -20,8 +23,7 @@ tools are `codex_app__` only.
 
 - `target.type` is one of: `project`, `projectless`, `chatgptWorkCloud`.
 - For `project`, also pass `projectId` from `list_projects`. Choose
-  `environment.type` = `worktree` when the project `isGitRepository` is
-  true, otherwise `local`.
+  the existing local workspace by default; use a worktree only when explicitly authorized and supported by the project tracker.
 - `title` is optional. No other top-level keys are allowed. The keys
   `message`, `content`, `text`, `projectKind`, and `kind` are rejected.
 
@@ -43,8 +45,7 @@ the arguments.
 
 Creation is non-blocking. A ready thread returns `threadId` and `hostId`.
 Setup in progress may return `clientThreadId` instead. Do NOT pass a
-`clientThreadId` to tools that require `threadId`. Poll `read_thread` until
-the thread is ready.
+`clientThreadId` to tools that require `threadId`. Use the returned setup handle only with its documented status/wait tool; do not pass it to `read_thread` or create a duplicate thread.
 
 ## List threads
 

@@ -8,6 +8,10 @@ These instructions apply when a user asks an agent to install this repository.
   Medium (`medium`); prefer Light (`low`) for routine unpinned controlling and
   user-facing Codex tasks when it is sufficient. Explicit user, picker, task,
   project, provider, and named-role selections always win.
+- Astra owns design, planning, organization, synthesis and complex diagnosis.
+  Eligible bounded implementation, fact gathering, verification and monitoring
+  prefer exact Nous DeepSeek V4.1 Flash Max, with GPT-5.6 Luna Max fallback.
+  Keep private parent context out of external delegation without approval.
 - Delegate only bounded independent work where parallelism saves time or
   improves quality. Start with the smallest useful set, keep one writer per
   file or symbol cluster, and keep synthesis and acceptance in the parent.

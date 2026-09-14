@@ -17,6 +17,7 @@ import { STATE_DIR } from "./paths.mjs";
 import {
   apiProvider,
   credentialLabel,
+  credentialSetupHint,
   credentialStatus,
   removeProviderCredential,
   writeProviderCredential,
@@ -141,6 +142,18 @@ export function providerOnboardingSnapshot() {
           action: configured ? "ready" : "blocked",
           setup:
             "Start Threadspan and restore its owner-only token file; the router reads it in place and stores no copy.",
+        };
+      }
+      if (provider.credential?.environmentOnly) {
+        return {
+          id: provider.id,
+          displayName: provider.displayName,
+          kind: "api",
+          defaultEnabled: provider.defaultEnabled !== false,
+          credentialLabel: credentialLabel(provider),
+          configured,
+          action: configured ? "ready" : "blocked",
+          setup: credentialSetupHint(provider),
         };
       }
       const entry = {

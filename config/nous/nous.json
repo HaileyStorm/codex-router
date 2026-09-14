@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "nous",
+      "displayName": "Nous Portal Direct",
+      "kind": "openai-compatible",
+      "ownedBy": "nous",
+      "protocol": "openai-responses",
+      "responseAdapter": "nous-chat",
+      "baseUrl": "https://inference-api.nousresearch.com/v1",
+      "credential": {
+        "environment": [
+          "NOUS_API_KEY"
+        ],
+        "environmentOnly": true,
+        "label": "Nous API key"
+      }
+    }
+  ]
+}

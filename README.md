@@ -125,6 +125,7 @@ Linux installations support the Codex CLI.
 | DeepSeek V4 Pro (API) | `deepseek/deepseek-v4-pro` | DeepSeek API key |
 | Grok Agent | `delegate/grok-build/grok-4.6` | Existing local Threadspan owner session |
 | Grok Consult | `consult/grok-build/grok-4.6` | Existing local Threadspan owner session |
+| Nous Direct · DeepSeek V4.1 Flash | `nous/deepseek/deepseek-v4.1-flash` | `NOUS_API_KEY` in the router process environment |
 | Nous Tools · DeepSeek V4.1 Flash | `integrated/nous/deepseek/deepseek-v4.1-flash` | Existing local Threadspan owner session |
 | Nous Consult · DeepSeek V4.1 Flash | `consult/nous/deepseek/deepseek-v4.1-flash` | Existing local Threadspan owner session |
 | Nous Tools · DeepSeek V4 Flash/Pro | `integrated/nous/deepseek/deepseek-v4-{flash-0731,pro-0813}` | Existing local Threadspan owner session |
@@ -181,8 +182,30 @@ was created. (`kimi-oauth` is a third, distinct thing: the Kimi Code
 subscription reused through the official CLI's session.)
 
 The Codex catalog is credential-aware. It includes models only from enabled
-external providers with a stored credential or valid OAuth session. Native GPT
+external providers with their supported credential source or valid OAuth session. Native GPT
 models are included only when `codex login status` confirms an OpenAI login.
+
+### Nous Direct
+
+`nous/deepseek/deepseek-v4.1-flash` uses Max effort and the shared strict
+Responses-to-Chat adapter. Native Codex tools run in the task's assigned workspace;
+bounded implementation tasks can use writable tools. Outbound private-data
+authorization is separate from filesystem permission.
+
+Provide `NOUS_API_KEY` through the router process environment and the environment
+of catalog-management commands. This provider does not store a key file. Do not
+put the key in command arguments, configuration, logs, or source. Enable `nous`
+with the normal provider command after its environment is available.
+
+The adapter sends one request to Nous Chat Completions, preserves reasoning and
+ordered tool replay, and reports provider errors without automatic retries. It
+supports native function tools; native built-in web search is unsupported, so the
+dedicated Nous roles disable it. Use separately approved compatible function/MCP
+tools when research is needed.
+
+Direct does not require Threadspan. The `integrated/nous/...` and
+`consult/nous/...` entries are separate Threadspan routes with their own runtime
+acceptance. Existing V4 Flash/Pro entries remain explicit choices, not V4.1 aliases.
 
 ### Native Astra context profiles
 

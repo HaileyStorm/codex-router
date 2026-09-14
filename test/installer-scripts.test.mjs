@@ -226,7 +226,7 @@ test(
 );
 
 test(
-  "Windows installer defaults to a profile checkout outside virtualized AppData",
+  "Windows installer defaults outside virtualized AppData and managed Codex apps",
   { skip: process.platform !== "win32" },
   () => {
     // Execute the real installer only through its clone call. The fake Git
@@ -250,7 +250,7 @@ test(
     );
     const baseEnv = { ...process.env };
     const pathKey = Object.keys(baseEnv).find((key) => key.toLowerCase() === "path") || "Path";
-    delete baseEnv.CODEX_HOME;
+    baseEnv.CODEX_HOME = path.join(profile, ".codex");
     try {
       mkdirSync(fakeBin, { recursive: true });
       writeFileSync(installer, readFileSync(path.join(root, "install.ps1")), "utf8");
@@ -291,7 +291,7 @@ test(
       assert.notEqual(result.status, 0, "the fake clone must stop before installation");
       assert.ok(existsSync(logPath), result.stderr || result.stdout);
       const cloneArgs = readFileSync(logPath, "utf8").trim();
-      const expected = path.join(profile, ".codex", "apps", "codex-router");
+      const expected = path.join(profile, ".local", "share", "codex-router");
       assert.match(cloneArgs, new RegExp(expected.replaceAll("\\", "\\\\")));
       assert.doesNotMatch(cloneArgs, /LocalAppData[\\/]+codex-router/i);
     } finally {

@@ -1292,8 +1292,14 @@ fn windows_readable_path(path: PathBuf) -> PathBuf {
 fn standard_source_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     #[cfg(target_os = "windows")]
-    if let Some(local) = env::var_os("LOCALAPPDATA") {
-        roots.push(PathBuf::from(local).join("codex-router"));
+    {
+        if let Some(profile) = env::var_os("USERPROFILE") {
+            roots.push(PathBuf::from(profile).join(".local/share/codex-router"));
+        }
+        // Existing installations may still use the former default.
+        if let Some(local) = env::var_os("LOCALAPPDATA") {
+            roots.push(PathBuf::from(local).join("codex-router"));
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {

@@ -55,12 +55,11 @@ user.
    Python 3.10+. Read-only checks are allowed. Do not install a package manager
    or system runtime without the user's permission.
 2. Use a stable checkout: `~/.local/share/codex-router` on macOS/Linux, or
-   `%USERPROFILE%\.codex\apps\codex-router` on Windows. When `CODEX_HOME` is
-   explicitly configured to an absolute path outside `%LOCALAPPDATA%`, use
-   `%CODEX_HOME%\apps\codex-router` instead. Keeping the default outside
-   `%LOCALAPPDATA%` prevents an MSIX-launched installer from handing Task
-   Scheduler a path that was virtualized into the package. Do not install the
-   service from a temporary clone.
+   `%USERPROFILE%\.local\share\codex-router` on Windows. The Windows default
+   avoids MSIX virtualization under `%LOCALAPPDATA%` and Codex-managed `apps`
+   directory permissions. `CODEX_HOME` selects configuration and state, not the
+   code installation. Preserve an explicit installation path. Do not install
+   the service from a temporary clone.
 3. Never ask the user to paste OAuth tokens or API keys into chat, command
    arguments, logs, environment snippets, or tracked files.
 4. Determine which provider IDs the user requested: `anthropic-api`,

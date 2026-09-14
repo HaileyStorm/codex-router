@@ -1,14 +1,18 @@
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  readFileSync,
+  realpathSync,
   renameSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
 
-import { protectPrivateFile } from "./file-security.mjs";
+import { privateFileIsProtected, protectPrivateFile } from "./file-security.mjs";
 import {
   CODEX_HOME,
   DISCOVERY_MODE_PATH,
@@ -32,9 +36,52 @@ const taskName = "Codex Router";
 const wrapperPath = path.join(STATE_DIR, "start-codex-router.cmd");
 const powerShellWrapperPath = path.join(STATE_DIR, "start-codex-router-env.ps1");
 const launcherPath = path.join(STATE_DIR, "start-codex-router-hidden.vbs");
-const powerShellPath = process.env.SystemRoot
-  ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-  : "powershell.exe";
+const supervisorPath = path.join(STATE_DIR, "start-codex-router-supervisor.exe");
+const supervisorSourcePath = path.join(SOURCE_ROOT, "src", "windows-service-supervisor.cs");
+let knownSystemDirectory;
+
+function resolveKnownSystemDirectory() {
+  if (knownSystemDirectory !== undefined) return knownSystemDirectory;
+  // The .NET known-folder API is the source of truth for system paths. On a
+  // non-Windows host the service tests set the effective platform to win32,
+  // but must not need a Windows shell just to render a fixture.
+  if (process.platform !== "win32") return (knownSystemDirectory = undefined);
+  try {
+    const output = execFileSync(
+      "powershell.exe",
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Environment]::SystemDirectory"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15_000 },
+    ).trim();
+    if (!output || output.includes("\r") || output.includes("\n")) throw new Error("invalid system directory");
+    if (!path.isAbsolute(output)) throw new Error("invalid system directory");
+    assertOrdinaryPath(output, "the Windows system directory", { directory: true });
+    return (knownSystemDirectory = output);
+  } catch {
+    throw new Error("Unable to resolve the Windows system directory through the OS known-folder API.");
+  }
+}
+
+function powerShellExecutablePath() {
+  if (process.platform !== "win32") return "powershell.exe";
+  return assertOrdinaryPath(
+    path.join(resolveKnownSystemDirectory(), "WindowsPowerShell", "v1.0", "powershell.exe"),
+    "the Windows PowerShell executable",
+  );
+}
+
+function supervisorCompilerExecutablePath() {
+  if (process.platform !== "win32") return "csc.exe";
+  return assertOrdinaryPath(
+    path.join(
+      path.dirname(resolveKnownSystemDirectory()),
+      "Microsoft.NET",
+      "Framework64",
+      "v4.0.30319",
+      "csc.exe",
+    ),
+    "the Windows C# compiler",
+  );
+}
 
 if (effectivePlatform !== "win32" && !renderCommands.has(command)) {
   throw new Error("The Task Scheduler service manager runs on Windows only.");
@@ -52,8 +99,86 @@ function psEscape(value) {
   return String(value).replaceAll("'", "''");
 }
 
+function rejectPercentPath(value, label) {
+  if (String(value).includes("%")) {
+    throw new Error(`${label} contains '%' and cannot be used by the Windows service.`);
+  }
+}
+
+function pathEquivalent(left, right) {
+  const normalize = (value) => path.normalize(value).replace(/[\\/]+$/, "");
+  const a = normalize(left);
+  const b = normalize(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function assertOrdinaryPath(target, label, { directory = false } = {}) {
+  const resolved = path.resolve(target);
+  let stat;
+  try {
+    stat = lstatSync(resolved);
+  } catch {
+    throw new Error(`${label} is missing or cannot be inspected.`);
+  }
+  if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile())) {
+    throw new Error(`${label} is not an ordinary ${directory ? "directory" : "file"}.`);
+  }
+  try {
+    const real = realpathSync.native(resolved);
+    if (!pathEquivalent(real, resolved)) {
+      throw new Error(`${label} resolves through a link or reparse point.`);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes(label)) throw error;
+    throw new Error(`${label} cannot be canonically verified.`);
+  }
+  let current = path.dirname(resolved);
+  while (true) {
+    let ancestor;
+    try {
+      ancestor = lstatSync(current);
+    } catch {
+      throw new Error(`${label} has an ancestor that cannot be inspected.`);
+    }
+    if (ancestor.isSymbolicLink() || !ancestor.isDirectory()) {
+      throw new Error(`${label} has a non-ordinary ancestor.`);
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return resolved;
+}
+
+function validateInstallPaths() {
+  const pathValues = [
+    [SOURCE_ROOT, "the router source path"],
+    [supervisorSourcePath, "the supervisor source path"],
+    [STATE_DIR, "the router service state path"],
+    [wrapperPath, "the CMD wrapper path"],
+    [powerShellWrapperPath, "the PowerShell wrapper path"],
+    [supervisorPath, "the supervisor path"],
+    [LOG_PATH, "the router log path"],
+    [CODEX_HOME, "the Codex home path"],
+  ];
+  for (const [value, label] of pathValues) rejectPercentPath(value, label);
+  if (process.env.KIMI_CODE_HOME) rejectPercentPath(process.env.KIMI_CODE_HOME, "the Kimi home path");
+  assertOrdinaryPath(SOURCE_ROOT, "the router source path", { directory: true });
+  assertOrdinaryPath(supervisorSourcePath, "the supervisor source path");
+  assertOrdinaryPath(STATE_DIR, "the router service state path", { directory: true });
+  for (const [value, label] of [
+    [wrapperPath, "the CMD wrapper path"],
+    [powerShellWrapperPath, "the PowerShell wrapper path"],
+    [supervisorPath, "the supervisor path"],
+    [launcherPath, "the legacy launcher path"],
+  ]) {
+    if (existsSync(value)) assertOrdinaryPath(value, label);
+  }
+}
+
 function wrapper() {
   const start = path.join(SOURCE_ROOT, "src", "start.mjs");
+  const powerShellPath = powerShellExecutablePath();
   const variables = {
     MODEL_ROUTER_TARGET: TARGET,
     MODEL_ROUTER_STATE_DIR: STATE_DIR,
@@ -138,10 +263,10 @@ function powerShellWrapper() {
   ].join("\r\n");
 }
 
-// The scheduled task launches this script through `wscript.exe //B //NoLogo`,
-// which is a windowless host, and the script starts the CMD wrapper with a
-// window style of 0. Without it the wrapper owned a console window that stayed
-// on screen for the router's lifetime and reappeared on every watchdog restart.
+// Legacy installs launched this script through `wscript.exe //B //NoLogo`,
+// which is retained only long enough to stop and retire that old task action.
+// The current scheduled task runs the native supervisor directly, so the
+// supervisor can own the job that contains the CMD wrapper and its descendants.
 //
 // The `True` wait flag is what keeps Task Scheduler's restart settings alive:
 // Run then blocks until the wrapper exits and returns its exit code, which the
@@ -171,8 +296,15 @@ function launcher() {
 }
 
 function schtasks(args, options = {}) {
-  return execFileSync("schtasks.exe", args, {
-    encoding: "utf8",
+  const executable = process.platform === "win32"
+    ? assertOrdinaryPath(
+        path.join(resolveKnownSystemDirectory(), "schtasks.exe"),
+        "the Windows Task Scheduler executable",
+      )
+    : "schtasks.exe";
+  return execFileSync(executable, args, {
+    encoding: options.encoding ?? "utf8",
+    maxBuffer: options.maxBuffer ?? 1024 * 1024,
     stdio: options.quiet ? ["ignore", "ignore", "ignore"] : ["ignore", "pipe", "pipe"],
   });
 }
@@ -196,45 +328,382 @@ function writeAtomic(target, contents, options = {}) {
   }
 }
 
+function compileSupervisor() {
+  const temporary = `${supervisorPath}.tmp.${process.pid}`;
+  try {
+    execFileSync(
+      supervisorCompilerExecutablePath(),
+      [
+        "/nologo",
+        "/target:winexe",
+        "/optimize+",
+        "/platform:x64",
+        `/out:${temporary}`,
+        supervisorSourcePath,
+      ],
+      { stdio: "ignore" },
+    );
+    protectPrivateFile(temporary);
+    if (!privateFileIsProtected(temporary)) throw new Error("supervisor protection verification failed");
+    return temporary;
+  } catch {
+    if (existsSync(temporary)) unlinkSync(temporary);
+    throw new Error("Unable to compile the Windows service supervisor.");
+  }
+}
+
+function promoteSupervisor(temporary) {
+  try {
+    // The old task is stopped before this replacement, so the supervisor path
+    // is no longer held by the scheduled action when the staged binary lands.
+    renameSync(temporary, supervisorPath);
+    protectPrivateFile(supervisorPath);
+    if (!privateFileIsProtected(supervisorPath)) throw new Error("supervisor protection verification failed");
+  } catch (error) {
+    if (existsSync(temporary)) unlinkSync(temporary);
+    throw error;
+  }
+}
+
+function stageProtectedLauncher(target, contents) {
+  const temporary = `${target}.stage.${process.pid}`;
+  writeAtomic(temporary, contents, { protected: true });
+  if (!privateFileIsProtected(temporary)) {
+    if (existsSync(temporary)) unlinkSync(temporary);
+    throw new Error(`staged launcher protection verification failed for ${path.basename(target)}`);
+  }
+  return temporary;
+}
+
+function promoteProtectedLauncher(temporary, target) {
+  renameSync(temporary, target);
+  protectPrivateFile(target);
+  if (!privateFileIsProtected(target)) {
+    throw new Error(`launcher protection verification failed for ${path.basename(target)}`);
+  }
+}
+
+function promoteLaunchers(staged) {
+  promoteProtectedLauncher(staged.powerShell, powerShellWrapperPath);
+  promoteProtectedLauncher(staged.wrapper, wrapperPath);
+  promoteSupervisor(staged.supervisor);
+}
+
+function removeStagedLaunchers(staged) {
+  for (const target of [staged?.powerShell, staged?.wrapper, staged?.supervisor]) {
+    try {
+      if (target && existsSync(target)) unlinkSync(target);
+    } catch {
+      // Retain only a specifically staged artifact if a sharing violation
+      // prevents cleanup; never widen this to other service state.
+    }
+  }
+}
+
+function retireLegacyLauncher() {
+  if (existsSync(launcherPath)) unlinkSync(launcherPath);
+}
+
 function writeLaunchers() {
   mkdirSync(STATE_DIR, { recursive: true });
+  validateInstallPaths();
   // The PowerShell layer reads the persistent user-scoped Nous key at launch;
   // keep the generated source owner-protected even though it contains only
   // credential names and metadata paths.
-  writeAtomic(
+  const stagedPowerShell = stageProtectedLauncher(
     powerShellWrapperPath,
     Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(powerShellWrapper(), "utf8")]),
-    { protected: true },
   );
-  writeAtomic(wrapperPath, Buffer.from(wrapper(), "utf8"));
-  // wscript.exe parses a script file with the system ANSI code page unless the
-  // file carries a UTF-16 byte order mark, so a state directory holding
-  // non-ASCII characters only round-trips when the launcher is UTF-16LE.
-  writeAtomic(
-    launcherPath,
-    Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(launcher(), "utf16le")]),
+  const stagedWrapper = stageProtectedLauncher(wrapperPath, Buffer.from(wrapper(), "utf8"));
+  // Compile before stopping the current task. The staged binary is promoted
+  // only after endTask() has returned, so an old VBS action never loses its
+  // executable while it is still the registered task action.
+  let stagedSupervisor;
+  try {
+    stagedSupervisor = compileSupervisor();
+  } catch (error) {
+    removeStagedLaunchers({ powerShell: stagedPowerShell, wrapper: stagedWrapper });
+    throw error;
+  }
+  return { powerShell: stagedPowerShell, wrapper: stagedWrapper, supervisor: stagedSupervisor };
+}
+
+// Task Scheduler's first CIM-backed query can cold-start the service and take
+// materially longer than a normal state poll; keep the preflight bounded while
+// avoiding a false foreign/missing classification during that warm-up.
+const TASK_METADATA_TIMEOUT_MS = 60_000;
+const TASK_XML_MAX_BYTES = 1024 * 1024;
+
+function taskMetadata() {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "try {",
+    "  $task = Get-ScheduledTask -TaskName $env:CODEX_ROUTER_TASK -ErrorAction Stop",
+    "  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()",
+    "  $actions = @($task.Actions | ForEach-Object { [pscustomobject]@{ execute = [string]$_.Execute; argument = [string]$_.Arguments } })",
+    "  $result = [pscustomobject]@{ kind = 'present'; principal = [string]$task.Principal.UserId; currentPrincipal = [string]$identity.Name; currentSid = [string]$identity.User.Value; actions = $actions }",
+    "  [Console]::Out.Write(($result | ConvertTo-Json -Compress -Depth 5))",
+    "} catch {",
+    "  $category = [string]$_.CategoryInfo.Category",
+    "  if ($category -eq 'ObjectNotFound') { [Console]::Out.Write('{\"kind\":\"missing\"}'); exit 0 }",
+    "  if ($category -eq 'PermissionDenied' -or $_.Exception -is [UnauthorizedAccessException]) { exit 5 }",
+    "  exit 6",
+    "}",
+  ].join("; ");
+  try {
+    const output = execFileSync(
+      powerShellExecutablePath(),
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024,
+        timeout: TASK_METADATA_TIMEOUT_MS,
+        env: { ...process.env, CODEX_ROUTER_TASK: taskName },
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
+    if (!output) throw new Error("empty task metadata");
+    const parsed = JSON.parse(output);
+    if (parsed?.kind !== "present" && parsed?.kind !== "missing") {
+      throw new Error("invalid task metadata");
+    }
+    return parsed;
+  } catch (error) {
+    if (error?.code === "ENOENT" && process.platform !== "win32") {
+      return { kind: "missing" };
+    }
+    if (error?.status === 5) {
+      throw new Error("Access to the existing Windows service task was denied.");
+    }
+    if (error instanceof SyntaxError || error?.message === "empty task metadata") {
+      throw new Error("The existing Windows service task metadata was malformed.");
+    }
+    if (error?.message === "invalid task metadata") {
+      throw new Error("The existing Windows service task metadata was malformed.");
+    }
+    throw new Error("Unable to inspect the existing Windows service task.");
+  }
+}
+
+function taskXml() {
+  let bytes;
+  try {
+    bytes = schtasks(["/Query", "/TN", taskName, "/XML"], {
+      encoding: null,
+      maxBuffer: TASK_XML_MAX_BYTES,
+    });
+  } catch {
+    throw new Error("Unable to snapshot the existing Windows service task definition.");
+  }
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > TASK_XML_MAX_BYTES) {
+    throw new Error("The existing Windows service task definition was malformed.");
+  }
+  return bytes;
+}
+
+function stripOuterQuotes(value) {
+  const text = String(value ?? "").trim();
+  return text.length >= 2 && text.startsWith('"') && text.endsWith('"')
+    ? text.slice(1, -1)
+    : text;
+}
+
+function sameWindowsText(left, right) {
+  return String(left ?? "").trim().toLowerCase() === String(right ?? "").trim().toLowerCase();
+}
+
+function sameWindowsPath(left, right) {
+  const a = stripOuterQuotes(left).replaceAll("/", "\\");
+  const b = stripOuterQuotes(right).replaceAll("/", "\\");
+  return sameWindowsText(path.win32.normalize(a), path.win32.normalize(b));
+}
+
+function systemExecutablePath(name) {
+  if (process.platform !== "win32") return name;
+  return assertOrdinaryPath(
+    path.join(resolveKnownSystemDirectory(), name),
+    `the Windows ${name} executable`,
   );
 }
 
-// `//B` suppresses script errors and prompts, `//NoLogo` suppresses the banner;
-// neither host allocates a console, so nothing is drawn at logon.
+function legacyTaskArgument() {
+  return `//B //NoLogo "${launcherPath}"`;
+}
+
+function isManagedTaskMetadata(metadata) {
+  if (metadata?.kind !== "present") return false;
+  const currentPrincipals = [metadata.currentPrincipal, metadata.currentSid]
+    .filter(Boolean)
+    .map((value) => String(value).trim().toLowerCase());
+  if (!metadata.principal || !currentPrincipals.includes(String(metadata.principal).trim().toLowerCase())) return false;
+  const actions = Array.isArray(metadata.actions)
+    ? metadata.actions
+    : metadata.actions
+      ? [metadata.actions]
+      : [];
+  if (actions.length !== 1) return false;
+  const action = actions[0] || {};
+  const execute = stripOuterQuotes(action.execute);
+  const argument = String(action.argument ?? "");
+  const native = sameWindowsPath(execute, supervisorPath) && argument === "";
+  const legacy =
+    (sameWindowsText(execute, "wscript.exe") || sameWindowsPath(execute, systemExecutablePath("wscript.exe"))) &&
+    argument === legacyTaskArgument();
+  return native || legacy;
+}
+
+function inspectTask({ includeState = false } = {}) {
+  const metadata = taskMetadata();
+  if (metadata.kind === "missing") return { exists: false, metadata };
+  if (!isManagedTaskMetadata(metadata)) {
+    throw new Error("The existing Windows service task is foreign or malformed; refusing to change it.");
+  }
+  const result = { exists: true, metadata, xml: taskXml() };
+  if (includeState) result.state = taskState();
+  return result;
+}
+
+function writeTaskSnapshot(bytes) {
+  const snapshot = path.join(STATE_DIR, `task-definition-backup.${process.pid}.xml`);
+  writeFileSync(snapshot, bytes, { mode: 0o600 });
+  protectPrivateFile(snapshot);
+  if (!privateFileIsProtected(snapshot)) {
+    unlinkSync(snapshot);
+    throw new Error("the Windows service task snapshot did not receive owner-only protection.");
+  }
+  return snapshot;
+}
+
+const managedFileSnapshotTargets = [
+  ["wrapper", wrapperPath],
+  ["powershell", powerShellWrapperPath],
+  ["supervisor", supervisorPath],
+  ["legacy-launcher", launcherPath],
+];
+
+function captureManagedFileSnapshot() {
+  const directory = path.join(STATE_DIR, `service-rollback.${process.pid}`);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  protectPrivateFile(directory);
+  if (!privateFileIsProtected(directory)) throw new Error("rollback directory protection verification failed");
+  const entries = [];
+  try {
+    for (const [name, target] of managedFileSnapshotTargets) {
+      const exists = existsSync(target);
+      if (exists) assertOrdinaryPath(target, `the existing ${name} file`);
+      const backup = path.join(directory, `${name}.bin`);
+      if (exists) {
+        writeFileSync(backup, readFileSync(target), { mode: 0o600 });
+        protectPrivateFile(backup);
+        if (!privateFileIsProtected(backup)) throw new Error(`rollback protection failed for ${name}`);
+      }
+      entries.push({ name, target, backup, exists });
+    }
+    const manifest = path.join(directory, "manifest.json");
+    writeFileSync(manifest, `${JSON.stringify(entries)}\n`, { mode: 0o600 });
+    protectPrivateFile(manifest);
+    if (!privateFileIsProtected(manifest)) throw new Error("rollback manifest protection verification failed");
+    return { directory, manifest, entries };
+  } catch (error) {
+    removeManagedFileSnapshot({ directory, manifest: path.join(directory, "manifest.json"), entries });
+    throw error;
+  }
+}
+
+function restoreManagedFileSnapshot(snapshot) {
+  for (const entry of snapshot?.entries || []) {
+    if (entry.exists) {
+      writeAtomic(entry.target, readFileSync(entry.backup), { protected: true });
+      if (!privateFileIsProtected(entry.target)) {
+        throw new Error(`rollback protection verification failed for ${entry.name}`);
+      }
+    } else if (existsSync(entry.target)) {
+      assertOrdinaryPath(entry.target, `the generated ${entry.name} file`);
+      unlinkSync(entry.target);
+    }
+  }
+}
+
+function removeManagedFileSnapshot(snapshot) {
+  if (!snapshot) return;
+  for (const entry of snapshot.entries || []) {
+    try {
+      if (existsSync(entry.backup)) unlinkSync(entry.backup);
+    } catch {
+      return;
+    }
+  }
+  try {
+    if (existsSync(snapshot.manifest)) unlinkSync(snapshot.manifest);
+    if (existsSync(snapshot.directory)) rmdirSync(snapshot.directory);
+  } catch {
+    // Retain the exact rollback material when cleanup is blocked.
+  }
+}
+
+function removeTaskSnapshot(snapshot) {
+  if (!snapshot) return;
+  try {
+    if (existsSync(snapshot)) unlinkSync(snapshot);
+  } catch {
+    // The snapshot is private state owned by this invocation; a failed cleanup
+    // must not mask the task result or prompt a broad filesystem deletion.
+  }
+}
+
+function restoreTaskSnapshot(snapshot, { restart = false } = {}) {
+  schtasks(["/Create", "/TN", taskName, "/XML", snapshot, "/F"], { quiet: true });
+  const restored = inspectTask();
+  if (!restored.exists) throw new Error("the previous Windows service task was not restored.");
+  if (restart) {
+    schtasks(["/Run", "/TN", taskName], { quiet: true });
+    if (!inspectTask().exists) throw new Error("the previously running Windows service task was not restarted.");
+  }
+}
+
+function deleteOwnedTask(taskInfo) {
+  if (!taskInfo?.exists) return;
+  schtasks(["/Delete", "/TN", taskName, "/F"], { quiet: true });
+  if (inspectTask().exists) throw new Error("the Windows service task was not deleted.");
+}
+
+function rollbackInstall(previous, taskSnapshot, fileSnapshot, taskMutationStarted) {
+  let current;
+  if (taskMutationStarted) {
+    current = inspectTask();
+    if (current.exists) endTask(current);
+  }
+  restoreManagedFileSnapshot(fileSnapshot);
+  if (!taskMutationStarted) return;
+  if (previous?.exists) {
+    if (previous.state === undefined) {
+      throw new Error("the previous Windows service task state was unknown; refusing an unverified rollback.");
+    }
+    restoreTaskSnapshot(taskSnapshot, { restart: previous.state === "running" });
+  } else if (current.exists) {
+    deleteOwnedTask(current);
+  }
+}
+
+// The supervisor is compiled as a WinExe, so Task Scheduler can launch it
+// directly without a console host or external arguments.
 function taskAction() {
   return {
-    execute: "wscript.exe",
-    // Unlike cmd.exe, wscript.exe follows the standard command-line parser, so
-    // the launcher path takes a single quote pair. cmd.exe's doubled-quote form
-    // would parse as an empty argument followed by a split path.
-    argument: `//B //NoLogo "${launcherPath}"`,
+    execute: supervisorPath,
+    // The supervisor accepts no external arguments: it resolves the CMD
+    // wrapper beside its own ordinary executable path.
+    argument: "",
   };
 }
 
 function installTask() {
   const { execute, argument } = taskAction();
+  const taskCommand = argument ? `${execute} ${argument}` : `"${execute}"`;
   const script = [
     // The action strings travel through the environment so that the quotes
     // around the launcher path never pass through powershell.exe's -Command
     // reparse or the schtasks argument escaper.
-    "$action = New-ScheduledTaskAction -Execute $env:CODEX_ROUTER_TASK_EXECUTE -Argument $env:CODEX_ROUTER_TASK_ARGUMENT",
+    "$action = if ([string]::IsNullOrEmpty($env:CODEX_ROUTER_TASK_ARGUMENT)) { New-ScheduledTaskAction -Execute $env:CODEX_ROUTER_TASK_EXECUTE } else { New-ScheduledTaskAction -Execute $env:CODEX_ROUTER_TASK_EXECUTE -Argument $env:CODEX_ROUTER_TASK_ARGUMENT }",
     "$trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)",
     "$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew",
     "$principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited",
@@ -242,7 +711,7 @@ function installTask() {
   ].join("; ");
   try {
     execFileSync(
-      "powershell.exe",
+      powerShellExecutablePath(),
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
       {
         env: {
@@ -263,7 +732,7 @@ function installTask() {
         "/SC",
         "ONLOGON",
         "/TR",
-        `${execute} ${argument}`,
+        taskCommand,
         "/RL",
         "LIMITED",
         "/F",
@@ -293,37 +762,32 @@ function sleep(milliseconds) {
 
 function waitForTaskToStop() {
   const deadline = Date.now() + TASK_STOP_TIMEOUT_MS;
-  // An undefined state means no PowerShell could answer -- the same restricted
-  // shell that blocks registration -- so there is nothing to poll and waiting
-  // would only spend the deadline on a question that cannot be answered.
-  while (taskState() === "running") {
-    if (Date.now() >= deadline) return;
+  while (true) {
+    const state = taskState();
+    if (state === undefined) {
+      throw new Error("Unable to verify that the Windows service task stopped.");
+    }
+    if (state !== "running") return;
+    if (Date.now() >= deadline) {
+      throw new Error("The Windows service task did not stop before the bounded deadline.");
+    }
     sleep(TASK_STOP_POLL_MS);
   }
 }
 
-function endTask() {
+function endTask(taskInfo) {
+  if (!taskInfo?.exists) return;
   try {
     schtasks(["/End", "/TN", taskName], { quiet: true });
   } catch {
-    // The task may not exist, or may not be running; either way there is no
-    // instance left to wait for.
-    return;
+    // A recognized task may already be idle. Re-inspect it so an access
+    // failure or a foreign replacement cannot be mistaken for that case.
+    const current = inspectTask();
+    if (!current.exists) return;
+    if (taskState() !== "running") return;
+    throw new Error("Unable to end the recognized Windows service task.");
   }
   waitForTaskToStop();
-}
-
-// Only a task that still exists can be started. `Register-ScheduledTask -Force`
-// unregisters before it registers, so a failed registration leaves either the
-// previous definition or nothing at all, and `/Run` against a name that is gone
-// recovers nothing while reporting an error of its own.
-function taskExists() {
-  try {
-    schtasks(["/Query", "/TN", taskName], { quiet: true });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function taskState() {
@@ -331,8 +795,9 @@ function taskState() {
     "try { [Console]::Out.Write((Get-ScheduledTask -TaskName $env:CODEX_ROUTER_TASK).State.ToString()) } catch { exit 1 }";
   for (const executable of ["powershell.exe", "pwsh.exe"]) {
     try {
+      const candidate = executable === "powershell.exe" ? powerShellExecutablePath() : executable;
       return execFileSync(
-        executable,
+        candidate,
         ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
         {
           encoding: "utf8",
@@ -377,43 +842,72 @@ if (command === "render") {
 } else if (command === "render-task") {
   process.stdout.write(`${JSON.stringify(taskAction())}\n`);
 } else if (command === "install") {
+  // Compile before touching the current task. If the OS compiler or source is
+  // unavailable, the old service remains running and the install fails without
+  // replacing its action.
+  let previous;
+  let taskSnapshot;
+  let fileSnapshot;
+  let stagedLaunchers;
+  let taskMutationStarted = false;
   try {
-    // Writing the launchers belongs inside the try: renameSync over the .vbs
-    // raises a sharing violation while a running wscript.exe still holds it
-    // open, and that used to throw out of install with nothing to catch it.
-    writeLaunchers();
-    // An upgrade from the console-visible task may still have that instance
-    // running. Register-ScheduledTask -Force replaces the definition under the
-    // same task name, so no duplicate is left behind, but it does not stop the
-    // running instance, and MultipleInstances IgnoreNew would then drop the new
-    // hidden run — the console window would survive until the next logon.
-    endTask();
+    // Inspect before writing or registering anything. A same-named task belongs
+    // to this service only when its principal and sole action are exact matches
+    // for the current native or recognized legacy definition.
+    previous = inspectTask({ includeState: true });
+    if (previous.exists && previous.state === undefined) {
+      throw new Error("Unable to determine whether the existing Windows service task is running.");
+    }
+    mkdirSync(STATE_DIR, { recursive: true });
+    validateInstallPaths();
+    fileSnapshot = captureManagedFileSnapshot();
+    if (previous.exists) taskSnapshot = writeTaskSnapshot(previous.xml);
+    stagedLaunchers = writeLaunchers();
+    taskMutationStarted = true;
+    endTask(previous);
+    promoteLaunchers(stagedLaunchers);
     installTask();
     schtasks(["/Run", "/TN", taskName], { quiet: true });
-  } catch {
-    // Scheduled-task creation can be restricted in a non-elevated terminal. The
-    // launchers are still written, so the install is reported as success and
-    // the caller can retry -- but endTask() has already stopped whatever was
-    // running by this point, so simply returning would take a working router
-    // down in exchange for nothing. Start whichever definition survived the
-    // failed registration. When none did there is nothing to restore: no
-    // snapshot was taken, and re-creating the old console-visible action would
-    // reintroduce the very defect this launcher exists to fix.
+    const current = inspectTask();
+    if (!current.exists) throw new Error("the new Windows service task was not registered.");
+    // The old VBS file is removable only after the replacement task has been
+    // registered and its first run was accepted by Task Scheduler.
     try {
-      if (taskExists()) schtasks(["/Run", "/TN", taskName], { quiet: true });
+      retireLegacyLauncher();
     } catch {
-      // Nothing left to start; the caller's readiness check reports the failure.
+      console.error("The legacy Windows launcher remains because it could not be retired.");
     }
+    removeTaskSnapshot(taskSnapshot);
+    removeManagedFileSnapshot(fileSnapshot);
+    taskSnapshot = undefined;
+    fileSnapshot = undefined;
+    process.stdout.write(`${JSON.stringify({ installed: true, path: wrapperPath })}\n`);
+  } catch (error) {
+    let failure = error instanceof Error ? error : new Error(String(error));
+    let rollbackSucceeded = true;
+    try {
+      rollbackInstall(previous, taskSnapshot, fileSnapshot, taskMutationStarted);
+    } catch (rollbackError) {
+      rollbackSucceeded = false;
+      failure = new Error(`${failure.message}; rollback failed: ${rollbackError.message}`);
+    }
+    removeStagedLaunchers(stagedLaunchers);
+    if (rollbackSucceeded) {
+      removeTaskSnapshot(taskSnapshot);
+      removeManagedFileSnapshot(fileSnapshot);
+    } else {
+      console.error("Rollback material retained under the service state directory.");
+    }
+    console.error(failure.message);
+    process.exitCode = 1;
   }
-  process.stdout.write(`${JSON.stringify({ installed: true, path: wrapperPath })}\n`);
 } else if (command === "uninstall") {
-  endTask();
-  try {
-    schtasks(["/Delete", "/TN", taskName, "/F"], { quiet: true });
-  } catch {
-    // The task may not exist.
+  const current = inspectTask();
+  if (current.exists) {
+    endTask(current);
+    deleteOwnedTask(current);
   }
-  for (const target of [launcherPath, wrapperPath, powerShellWrapperPath]) {
+  for (const target of [supervisorPath, launcherPath, wrapperPath, powerShellWrapperPath]) {
     try {
       if (existsSync(target)) unlinkSync(target);
     } catch {
@@ -422,25 +916,20 @@ if (command === "render") {
   }
   process.stdout.write(`${JSON.stringify({ installed: false })}\n`);
 } else if (command === "status") {
-  let installed = false;
-  let state = "stopped";
-  try {
-    schtasks(["/Query", "/TN", taskName, "/FO", "LIST", "/V"]);
-    installed = true;
-    state = taskState() || "ready";
-  } catch {
-    // Missing task.
-  }
+  const current = inspectTask();
+  const installed = current.exists;
+  const state = installed ? taskState() || "unknown" : "stopped";
   process.stdout.write(
     `${JSON.stringify({ installed, loaded: state === "running", state })}\n`,
   );
 } else if (command === "stop") {
   // Stopping is idempotent, like uninstall and restart: a task that is missing
   // or already idle is the state the caller asked for, not an error to raise.
-  endTask();
+  endTask(inspectTask());
   process.stdout.write(`${JSON.stringify({ state: "stopped" })}\n`);
 } else {
-  if (command === "restart") endTask();
+  const current = inspectTask();
+  if (command === "restart") endTask(current);
   schtasks(["/Run", "/TN", taskName], { quiet: true });
   process.stdout.write(`${JSON.stringify({ state: "running" })}\n`);
 }

@@ -25,3 +25,6 @@ bin/* text eol=lf
 /src/router.mjs text eol=lf
 /src/config-manager.mjs text eol=lf
 /src/service-windows.mjs text eol=lf
+/src/windows-service-supervisor.cs text eol=lf
+/test/service-render.test.mjs text eol=lf
+/test/windows-service-supervisor.test.mjs text eol=lf

@@ -8,7 +8,6 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -262,7 +261,7 @@ test("packaged services preserve wrapper and PATH values with service-safe quoti
   }
 });
 
-test("the Windows launcher starts the wrapper hidden and propagates its exit code", () => {
+test("the legacy Windows launcher starts the wrapper hidden and propagates its exit code", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-hidden-launcher-"));
   try {
     const stateDir = windowsStateDir(testRoot);
@@ -300,20 +299,20 @@ test("the Windows launcher starts the wrapper hidden and propagates its exit cod
   }
 });
 
-test("the Windows scheduled task runs the VBS launcher through wscript.exe", () => {
+test("the Windows scheduled task runs the native supervisor without external arguments", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-task-action-"));
   try {
-    const launcherPath = path.join(windowsStateDir(testRoot), "start-codex-router-hidden.vbs");
+    const supervisorPath = path.join(
+      windowsStateDir(testRoot),
+      "start-codex-router-supervisor.exe",
+    );
     const action = JSON.parse(
       serviceCommand("service-windows.mjs", "win32", testRoot, "render-task"),
     );
 
-    assert.equal(action.execute, "wscript.exe");
-    // //B and //NoLogo keep the windowless host quiet; the launcher path takes a
-    // single quote pair because wscript.exe uses the standard argument parser.
-    assert.equal(action.argument, `//B //NoLogo "${launcherPath}"`);
-    // The console-visible cmd.exe action is what issue #98 reported.
-    assert.doesNotMatch(`${action.execute} ${action.argument}`, /cmd\.exe/);
+    assert.equal(action.execute, supervisorPath);
+    assert.equal(action.argument, "");
+    assert.match(action.execute, /start-codex-router-supervisor\.exe$/);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }
@@ -327,11 +326,11 @@ test("the Windows scheduled task runs the VBS launcher through wscript.exe", () 
 // `install.ps1 parses under powershell.exe` in test/installer-scripts.test.mjs --
 // this is the only place that link is executed rather than reasoned about.
 //
-// wscript.exe with //B //NoLogo is the host the scheduled task actually uses
-// (see taskAction in src/service-windows.mjs). cscript.exe is the console host
-// over the same script engine, and it runs without //B so that a broken
-// launcher reports the parse or runtime error on stderr instead of arriving as
-// an unexplained exit code.
+// wscript.exe with //B //NoLogo is the host for the legacy launcher renderer
+// retained during migration. cscript.exe is the console host over the same
+// script engine, and it runs without //B so that a broken launcher reports the
+// parse or runtime error on stderr instead of arriving as an unexplained exit
+// code.
 const WINDOWS_SCRIPT_HOSTS = [
   { name: "cscript.exe", args: ["//NoLogo"] },
   { name: "wscript.exe", args: ["//B", "//NoLogo"] },
@@ -340,7 +339,15 @@ const WINDOWS_SCRIPT_HOSTS = [
 // Resolved absolutely: these live in the system directory, and naming them
 // outright keeps the test independent of whatever PATH the runner supplies.
 function scriptHost(name) {
-  return path.join(process.env.SystemRoot || "C:\\Windows", "System32", name);
+  const systemDirectory =
+    process.platform === "win32"
+      ? execFileSync(
+          "powershell.exe",
+          ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Environment]::SystemDirectory"],
+          { encoding: "utf8" },
+        ).trim()
+      : path.join("C:\\Windows", "System32");
+  return path.join(systemDirectory, name);
 }
 
 test(
@@ -444,51 +451,29 @@ test(
   },
 );
 
-test(
-  "the Windows installer writes both launchers idempotently and uninstall removes both",
-  { skip: process.platform === "win32" },
-  () => {
-    const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-win-install-"));
-    try {
-      const stateDir = windowsStateDir(testRoot);
-      const wrapperPath = path.join(stateDir, "start-codex-router.cmd");
-      const launcherPath = path.join(stateDir, "start-codex-router-hidden.vbs");
-      const powerShellWrapperPath = path.join(stateDir, "start-codex-router-env.ps1");
-      const run = (command) =>
-        JSON.parse(serviceCommand("service-windows.mjs", "win32", testRoot, command));
-
-      // schtasks.exe and powershell.exe are absent off Windows, and every call
-      // to them is best effort, so only the generated files are exercised here.
-      assert.equal(run("install").installed, true);
-      assert.equal(existsSync(wrapperPath), true);
-      assert.equal(existsSync(launcherPath), true);
-      assert.equal(existsSync(powerShellWrapperPath), true);
-      assert.equal(statSync(powerShellWrapperPath).mode & 0o777, 0o600);
-
-      const bytes = readFileSync(launcherPath);
-      const powerShellBytes = readFileSync(powerShellWrapperPath);
-      // wscript.exe falls back to the ANSI code page without this byte order
-      // mark, which corrupts a state directory holding non-ASCII characters.
-      assert.deepEqual([...bytes.subarray(0, 2)], [0xff, 0xfe]);
-      assert.match(bytes.toString("utf16le").slice(1), /^Option Explicit\r\n/);
-
-      // Reinstalling over an existing pair overwrites instead of failing.
-      assert.equal(run("install").installed, true);
-      assert.equal(readFileSync(launcherPath).equals(bytes), true);
-      assert.equal(readFileSync(powerShellWrapperPath).equals(powerShellBytes), true);
-
-      assert.equal(run("uninstall").installed, false);
-      assert.equal(existsSync(wrapperPath), false);
-      assert.equal(existsSync(launcherPath), false);
-      assert.equal(existsSync(powerShellWrapperPath), false);
-
-      // Uninstalling again must not fail on the already-removed launchers.
-      assert.equal(run("uninstall").installed, false);
-    } finally {
-      rmSync(testRoot, { recursive: true, force: true });
-    }
-  },
-);
+test("the Windows service installs a staged protected supervisor action", () => {
+  const source = readFileSync(path.join(root, "src", "service-windows.mjs"), "utf8");
+  assert.match(source, /supervisorCompilerExecutablePath/);
+  assert.doesNotMatch(source, /process\.env\.SystemRoot/);
+  assert.match(source, /\/target:winexe/);
+  assert.match(source, /compileSupervisor\(\)/);
+  assert.match(source, /stagedLaunchers = writeLaunchers\(\)/);
+  assert.match(source, /endTask\(previous\);\s*promoteLaunchers\(stagedLaunchers\)/s);
+  assert.match(source, /installTask\(\);[\s\S]*schtasks\(\["\/Run"/s);
+  assert.match(source, /captureManagedFileSnapshot/);
+  assert.match(source, /restoreManagedFileSnapshot/);
+  assert.match(source, /restart: previous\.state === "running"/);
+  assert.match(source, /The existing Windows service task is foreign or malformed/);
+  assert.match(source, /process\.exitCode = 1/);
+  assert.match(source, /stageProtectedLauncher\(wrapperPath/);
+  assert.match(source, /privateFileIsProtected\(target\)/);
+  assert.match(source, /\[supervisorPath, launcherPath, wrapperPath, powerShellWrapperPath\]/);
+  const supervisor = readFileSync(path.join(root, "src", "windows-service-supervisor.cs"), "utf8");
+  assert.match(supervisor, /JobObjectLimitKillOnJobClose/);
+  assert.match(supervisor, /Environment\.SystemDirectory/);
+  assert.doesNotMatch(supervisor, /GetEnvironmentVariable\("SystemRoot"/);
+  assert.match(supervisor, /IndexOf\('%'\)/);
+});
 
 // Off Windows there is no schtasks.exe or powershell.exe, so every scheduler
 // call src/service-windows.mjs makes is a failure and the ordering between them
@@ -498,10 +483,23 @@ test(
 // They can never shadow the real executables, because the tests that use them
 // are skipped on win32.
 function schedulerStubs(directory, options = {}) {
-  const { schtasksFail = "", powershellFail = "", runningQueries = 0 } = options;
+  const {
+    schtasksFail = "",
+    schtasksFailOnce = "",
+    powershellFail = "",
+    runningQueries = 0,
+    initialTask = "missing",
+    initialAction = "native",
+    initialPrincipal = "fixture-user",
+  } = options;
   mkdirSync(directory, { recursive: true });
   const logPath = path.join(directory, "calls.log");
   const counterPath = path.join(directory, "state-queries");
+  const taskStatePath = path.join(directory, "task-state");
+  const taskActionPath = path.join(directory, "task-action");
+  const failOncePath = path.join(directory, "schtasks-fail-once");
+  writeFileSync(taskStatePath, `${initialTask}\n`);
+  writeFileSync(taskActionPath, `${initialAction}\n`);
   const preamble = (fail) =>
     [
       "#!/bin/sh",
@@ -510,8 +508,34 @@ function schedulerStubs(directory, options = {}) {
       '  case "$*" in *"$pattern"*) exit 1 ;; esac',
       "done",
     ].join("\n");
+  const preambleOnce = (patterns) =>
+    patterns
+      ? [
+          `for pattern in ${patterns}; do`,
+          `  case "$*" in *"$pattern"*) if [ ! -f "${failOncePath}" ]; then : > "${failOncePath}"; exit 1; fi ;; esac`,
+          "done",
+        ].join("\n")
+      : "";
 
-  writeFileSync(path.join(directory, "schtasks.exe"), `${preamble(schtasksFail)}\nexit 0\n`);
+  writeFileSync(
+    path.join(directory, "schtasks.exe"),
+    [
+      preamble(schtasksFail),
+      preambleOnce(schtasksFailOnce),
+      `state_file="${taskStatePath}"`,
+      `action_file="${taskActionPath}"`,
+      'state=$(cat "$state_file" 2>/dev/null || printf missing)',
+      'case "$*" in',
+      '  */End*) [ "$state" = missing ] && exit 1; printf ready > "$state_file"; exit 0 ;;',
+      '  */Delete*) printf missing > "$state_file"; exit 0 ;;',
+      '  */Create*) printf present > "$state_file"; printf native > "$action_file"; exit 0 ;;',
+      '  */Run*) [ "$state" = missing ] && exit 1; printf running > "$state_file"; exit 0 ;;',
+      '  */Query*) [ "$state" = missing ] && exit 1; case "$*" in */XML*) printf \'<Task><RegistrationInfo/><Principals/><Actions/></Task>\' ;; esac; exit 0 ;;',
+      'esac',
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
   // taskState() reads the task state off this process's stdout. The counter is
   // what lets a test say "report Running for the first N queries", so the stop
   // wait can be observed polling and then finishing.
@@ -520,6 +544,17 @@ function schedulerStubs(directory, options = {}) {
     [
       preamble(powershellFail),
       'case "$*" in',
+      '  *Register-ScheduledTask*) printf present > "' + taskStatePath + '"; printf native > "' + taskActionPath + '"; exit 0 ;;',
+      '  *ConvertTo-Json*)',
+      `    state=$(cat "${taskStatePath}" 2>/dev/null || printf missing)`,
+      '    if [ "$state" = missing ]; then printf \'{"kind":"missing"}\'; else',
+      `      action=$(cat "${taskActionPath}" 2>/dev/null || printf native)`,
+      `      execute="$CODEX_ROUTER_STATE_DIR/start-codex-router-supervisor.exe"`,
+      '      argument=""',
+      '      if [ "$action" = legacy ]; then execute=wscript.exe; argument=$(printf \'//B //NoLogo "%s/start-codex-router-hidden.vbs"\' "$CODEX_ROUTER_STATE_DIR"); elif [ "$action" = foreign ]; then execute=foreign.exe; argument=--foreign; fi',
+      '      escaped=$(printf \'%s\' "$argument" | sed \'s/"/\\\\"/g\')',
+      `      printf '{"kind":"present","principal":"${initialPrincipal}","currentPrincipal":"fixture-user","currentSid":"","actions":[{"execute":"%s","argument":"%s"}]}' "$execute" "$escaped"`,
+      '    fi; exit 0 ;;',
       "  *Get-ScheduledTask*)",
       "    count=0",
       `    if [ -f "${counterPath}" ]; then count=$(cat "${counterPath}"); fi`,
@@ -532,8 +567,26 @@ function schedulerStubs(directory, options = {}) {
       "",
     ].join("\n"),
   );
+  // service-windows.mjs compiles the native supervisor before it touches the
+  // task. These tests run only off Windows, where the OS compiler is absent;
+  // the stub creates a non-executable placeholder so scheduler ordering stays
+  // observable without pretending to prove the native binary.
+  writeFileSync(
+    path.join(directory, "csc.exe"),
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >> "${logPath}"`,
+      "for argument in \"$@\"; do",
+      "  case \"$argument\" in /out:*) output=\"${argument#/out:}\" ;; esac",
+      "done",
+      "[ -n \"${output:-}\" ] || exit 1",
+      "printf '%s' 'fixture supervisor placeholder' > \"$output\"",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
 
-  for (const name of ["schtasks.exe", "powershell.exe"]) {
+  for (const name of ["schtasks.exe", "powershell.exe", "csc.exe"]) {
     chmodSync(path.join(directory, name), 0o755);
   }
   return {
@@ -559,22 +612,22 @@ function runWindowsService(testRoot, command, extraEnv = {}) {
 }
 
 test(
-  "a blocked registration restarts whichever task definition survived",
+  "a run failure restores the recognized task and reports failure",
   { skip: process.platform === "win32" },
   () => {
     const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-win-recover-"));
     try {
-      // Registration is blocked through both routes, the way a restricted or
-      // non-elevated terminal blocks it. endTask() has already stopped the
-      // running router by then, so returning here would trade a working install
-      // for nothing at all -- the regression this guards.
+      // A failed first run must restore the exact recognized task definition,
+      // but still return failure so the caller cannot mistake rollback for a
+      // successful native installation.
       const stubs = schedulerStubs(path.join(testRoot, "survivor"), {
-        schtasksFail: "/Create",
-        powershellFail: "Register-ScheduledTask",
+        schtasksFailOnce: "/Run",
+        initialTask: "present",
+        runningQueries: 1,
       });
       const result = runWindowsService(testRoot, "install", { PATH: stubs.path });
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(JSON.parse(result.stdout).installed, true);
+      assert.notEqual(result.status, 0, result.stderr);
+      assert.equal(result.stdout, "");
 
       const calls = stubs.calls();
       const at = (needle) => calls.findIndex((line) => line.includes(needle));
@@ -583,14 +636,11 @@ test(
         at("/End") < at("Register-ScheduledTask"),
         `the running instance must be ended before re-registering:\n${calls.join("\n")}`,
       );
-      // The surviving definition is queried before it is started: /Run against
-      // a name that failed to register recovers nothing and reports its own
-      // error over the one that actually matters.
       assert.ok(
-        at("/Create") < at("/Query") && at("/Query") < at("/Run"),
-        `the recovery must query before it runs:\n${calls.join("\n")}`,
+        calls.filter((line) => line.includes("/Create")).length >= 1,
+        `rollback must recreate the prior XML definition:\n${calls.join("\n")}`,
       );
-      assert.equal(calls.filter((line) => line.includes("/Run")).length, 1);
+      assert.equal(calls.filter((line) => line.includes("/Run")).length, 2);
     } finally {
       rmSync(testRoot, { recursive: true, force: true });
     }
@@ -608,9 +658,8 @@ test(
         powershellFail: "Register-ScheduledTask",
       });
       const result = runWindowsService(testRoot, "install", { PATH: stubs.path });
-      // Still best effort: the launchers are written and the caller retries.
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(JSON.parse(result.stdout).installed, true);
+      assert.notEqual(result.status, 0, result.stderr);
+      assert.equal(result.stdout, "");
 
       const calls = stubs.calls();
       assert.ok(calls.some((line) => line.includes("/Query")));
@@ -619,6 +668,31 @@ test(
         false,
         `nothing survived to start, so /Run must not be issued:\n${calls.join("\n")}`,
       );
+    } finally {
+      rmSync(testRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "a foreign same-named task is refused before any scheduler mutation",
+  { skip: process.platform === "win32" },
+  () => {
+    const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-win-foreign-"));
+    try {
+      const stubs = schedulerStubs(path.join(testRoot, "foreign"), {
+        initialTask: "present",
+        initialAction: "foreign",
+      });
+      const result = runWindowsService(testRoot, "install", { PATH: stubs.path });
+      assert.notEqual(result.status, 0, "foreign task refusal must be nonzero");
+      assert.match(result.stderr, /foreign or malformed/);
+      const calls = stubs.calls();
+      assert.equal(calls.some((line) => line.includes("/End")), false);
+      assert.equal(calls.some((line) => line.includes("/Create")), false);
+      assert.equal(calls.some((line) => line.includes("/Delete")), false);
+      assert.equal(calls.some((line) => line.includes("/Run")), false);
+      assert.equal(calls.some((line) => line.includes("csc.exe")), false);
     } finally {
       rmSync(testRoot, { recursive: true, force: true });
     }
@@ -668,9 +742,10 @@ test(
       // Without it install would block forever and take the installer with it.
       const stubs = schedulerStubs(path.join(testRoot, "stuck"), {
         runningQueries: 1_000_000,
+        initialTask: "present",
       });
       const result = runWindowsService(testRoot, "install", { PATH: stubs.path });
-      assert.equal(result.status, 0, result.stderr);
+      assert.notEqual(result.status, 0, result.stderr);
 
       const calls = stubs.calls();
       const states = calls.filter((line) => line.includes("Get-ScheduledTask"));
@@ -679,10 +754,11 @@ test(
         states.length < 500,
         `the wait must be bounded, not merely slow: ${states.length} state queries`,
       );
-      // Giving up is not giving in: the install still registers and starts the
-      // task, and the readiness check downstream is what reports a router that
-      // never came back.
-      assert.ok(calls.some((line) => line.includes("/Run")));
+      assert.equal(
+        calls.some((line) => line.includes("/Run")),
+        false,
+        `a task whose old instance cannot be proven stopped must not be replaced:\n${calls.join("\n")}`,
+      );
     } finally {
       rmSync(testRoot, { recursive: true, force: true });
     }

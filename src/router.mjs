@@ -120,6 +120,10 @@ import { installStableFetchTransport } from "./fetch-transport.mjs";
 import { isNousReasoningEnvelope } from "./nous-direct.mjs";
 import { prepareNousToolAvailability } from "./nous-tool-availability.mjs";
 import { claimNousNativeAttempt } from "./nous-native-attempts.mjs";
+import {
+  beginNousTransport, markNousTransport, wrapNousTransportError,
+  safeNousTransportFailure, logNousTransportEvent,
+} from "./nous-transport-diagnostics.mjs";
 
 // A profile slug is native authority. Refuse to start if a future external
 // registry entry claims the same identity; request-order precedence must never
@@ -1115,9 +1119,35 @@ function rememberAgentPayload(encrypted, plaintext, scope) {
   }
 }
 
+async function boundedAgentRelayBody(upstream) {
+  const limit = 4 * 1024 * 1024;
+  const declared = upstream.headers.get("content-length");
+  const tooLarge = () => {
+    const error = new Error("Native collaboration payload relay response is too large.");
+    error.status = 502;
+    error.code = "ERR_NATIVE_RELAY_RESPONSE_TOO_LARGE";
+    return error;
+  };
+  if (declared !== null && Number(declared) > limit) {
+    await upstream.body?.cancel().catch(() => undefined);
+    throw tooLarge();
+  }
+  const chunks = [];
+  let bytes = 0;
+  if (upstream.body) {
+    for await (const chunk of upstream.body) {
+      bytes += chunk.byteLength;
+      if (bytes > limit) throw tooLarge();
+      chunks.push(Buffer.from(chunk));
+    }
+  }
+  return Buffer.concat(chunks, bytes);
+}
+
 async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
   const cacheScope = agentPayloadCacheScope(request);
   const cached = cachedAgentPayload(encrypted, cacheScope);
+  markNousTransport(request, "normalization", { cache_eligible: Boolean(cacheScope), cache_hit: cached !== undefined });
   if (cached !== undefined) return cached;
   const body = {
     model: nativeAgentRelayModel(),
@@ -1144,25 +1174,25 @@ async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
     ],
     tool_choice: { type: "function", name: AGENT_PAYLOAD_RELAY_TOOL },
   };
+  markNousTransport(request, "agent_relay_headers");
   const upstream = await fetch(nativeTarget("/responses", ""), {
     method: "POST",
     headers: { ...nativeHeaders(request), Accept: "text/event-stream" },
     body: JSON.stringify(body),
     signal,
   });
-  const bytes = Buffer.from(await upstream.arrayBuffer());
+  markNousTransport(request, "agent_relay_status", { upstream_status: upstream.status });
   if (!upstream.ok) {
+    await upstream.body?.cancel().catch(() => undefined);
     const error = new Error(
       `Native collaboration payload relay failed with HTTP ${upstream.status}.`,
     );
     error.status = 502;
     throw error;
   }
-  if (bytes.length > 4 * 1024 * 1024) {
-    const error = new Error("Native collaboration payload relay response is too large.");
-    error.status = 502;
-    throw error;
-  }
+  markNousTransport(request, "agent_relay_body");
+  const bytes = await boundedAgentRelayBody(upstream);
+  markNousTransport(request, "agent_relay_validate");
   let plaintext;
   const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
   const looksLikeSse = /^(?:event|data):/m.test(bytes.toString("utf8"));
@@ -1185,6 +1215,7 @@ async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
 }
 
 async function normalizeRoutedAgentInput(request, input, signal) {
+  markNousTransport(request, "normalization");
   const normalized = normalizeRoutedInput(input);
   if (!Array.isArray(normalized)) return normalized;
   const output = [];
@@ -1205,6 +1236,7 @@ async function normalizeRoutedAgentInput(request, input, signal) {
       ],
     });
   }
+  markNousTransport(request, "normalization");
   return output;
 }
 
@@ -1649,6 +1681,7 @@ async function summarize(request, payload, route, signal, beforeFetch) {
     retain: retainToolResult,
     retentionContext,
   });
+  markNousTransport(request, "vision");
   const bridged = await bridgeVisionInput(
     aged.input,
     route,
@@ -1670,6 +1703,7 @@ async function summarize(request, payload, route, signal, beforeFetch) {
   // Compaction re-enters the same provider as the routed turn; Fireworks
   // rejects this OpenAI search parameter at that boundary too.
   if (providerForModel(route)?.id === "fireworks") delete body.web_search_options;
+  markNousTransport(request, "request_serialization");
   const routedBody = Buffer.from(JSON.stringify(body), "utf8");
   const headers = routedHeaders();
   signal?.throwIfAborted();
@@ -1682,12 +1716,14 @@ async function summarize(request, payload, route, signal, beforeFetch) {
       toolResultAging: aged.stats,
     };
   }
+  markNousTransport(request, "gateway_headers");
   const upstream = await fetch(`${GATEWAY_BASE}/responses`, {
     method: "POST",
     headers,
     body: routedBody,
     signal,
   });
+  markNousTransport(request, upstream.ok ? "gateway_body" : "gateway_error_body", { upstream_status: upstream.status });
   const bytes = Buffer.from(await upstream.arrayBuffer());
   if (bytes.length > 32 * 1024 * 1024) {
     return {
@@ -2098,7 +2134,9 @@ async function handleResponses(request, response, requestUrl) {
         lane: compactV1 || compactV2 ? "compact" : "response",
         internalKey: INTERNAL_KEY,
       });
+      beginNousTransport(request, admission.attemptId);
       if (!admission.ok) {
+        logNousTransportEvent(request, "admission_rejected", { errorType: admission.error.type });
         writeJson(response, admission.status, { error: admission.error });
         return;
       }
@@ -2174,11 +2212,13 @@ async function handleResponses(request, response, requestUrl) {
         retentionContext,
       });
       toolResultAging = aged.stats;
+      markNousTransport(request, "vision");
       const input = await bridgeVisionInput(
         aged.input,
         route,
         request,
       );
+      markNousTransport(request, "request_serialization");
       // DeepSeek thinking mode requires the assistant's reasoning to be
       // replayed on tool-call turns, but LiteLLM's Responses->chat translation
       // drops `reasoning` input items entirely. Merge each reasoning summary
@@ -2318,6 +2358,7 @@ async function handleResponses(request, response, requestUrl) {
       activityStatus = committed.status;
       return;
     }
+    markNousTransport(request, "gateway_headers");
     const { response: upstream, retries } = await fetchWithRetry(
       target,
       {
@@ -2336,6 +2377,7 @@ async function handleResponses(request, response, requestUrl) {
       },
     );
     upstreamRetries = retries;
+    markNousTransport(request, upstream.ok ? "gateway_body" : "gateway_error_body", { upstream_status: upstream.status });
     // Time until the upstream chain answered the request. Everything before
     // this is router-side work (body read, normalization, flattening, vision
     // bridge) plus the upstream's own time to produce response headers. For a
@@ -2639,6 +2681,7 @@ async function handleResponses(request, response, requestUrl) {
       );
     }
   } catch (error) {
+    if (!clientGone) error = wrapNousTransportError(request, error);
     upstreamLatencyMs ??= Date.now() - startedAt;
     if (retryEmptyCompletionGuard?.hasContent()) emptyCompletion = false;
     if (!clientGone) {
@@ -2725,6 +2768,7 @@ async function handleResponses(request, response, requestUrl) {
       }
     }
     const status = activityStatus ?? finalStatus ?? response.statusCode;
+    if (status === 0) logNousTransportEvent(request, "client_disconnected");
     activity.finish(status);
     // Timestamped per-request timing for latency diagnosis. Never gated on
     // QUIET: the production LaunchAgent hard-sets CODEX_ROUTER_QUIET=1. A
@@ -2918,6 +2962,13 @@ async function handleRequest(request, response) {
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
+    const transportFailure = safeNousTransportFailure(error);
+    if (transportFailure) {
+      console.error(`[codex-router] nous_transport_failure ${JSON.stringify(transportFailure)}`);
+      if (!response.headersSent) writeJson(response, 400, { error: transportFailure });
+      else endStreamedResponse(response);
+      return;
+    }
     const status = httpErrorStatus(error);
     // The bare string this used to log made every mid-stream failure
     // indistinguishable in production, and stopping at the top error was the

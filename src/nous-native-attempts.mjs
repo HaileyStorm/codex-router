@@ -39,8 +39,8 @@ export function nousNativeAttemptKey(headers, payload, lane, internalKey) {
     .digest("hex");
 }
 
-function rejection(type, message) {
-  return { ok: false, status: 400, error: { type, message } };
+function rejection(type, message, attemptId) {
+  return { ok: false, status: 400, error: { type, message }, ...(attemptId ? { attemptId } : {}) };
 }
 
 /**
@@ -77,11 +77,11 @@ export function claimNousNativeAttempt({ headers, payload, lane, internalKey, da
     const result = database.prepare("INSERT OR IGNORE INTO attempts (digest, admitted_at) VALUES (?, ?)")
       .run(key, new Date().toISOString());
     if (result.changes !== 1) {
-      return rejection("local_nous_attempt_already_admitted", "This Nous request was already admitted and will not be replayed. Its earlier outcome may be complete or uncertain. Start a fresh turn/task for independent work; stateless clients must use a new x-codex-nous-request-id UUID.");
+      return rejection("local_nous_attempt_already_admitted", "This Nous request was already admitted and will not be replayed. Its earlier outcome may be complete or uncertain. Start a fresh turn/task for independent work; stateless clients must use a new x-codex-nous-request-id UUID.", key);
     }
-    return { ok: true };
+    return { ok: true, attemptId: key };
   } catch {
-    return rejection("local_nous_attempt_record_unavailable", "Nous Direct could not durably record this request, so nothing was sent to Nous. Check the router's writable local state and SQLite runtime before starting an independent request.");
+    return rejection("local_nous_attempt_record_unavailable", "Nous Direct could not durably record this request, so nothing was sent to Nous. Check the router's writable local state and SQLite runtime before starting an independent request.", key);
   } finally {
     database?.close();
   }

@@ -53,7 +53,7 @@ def safe_json(value):
 
 
 def source_hashes():
-    return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in [ROOT / "src/nous-direct.mjs", ROOT / "src/router.mjs", ROOT / "src/namespace-relay.mjs", ROOT / "src/nous-tool-availability.mjs", ROOT / "src/nous-provider-lock.mjs", ROOT / "src/nous-provider-lock.py", ROOT / "src/api-forwarder.mjs", ROOT / "src/nous-native-attempts.mjs", Path(__file__).resolve()]}
+    return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in [ROOT / "src/nous-direct.mjs", ROOT / "src/router.mjs", ROOT / "src/namespace-relay.mjs", ROOT / "src/nous-tool-availability.mjs", ROOT / "src/nous-provider-lock.mjs", ROOT / "src/nous-provider-lock.py", ROOT / "src/api-forwarder.mjs", ROOT / "src/nous-native-attempts.mjs", ROOT / "src/nous-transport-diagnostics.mjs", Path(__file__).resolve()]}
 
 
 def main():

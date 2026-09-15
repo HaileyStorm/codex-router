@@ -425,6 +425,31 @@ function contentText(content, label) {
   return text;
 }
 
+function agentMessageContent(item, label) {
+  if (
+    typeof item.author !== "string" ||
+    !item.author ||
+    typeof item.recipient !== "string" ||
+    !item.recipient
+  ) {
+    throw directError(`${label} must preserve author and recipient provenance.`);
+  }
+  if (!Array.isArray(item.content)) {
+    throw directError(`${label} content must be a plaintext array.`);
+  }
+  const text = contentText(item.content, `${label} plaintext`);
+  try {
+    return JSON.stringify({
+      type: "agent_message",
+      author: item.author,
+      recipient: item.recipient,
+      content: text,
+    });
+  } catch {
+    throw directError(`${label} content is not replayable.`);
+  }
+}
+
 function reasoningText(item, index) {
   for (const [label, parts] of [["summary", item.summary], ["content", item.content]]) {
     if (!Array.isArray(parts) || !parts.length) continue;
@@ -736,6 +761,18 @@ export function responsesInputToNousMessages(
       pendingToolReplay = undefined;
       pendingToolReplayContentValidated = false;
       outstandingCalls = visibleCalls;
+      continue;
+    }
+
+    if (item.type === "agent_message") {
+      if (pendingReasoning !== undefined || pendingToolReplay !== undefined) {
+        throw directError(`input[${index}] interrupts an assistant reasoning turn.`);
+      }
+      messages.push({
+        role: "user",
+        content: agentMessageContent(item, `input[${index}] agent_message`),
+      });
+      index += 1;
       continue;
     }
 

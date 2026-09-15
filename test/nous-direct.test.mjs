@@ -24,6 +24,13 @@ import {
   toNousChatRequest,
 } from "../src/nous-direct.mjs";
 
+function tamperEnvelope(value) {
+  const prefixEnd = value.indexOf(":") + 1;
+  const bytes = Buffer.from(value.slice(prefixEnd), "base64url");
+  bytes[bytes.length - 1] ^= 1;
+  return value.slice(0, prefixEnd) + bytes.toString("base64url");
+}
+
 const MODEL = {
   slug: NOUS_MODEL_SLUG,
   gatewayModel: NOUS_GATEWAY_MODEL,
@@ -248,7 +255,12 @@ test("Nous Direct rejects malformed or unknown replay instead of repairing it", 
   assert.throws(
     () => responsesInputToNousMessages([
       { type: "function_call", call_id: "call_1", name: "tool", arguments: "{}" },
-      { type: "message", role: "user", content: [{ type: "input_text", text: "skip result" }] },
+      {
+        type: "agent_message",
+        author: "/root",
+        recipient: "/root/child",
+        content: [{ type: "input_text", text: "skip result" }],
+      },
     ]),
     /before all prior tool results/,
   );
@@ -286,6 +298,57 @@ test("Nous Direct rejects malformed or unknown replay instead of repairing it", 
   assert.throws(
     () => toNousChatRequest({ input: "hi", parallel_tool_calls: "yes" }, MODEL.upstreamModel),
     /parallel_tool_calls must be boolean/,
+  );
+});
+
+test("Nous Direct preserves normalized agent-message text and provenance as user data", () => {
+  const text = "Message Type: NEW_TASK\nPayload:\nUse the exact fixture.";
+  const messages = responsesInputToNousMessages([{
+    type: "agent_message",
+    author: "/root",
+    recipient: "/root/nous_desktop_write_acceptance",
+    content: [
+      { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
+      { type: "input_text", text: "Use the exact fixture." },
+    ],
+  }]);
+  assert.deepEqual(messages, [{
+    role: "user",
+    content: JSON.stringify({
+      type: "agent_message",
+      author: "/root",
+      recipient: "/root/nous_desktop_write_acceptance",
+      content: text,
+    }),
+  }]);
+  assert.throws(
+    () => responsesInputToNousMessages([{
+      type: "agent_message",
+      author: "/root",
+      recipient: "/root/child",
+      content: [
+        { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
+        { type: "encrypted_content", encrypted_content: "plaintext must be normalized first" },
+      ],
+    }]),
+    /supported text part/,
+  );
+  assert.throws(
+    () => responsesInputToNousMessages([{
+      type: "agent_message",
+      author: "/root",
+      recipient: "/root/child",
+      content: [{ type: "input_image", image_url: "https:\/\/example.invalid\/image" }],
+    }]),
+    /supported text part/,
+  );
+  assert.throws(
+    () => responsesInputToNousMessages([{
+      type: "agent_message",
+      author: "/root",
+      content: [{ type: "input_text", text: "missing recipient provenance" }],
+    }]),
+    /author and recipient provenance/,
   );
 });
 
@@ -363,8 +426,7 @@ test("Nous Direct authenticates only its own reasoning envelope prefix", () => {
     model: MODEL.upstreamModel,
     text: "Nous-owned reasoning",
   });
-  const last = envelope.at(-1);
-  const tampered = `${envelope.slice(0, -1)}${last === "A" ? "B" : "A"}`;
+  const tampered = tamperEnvelope(envelope);
   assert.throws(
     () => responsesInputToNousMessages([{
       type: "reasoning",
@@ -837,7 +899,7 @@ test("Nous Direct validates exact response identity, finish state, and reasoning
       input: [{
         type: "reasoning",
         summary: [{ type: "summary_text", text: "visible replay text" }],
-        encrypted_content: nativeSerdeReasoning.encrypted_content.slice(0, -1) + "A",
+        encrypted_content: tamperEnvelope(nativeSerdeReasoning.encrypted_content),
       }, { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] }],
     }, MODEL.upstreamModel, { internalKey: INTERNAL_ROUTER_KEY }),
     /authentication failed|malformed/,
@@ -1045,6 +1107,10 @@ test("router leaves Nous reasoning intact, flattens namespace tools, and cannot 
           { type: "function_call", call_id: "call_history", name: "send_message", namespace: "collaboration", arguments: '{"target":"/root"}' },
           { type: "function_call_output", call_id: "call_history", output: "sent" },
           { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+          { type: "agent_message", author: "/root", recipient: "/root/synthetic-child", content: [
+            { type: "input_text", text: "Message Type: NEW_TASK\nSender: /root\nPayload:\n" },
+            { type: "encrypted_content", encrypted_content: "SYNTHETIC_TASK_PAYLOAD" },
+          ] },
         ],
         tools: [
           {
@@ -1068,6 +1134,26 @@ test("router leaves Nous reasoning intact, flattens namespace tools, and cannot 
     assert.equal(gatewayRequests[0].input[1].name, "collaboration__send_message");
     assert.equal(gatewayRequests[0].input[1].namespace, undefined);
     assert.equal(gatewayRequests[0].tools[0].name, "collaboration__send_message");
+    const chat = toNousChatRequest(gatewayRequests[0], MODEL.upstreamModel, { internalKey: INTERNAL_ROUTER_KEY });
+    assert.deepEqual(JSON.parse(chat.messages.at(-1).content), {
+      type: "agent_message", author: "/root", recipient: "/root/synthetic-child",
+      content: "Message Type: NEW_TASK\nSender: /root\nPayload:\nSYNTHETIC_TASK_PAYLOAD",
+    });
+    assert.equal(chat.messages.at(-1).role, "user");
+    assert.ok(gatewayRequests[0].input[4].content.every(part => part.type === "input_text"));
+    const ambiguous = await fetch(`${callerBaseUrl(port, CALLER_KEY)}/responses`, {
+      method: "POST", headers: { Authorization: "Bearer caller-session", "Content-Type": "application/json" },
+      body: JSON.stringify({ model: MODEL.slug, input: [{
+        type: "agent_message", author: "/root", recipient: "/root/synthetic-child", content: [
+          { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
+          { type: "encrypted_content", encrypted_content: "FIRST_SYNTHETIC_PART" },
+          { type: "encrypted_content", encrypted_content: "SECOND_SYNTHETIC_PART" },
+        ],
+      }] }),
+    });
+    assert.equal(ambiguous.status, 400);
+    assert.equal((await ambiguous.json()).error.type, "local_nous_agent_input_unsupported");
+    assert.equal(gatewayRequests.length, 1, "ambiguous encrypted input reached the gateway");
     assert.deepEqual(gatewayRequests[0].tools[0].parameters, {
       type: "object",
       properties: { target: { type: "string" } },

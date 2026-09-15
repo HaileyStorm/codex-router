@@ -1141,19 +1141,24 @@ test("router leaves Nous reasoning intact, flattens namespace tools, and cannot 
     });
     assert.equal(chat.messages.at(-1).role, "user");
     assert.ok(gatewayRequests[0].input[4].content.every(part => part.type === "input_text"));
-    const ambiguous = await fetch(`${callerBaseUrl(port, CALLER_KEY)}/responses`, {
-      method: "POST", headers: { Authorization: "Bearer caller-session", "Content-Type": "application/json" },
-      body: JSON.stringify({ model: MODEL.slug, input: [{
+    for (const compact of ["response", "v1", "v2"]) {
+      const input = [{
         type: "agent_message", author: "/root", recipient: "/root/synthetic-child", content: [
           { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
           { type: "encrypted_content", encrypted_content: "FIRST_SYNTHETIC_PART" },
           { type: "encrypted_content", encrypted_content: "SECOND_SYNTHETIC_PART" },
         ],
-      }] }),
-    });
-    assert.equal(ambiguous.status, 400);
-    assert.equal((await ambiguous.json()).error.type, "local_nous_agent_input_unsupported");
-    assert.equal(gatewayRequests.length, 1, "ambiguous encrypted input reached the gateway");
+      }];
+      if (compact === "v2") input.push({ type: "compaction_trigger" });
+      const suffix = compact === "v1" ? "/responses/compact" : "/responses";
+      const ambiguous = await fetch(`${callerBaseUrl(port, CALLER_KEY)}${suffix}`, {
+        method: "POST", headers: { Authorization: "Bearer caller-session", "Content-Type": "application/json" },
+        body: JSON.stringify({ model: MODEL.slug, input }),
+      });
+      assert.equal(ambiguous.status, 400, compact);
+      assert.equal((await ambiguous.json()).error.type, "local_nous_agent_input_unsupported", compact);
+      assert.equal(gatewayRequests.length, 1, `${compact}: ambiguous encrypted input reached the gateway`);
+    }
     assert.deepEqual(gatewayRequests[0].tools[0].parameters, {
       type: "object",
       properties: { target: { type: "string" } },

@@ -2076,6 +2076,24 @@ async function handleResponses(request, response, requestUrl) {
       }
     });
 
+    if (route && providerForModel(route)?.responseAdapter === "nous-chat") {
+      // The shared relay resolves one encrypted agent payload per item.
+      // Reject ambiguous multi-part input before it can discard a second
+      // payload; the strict Direct converter must see complete history.
+      const multipleEncryptedParts = Array.isArray(payload.input) && payload.input.some(
+        item => Array.isArray(item?.content) && item.content.filter(
+          part => part?.type === "encrypted_content",
+        ).length > 1,
+      );
+      if (multipleEncryptedParts) {
+        writeJson(response, 400, { error: {
+          type: "local_nous_agent_input_unsupported",
+          message: "Nous Direct cannot resolve multiple encrypted content parts in one input item. Send a fresh bounded task packet; nothing was sent to Nous.",
+        } });
+        return;
+      }
+    }
+
     if (route && (compactV1 || compactV2)) {
       const compaction = await handleRoutedCompaction(
         request,
@@ -2117,21 +2135,6 @@ async function handleResponses(request, response, requestUrl) {
     if (route) {
       const provider = providerForModel(route);
       if (provider?.responseAdapter === "nous-chat") {
-        // The shared relay resolves one encrypted agent payload per item.
-        // Reject ambiguous multi-part input before it can discard a second
-        // payload; the strict Direct converter must see complete history.
-        const multipleEncryptedParts = Array.isArray(payload.input) && payload.input.some(
-          item => Array.isArray(item?.content) && item.content.filter(
-            part => part?.type === "encrypted_content",
-          ).length > 1,
-        );
-        if (multipleEncryptedParts) {
-          writeJson(response, 400, { error: {
-            type: "local_nous_agent_input_unsupported",
-            message: "Nous Direct cannot resolve multiple encrypted content parts in one input item. Send a fresh bounded task packet; nothing was sent to Nous.",
-          } });
-          return;
-        }
         const availability = prepareNousToolAvailability(payload);
         if (availability.error) {
           writeJson(response, availability.status, { error: availability.error });

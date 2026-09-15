@@ -118,6 +118,7 @@ import { VERSION } from "./version.mjs";
 import { nativeSessionHeaders } from "./codex-native-session.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
 import { isNousReasoningEnvelope } from "./nous-direct.mjs";
+import { prepareNousToolAvailability } from "./nous-tool-availability.mjs";
 
 // A profile slug is native authority. Refuse to start if a future external
 // registry entry claims the same identity; request-order precedence must never
@@ -2114,6 +2115,20 @@ async function handleResponses(request, response, requestUrl) {
     let namespacesFlattened = false;
     let flattenedNamespaces = new Map();
     if (route) {
+      const provider = providerForModel(route);
+      if (provider?.responseAdapter === "nous-chat") {
+        const availability = prepareNousToolAvailability(payload);
+        if (availability.error) {
+          writeJson(response, availability.status, { error: availability.error });
+          return;
+        }
+        // This is an explicit capability notice, never a provider fallback.
+        // The low-level adapter still rejects unsupported hosted tool types.
+        if (availability.omitted.length) {
+          payload.tools = availability.payload.tools;
+          payload.instructions = availability.payload.instructions;
+        }
+      }
       const normalized = await normalizeRoutedAgentInput(
         request,
         payload.input,
@@ -2142,7 +2157,6 @@ async function handleResponses(request, response, requestUrl) {
       // into the following assistant function_call message's content so the
       // translation carries it; the forwarder then attaches it as
       // `reasoning_content` on the tool-call message.
-      const provider = providerForModel(route);
       if (provider?.responseAdapter !== "nous-chat") carryReasoningThroughInput(input);
       // LiteLLM's Responses -> Chat Completions bridge drops namespace tools,
       // which is how the client ships the collaboration runtime, the app

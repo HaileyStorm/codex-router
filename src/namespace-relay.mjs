@@ -220,7 +220,7 @@ export function flattenNamespacedHistory(input, namespaces) {
     }
   }
   return input.map((item) => {
-    if (item?.type !== "function_call") return item;
+    if (!["function_call", "custom_tool_call"].includes(item?.type)) return item;
     const { name } = item;
     if (typeof name !== "string") return item;
     // Already in the flattened form (the client stored the restored call).
@@ -298,7 +298,7 @@ function rewriteFunctionCallArguments(item) {
 }
 
 function rewriteNamespaceFunctionCallItem(item, lookups, sessionModel) {
-  if (!item || item.type !== "function_call") return undefined;
+  if (!item || !["function_call", "custom_tool_call"].includes(item.type)) return undefined;
   let rewritten = item;
   const resolved = lookups.flatToNative.get(item.name);
   if (resolved) {
@@ -317,9 +317,13 @@ function rewriteNamespaceFunctionCallItem(item, lookups, sessionModel) {
       };
     }
   }
-  rewritten = sanitizeSpawnAgentModel(rewritten, lookups);
-  rewritten = injectSessionModelForSpawnCalls(rewritten, sessionModel);
-  rewritten = rewriteFunctionCallArguments(rewritten);
+  // Custom tool input is raw code/text, not JSON function arguments. Only
+  // restore its namespace; JSON repair or model injection would corrupt it.
+  if (item.type === "function_call") {
+    rewritten = sanitizeSpawnAgentModel(rewritten, lookups);
+    rewritten = injectSessionModelForSpawnCalls(rewritten, sessionModel);
+    rewritten = rewriteFunctionCallArguments(rewritten);
+  }
   return rewritten === item ? undefined : rewritten;
 }
 

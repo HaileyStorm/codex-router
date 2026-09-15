@@ -6,6 +6,8 @@ import {
   randomUUID,
 } from "node:crypto";
 
+import { withNousProviderAttemptLock } from "./nous-provider-lock.mjs";
+
 export const NOUS_CHAT_ADAPTER = "nous-chat";
 export const NOUS_MAX_OUTPUT_TOKENS = 131072;
 export const NOUS_PROVIDER_ID = "nous";
@@ -21,7 +23,9 @@ const MAX_TOOL_CALLS = 16;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_RESPONSE_CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_REASONING_DETAILS_BYTES = 4 * 1024 * 1024;
+const MAX_TOOL_REPLAY_BYTES = 4 * 1024 * 1024;
 const NOUS_REASONING_ENVELOPE_VERSION = 1;
+const NOUS_REASONING_ENVELOPE_VERSION_WITH_TOOL_REPLAY = 2;
 const NOUS_REASONING_ENVELOPE_DOMAIN = "codex-router/nous-direct/reasoning-envelope";
 const NOUS_REASONING_NONCE_BYTES = 12;
 const NOUS_REASONING_TAG_BYTES = 16;
@@ -71,9 +75,9 @@ function reasoningEnvelopeKey(internalKey) {
     .digest();
 }
 
-function reasoningEnvelopeAad(model) {
+function reasoningEnvelopeAad(model, version = NOUS_REASONING_ENVELOPE_VERSION) {
   return Buffer.from(
-    `${NOUS_REASONING_ENVELOPE_DOMAIN}\0${NOUS_REASONING_ENVELOPE_VERSION}\0${NOUS_PROVIDER_ID}\0${model}`,
+    `${NOUS_REASONING_ENVELOPE_DOMAIN}\0${version}\0${NOUS_PROVIDER_ID}\0${model}`,
     "utf8",
   );
 }
@@ -105,28 +109,135 @@ function reasoningDetailsEqual(left, right) {
   return canonicalJson(left ?? null) === canonicalJson(right ?? null);
 }
 
+function customArgumentsInput(argumentsText, label) {
+  if (typeof argumentsText !== "string") {
+    throw directError(`${label} custom arguments must be a JSON object.`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(argumentsText);
+  } catch {
+    throw directError(`${label} custom arguments must be valid JSON.`);
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    Object.keys(parsed).length !== 1 ||
+    Object.keys(parsed)[0] !== "input" ||
+    typeof parsed.input !== "string"
+  ) {
+    throw directError(`${label} custom arguments must contain only input:string.`);
+  }
+  return parsed.input;
+}
+
+function normalizeToolReplay(toolReplay, label = "Nous Direct tool replay") {
+  if (!toolReplay || typeof toolReplay !== "object" || Array.isArray(toolReplay)) {
+    throw directError(`${label} sidecar is invalid.`);
+  }
+  const fields = Object.keys(toolReplay);
+  if (
+    fields.length !== 2 ||
+    !fields.includes("content") ||
+    !fields.includes("calls") ||
+    !Array.isArray(toolReplay.calls) ||
+    (toolReplay.content !== null && typeof toolReplay.content !== "string")
+  ) {
+    throw directError(`${label} sidecar has unsupported fields.`);
+  }
+  if (toolReplay.calls.length === 0 || toolReplay.calls.length > MAX_TOOL_CALLS) {
+    throw directError(`${label} sidecar has an invalid call count.`);
+  }
+  const seen = new Set();
+  const calls = toolReplay.calls.map((call, index) => {
+    if (!call || typeof call !== "object" || Array.isArray(call)) {
+      throw directError(`${label} sidecar call ${index} is invalid.`);
+    }
+    const callFields = Object.keys(call);
+    const functionFields = call.function && typeof call.function === "object" && !Array.isArray(call.function)
+      ? Object.keys(call.function)
+      : [];
+    if (!["function", "custom"].includes(call.kind)) {
+      throw directError(`${label} sidecar call ${index} has an invalid kind.`);
+    }
+    if (
+      callFields.length !== 4 ||
+      !callFields.includes("kind") ||
+      !callFields.includes("id") ||
+      !callFields.includes("type") ||
+      !callFields.includes("function") ||
+      typeof call.id !== "string" ||
+      !call.id ||
+      typeof call.type !== "string" ||
+      call.type !== "function" ||
+      !call.function ||
+      typeof call.function !== "object" ||
+      Array.isArray(call.function) ||
+      typeof call.function.name !== "string" ||
+      !call.function.name ||
+      typeof call.function.arguments !== "string"
+    ) {
+      throw directError(`${label} sidecar call ${index} is incomplete.`);
+    }
+    if (functionFields.length !== 2 || !functionFields.includes("name") || !functionFields.includes("arguments")) {
+      throw directError(`${label} sidecar call ${index} has unsupported function fields.`);
+    }
+    if (seen.has(call.id)) throw directError(`${label} sidecar repeats a call id.`);
+    seen.add(call.id);
+    if (call.kind === "custom") customArgumentsInput(call.function.arguments, `${label} sidecar call ${index}`);
+    return {
+      kind: call.kind,
+      id: call.id,
+      type: "function",
+      function: {
+        name: call.function.name,
+        arguments: call.function.arguments,
+      },
+    };
+  });
+  let encoded;
+  try {
+    encoded = Buffer.from(JSON.stringify({ content: toolReplay.content, calls }), "utf8");
+  } catch {
+    throw directError(`${label} sidecar is not replayable.`);
+  }
+  if (encoded.length > MAX_TOOL_REPLAY_BYTES) {
+    throw directError(`${label} sidecar exceeds the local replay limit.`);
+  }
+  return { content: toolReplay.content, calls };
+}
+
 export function isNousReasoningEnvelope(value) {
   return typeof value === "string" && value.startsWith(NOUS_REASONING_ENVELOPE_PREFIX);
 }
 
-export function createNousReasoningEnvelope({ internalKey, model, text, details } = {}) {
+export function createNousReasoningEnvelope({ internalKey, model, text, details, toolReplay } = {}) {
   if (typeof model !== "string" || !model) {
     throw directError("Nous Direct reasoning envelope has no model binding.");
   }
-  if (typeof text !== "string" || !text) {
+  const hasToolReplay = toolReplay !== undefined;
+  const version = hasToolReplay
+    ? NOUS_REASONING_ENVELOPE_VERSION_WITH_TOOL_REPLAY
+    : NOUS_REASONING_ENVELOPE_VERSION;
+  if (typeof text !== "string" || (!text && !hasToolReplay)) {
     throw directError("Nous Direct reasoning envelope has no replayable text.");
   }
   const clonedDetails = cloneReasoningDetails(details, "Nous Direct envelope");
+  const normalizedToolReplay = hasToolReplay
+    ? normalizeToolReplay(toolReplay, "Nous Direct envelope")
+    : undefined;
   const plaintext = Buffer.from(JSON.stringify({
-    version: NOUS_REASONING_ENVELOPE_VERSION,
+    version,
     provider: NOUS_PROVIDER_ID,
     model,
     text,
     details: clonedDetails ?? null,
+    ...(normalizedToolReplay === undefined ? {} : { toolReplay: normalizedToolReplay }),
   }), "utf8");
   const nonce = randomBytes(NOUS_REASONING_NONCE_BYTES);
   const cipher = createCipheriv("aes-256-gcm", reasoningEnvelopeKey(internalKey), nonce);
-  cipher.setAAD(reasoningEnvelopeAad(model));
+  cipher.setAAD(reasoningEnvelopeAad(model, version));
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `${NOUS_REASONING_ENVELOPE_PREFIX}${Buffer.concat([nonce, tag, ciphertext]).toString("base64url")}`;
@@ -160,12 +271,21 @@ export function decodeNousReasoningEnvelope(
   const tag = packed.subarray(NOUS_REASONING_NONCE_BYTES, NOUS_REASONING_NONCE_BYTES + NOUS_REASONING_TAG_BYTES);
   const ciphertext = packed.subarray(NOUS_REASONING_NONCE_BYTES + NOUS_REASONING_TAG_BYTES);
   let plaintext;
-  try {
-    const decipher = createDecipheriv("aes-256-gcm", reasoningEnvelopeKey(internalKey), nonce);
-    decipher.setAuthTag(tag);
-    decipher.setAAD(reasoningEnvelopeAad(expectedModel));
-    plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  } catch {
+  let decodedVersion;
+  for (const version of [NOUS_REASONING_ENVELOPE_VERSION, NOUS_REASONING_ENVELOPE_VERSION_WITH_TOOL_REPLAY]) {
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", reasoningEnvelopeKey(internalKey), nonce);
+      decipher.setAuthTag(tag);
+      decipher.setAAD(reasoningEnvelopeAad(expectedModel, version));
+      plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      decodedVersion = version;
+      break;
+    } catch {
+      // The version is authenticated as associated data, so try the other
+      // supported version without accepting an unauthenticated hint.
+    }
+  }
+  if (!plaintext) {
     throw directError("Nous Direct reasoning envelope authentication failed.");
   }
   let decoded;
@@ -177,22 +297,30 @@ export function decodeNousReasoningEnvelope(
   if (
     !decoded ||
     Array.isArray(decoded) ||
-    decoded.version !== NOUS_REASONING_ENVELOPE_VERSION ||
+    decoded.version !== decodedVersion ||
     decoded.provider !== NOUS_PROVIDER_ID ||
     decoded.model !== expectedModel ||
-    typeof decoded.text !== "string" ||
-    !decoded.text
+    typeof decoded.text !== "string"
   ) {
     throw directError("Nous Direct reasoning envelope identity is invalid.");
   }
   const details = cloneReasoningDetails(decoded.details, "Nous Direct envelope");
+  if (decoded.version === NOUS_REASONING_ENVELOPE_VERSION && decoded.toolReplay !== undefined) {
+    throw directError("Nous Direct reasoning envelope identity is invalid.");
+  }
+  const toolReplay = decoded.version === NOUS_REASONING_ENVELOPE_VERSION_WITH_TOOL_REPLAY
+    ? normalizeToolReplay(decoded.toolReplay, "Nous Direct envelope")
+    : undefined;
+  if (!decoded.text && toolReplay === undefined) {
+    throw directError("Nous Direct reasoning envelope identity is invalid.");
+  }
   if (visibleText !== undefined && decoded.text !== visibleText) {
     throw directError("Nous Direct reasoning envelope disagrees with its visible summary.");
   }
   if (visibleDetails !== undefined && !reasoningDetailsEqual(details, visibleDetails)) {
     throw directError("Nous Direct reasoning envelope disagrees with its visible details.");
   }
-  return { text: decoded.text, details };
+  return { version: decoded.version, text: decoded.text, details, toolReplay };
 }
 
 function canonicalNousBaseUrl(value, label) {
@@ -309,34 +437,145 @@ function reasoningText(item, index) {
     }
     if (text) return text;
   }
-  throw directError(`input[${index}] reasoning has no replayable text.`);
+  return "";
 }
 
 function reasoningDetails(item, index) {
   return cloneReasoningDetails(item.reasoning_details, `input[${index}]`);
 }
 
-function functionCall(item, index) {
+function responseCall(item, index) {
   if (
     typeof item.call_id !== "string" ||
     !item.call_id ||
     typeof item.name !== "string" ||
     !item.name ||
-    typeof item.arguments !== "string"
+    (item.type === "function_call" && typeof item.arguments !== "string") ||
+    (item.type === "custom_tool_call" && typeof item.input !== "string")
   ) {
-    throw directError(`input[${index}] function_call is incomplete.`);
+    throw directError(`input[${index}] ${item.type} is incomplete.`);
   }
-  return {
-    id: item.call_id,
-    type: "function",
-    function: { name: item.name, arguments: item.arguments },
-  };
+  if (item.type === "function_call") {
+    return {
+      kind: "function",
+      id: item.call_id,
+      name: item.name,
+      arguments: item.arguments,
+      chat: {
+        id: item.call_id,
+        type: "function",
+        function: { name: item.name, arguments: item.arguments },
+      },
+    };
+  }
+  if (item.type === "custom_tool_call") {
+    return {
+      kind: "custom",
+      id: item.call_id,
+      name: item.name,
+      input: item.input,
+      chat: {
+        id: item.call_id,
+        type: "function",
+        function: { name: item.name, arguments: JSON.stringify({ input: item.input }) },
+      },
+    };
+  }
+  throw directError(`input[${index}] has an unsupported call type.`);
 }
 
 function claimCallIds(toolCalls, seenCallIds, label) {
   for (const call of toolCalls) {
     if (seenCallIds.has(call.id)) throw directError(`${label} repeats a function call id.`);
     seenCallIds.add(call.id);
+  }
+}
+
+function isResponseCall(item) {
+  return item?.type === "function_call" || item?.type === "custom_tool_call";
+}
+
+function replayCallGroup(
+  calls,
+  toolReplay,
+  { visibleContent, contentPresent = false, contentAlreadyValidated = false } = {},
+) {
+  if (toolReplay === undefined) {
+    if (calls.some((call) => call.kind === "custom")) {
+      throw directError("Nous Direct custom tool history is missing its authenticated replay sidecar.");
+    }
+    return { toolCalls: calls.map((call) => call.chat), content: undefined };
+  }
+  if (!contentAlreadyValidated) {
+    if (contentPresent) {
+      if (toolReplay.content === null ? visibleContent !== "" : toolReplay.content !== visibleContent) {
+        throw directError("Nous Direct tool replay sidecar disagrees with its visible assistant content.");
+      }
+    } else if (toolReplay.content !== null && toolReplay.content !== "") {
+      throw directError("Nous Direct tool replay sidecar requires its visible assistant content.");
+    }
+  }
+  if (toolReplay.calls.length !== calls.length) {
+    throw directError("Nous Direct tool replay sidecar disagrees with its visible call count.");
+  }
+  const toolCalls = calls.map((call, index) => {
+    const expected = toolReplay.calls[index];
+    if (
+      expected.kind !== call.kind ||
+      expected.id !== call.id ||
+      expected.type !== "function" ||
+      expected.function.name !== call.name
+    ) {
+      throw directError("Nous Direct tool replay sidecar disagrees with its visible call order.");
+    }
+    if (call.kind === "custom") {
+      if (customArgumentsInput(expected.function.arguments, `tool replay call ${index}`) !== call.input) {
+        throw directError("Nous Direct tool replay sidecar disagrees with its visible custom input.");
+      }
+    } else if (expected.function.arguments !== call.arguments) {
+      throw directError("Nous Direct tool replay sidecar disagrees with its visible function arguments.");
+    }
+    return {
+      id: expected.id,
+      type: "function",
+      function: {
+        name: expected.function.name,
+        arguments: expected.function.arguments,
+      },
+    };
+  });
+  return { toolCalls, content: contentAlreadyValidated ? undefined : toolReplay.content };
+}
+
+function replayAssistantContent(toolReplay, visibleContent) {
+  if (
+    toolReplay.content === null
+      ? visibleContent !== ""
+      : toolReplay.content !== visibleContent
+  ) {
+    throw directError("Nous Direct tool replay sidecar disagrees with its visible assistant content.");
+  }
+  return toolReplay.content;
+}
+
+function customToolOutput(output, label) {
+  if (typeof output === "string") return output;
+  if (!Array.isArray(output)) throw directError(`${label} must preserve a string or text content array.`);
+  for (const [index, part] of output.entries()) {
+    if (
+      !part ||
+      typeof part !== "object" ||
+      Array.isArray(part) ||
+      !TEXT_PART_TYPES.has(part.type) ||
+      typeof part.text !== "string"
+    ) {
+      throw directError(`${label}[${index}] is not a supported text part.`);
+    }
+  }
+  try {
+    return JSON.stringify(output);
+  } catch {
+    throw directError(`${label} is not replayable.`);
   }
 }
 
@@ -348,7 +587,11 @@ function inputItems(input) {
   return input;
 }
 
-export function responsesInputToNousMessages(input, instructions, { upstreamModel, internalKey } = {}) {
+export function responsesInputToNousMessages(
+  input,
+  instructions,
+  { upstreamModel, internalKey, customToolNames } = {},
+) {
   const items = inputItems(input);
   const messages = [];
   if (instructions !== undefined) {
@@ -358,9 +601,14 @@ export function responsesInputToNousMessages(input, instructions, { upstreamMode
 
   let pendingReasoning;
   let pendingReasoningDetails;
-  let outstandingCallIds = [];
+  let pendingToolReplay;
+  let pendingToolReplayContentValidated = false;
+  let outstandingCalls = [];
   const seenCallIds = new Set();
   let totalToolCalls = 0;
+  const declaredCustomToolNames = customToolNames === undefined
+    ? new Set()
+    : new Set(customToolNames);
   let index = 0;
   while (index < items.length) {
     const item = items[index];
@@ -368,8 +616,11 @@ export function responsesInputToNousMessages(input, instructions, { upstreamMode
       throw directError(`input[${index}] must be an object.`);
     }
     if (item.type === "reasoning") {
-      if (outstandingCallIds.length) {
+      if (outstandingCalls.length) {
         throw directError(`input[${index}] reasoning is out of order.`);
+      }
+      if (pendingToolReplay !== undefined) {
+        throw directError("Nous Direct tool replay sidecar is orphaned before a visible call group.");
       }
       const hasEncryptedContent = item.encrypted_content !== undefined;
       const ownEnvelope = isNousReasoningEnvelope(item.encrypted_content);
@@ -386,6 +637,12 @@ export function responsesInputToNousMessages(input, instructions, { upstreamMode
         throw error;
       }
       if (hasEncryptedContent && !ownEnvelope) {
+        if (!visibleText) {
+          throw directError(
+            "Nous Direct cannot replay foreign reasoning without a readable summary; provide a fresh task packet.",
+            { code: "nous_direct_foreign_reasoning_context" },
+          );
+        }
         messages.push({ role: "assistant", content: visibleText });
         index += 1;
         continue;
@@ -399,7 +656,14 @@ export function responsesInputToNousMessages(input, instructions, { upstreamMode
           visibleDetails,
         })
         : undefined;
-      pendingReasoning = (pendingReasoning || "") + visibleText;
+      if (!visibleText && envelope?.toolReplay === undefined) {
+        throw directError(`input[${index}] reasoning has no replayable text.`);
+      }
+      if (envelope?.toolReplay !== undefined) {
+        pendingToolReplay = envelope.toolReplay;
+        pendingToolReplayContentValidated = false;
+      }
+      if (visibleText) pendingReasoning = (pendingReasoning || "") + visibleText;
       const details = envelope?.details ?? visibleDetails;
       if (details !== undefined) {
         pendingReasoningDetails = pendingReasoningDetails === undefined
@@ -410,47 +674,68 @@ export function responsesInputToNousMessages(input, instructions, { upstreamMode
       continue;
     }
 
-    if (item.type === "function_call_output") {
-      if (pendingReasoning !== undefined || outstandingCallIds.length === 0) {
+    if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
+      if (pendingReasoning !== undefined || pendingToolReplay !== undefined || outstandingCalls.length === 0) {
         throw directError(`input[${index}] has an orphan function_call_output.`);
       }
-      if (item.call_id !== outstandingCallIds[0]) {
-        throw directError(`input[${index}] function_call_output is not in call order.`);
+      const expected = outstandingCalls[0];
+      const expectedOutputType = expected.kind === "custom"
+        ? "custom_tool_call_output"
+        : "function_call_output";
+      if (item.type !== expectedOutputType || item.call_id !== expected.id) {
+        throw directError(`input[${index}] ${item.type} is not in call order or has a mismatched call type.`);
       }
-      if (typeof item.output !== "string") {
+      const output = expected.kind === "custom"
+        ? customToolOutput(item.output, `input[${index}] custom_tool_call_output.output`)
+        : item.output;
+      if (expected.kind === "function" && typeof output !== "string") {
         throw directError(`input[${index}] function_call_output must preserve a string result.`);
       }
-      messages.push({ role: "tool", tool_call_id: item.call_id, content: item.output });
-      outstandingCallIds = outstandingCallIds.slice(1);
+      messages.push({ role: "tool", tool_call_id: item.call_id, content: output });
+      outstandingCalls = outstandingCalls.slice(1);
       index += 1;
       continue;
     }
 
-    if (outstandingCallIds.length) {
+    if (outstandingCalls.length) {
       throw directError(`input[${index}] arrives before all prior tool results.`);
     }
 
-    if (item.type === "function_call") {
-      const toolCalls = [];
-      while (index < items.length && items[index]?.type === "function_call") {
-        toolCalls.push(functionCall(items[index], index));
+    if (isResponseCall(item)) {
+      const visibleCalls = [];
+      const firstCallIndex = index;
+      while (index < items.length && isResponseCall(items[index])) {
+        visibleCalls.push(responseCall(items[index], index));
         index += 1;
       }
-      totalToolCalls += toolCalls.length;
+      totalToolCalls += visibleCalls.length;
       if (totalToolCalls > MAX_TOOL_CALLS) {
         throw directError(`input contains more than ${MAX_TOOL_CALLS} function calls.`);
       }
-      claimCallIds(toolCalls, seenCallIds, `input[${index - toolCalls.length}]`);
+      claimCallIds(visibleCalls, seenCallIds, `input[${firstCallIndex}]`);
+      if (
+        pendingToolReplay === undefined &&
+        visibleCalls.some((call) => call.kind === "function" && declaredCustomToolNames.has(call.name))
+      ) {
+        throw directError(
+          "Nous Direct rejected a custom tool history downgraded to function_call without its authenticated replay sidecar.",
+        );
+      }
+      const replay = replayCallGroup(visibleCalls, pendingToolReplay, {
+        contentAlreadyValidated: pendingToolReplayContentValidated,
+      });
       messages.push({
         role: "assistant",
-        content: null,
+        content: replay.content === undefined ? null : replay.content,
         ...(pendingReasoning === undefined ? {} : { reasoning_content: pendingReasoning }),
         ...(pendingReasoningDetails === undefined ? {} : { reasoning_details: pendingReasoningDetails }),
-        tool_calls: toolCalls,
+        tool_calls: replay.toolCalls,
       });
       pendingReasoning = undefined;
       pendingReasoningDetails = undefined;
-      outstandingCallIds = toolCalls.map((call) => call.id);
+      pendingToolReplay = undefined;
+      pendingToolReplayContentValidated = false;
+      outstandingCalls = visibleCalls;
       continue;
     }
 
@@ -465,7 +750,7 @@ export function responsesInputToNousMessages(input, instructions, { upstreamMode
     }
     const text = contentText(item.content, `input[${index}]`);
     if (item.role !== "assistant") {
-      if (pendingReasoning !== undefined) {
+      if (pendingReasoning !== undefined || pendingToolReplay !== undefined) {
         throw directError(`input[${index}] interrupts an assistant reasoning turn.`);
       }
       messages.push({ role: item.role === "developer" ? "system" : item.role, content: text });
@@ -473,34 +758,63 @@ export function responsesInputToNousMessages(input, instructions, { upstreamMode
       continue;
     }
 
-    const toolCalls = [];
+    const visibleCalls = [];
     let callIndex = index + 1;
-    while (callIndex < items.length && items[callIndex]?.type === "function_call") {
-      toolCalls.push(functionCall(items[callIndex], callIndex));
+    while (callIndex < items.length && isResponseCall(items[callIndex])) {
+      visibleCalls.push(responseCall(items[callIndex], callIndex));
       callIndex += 1;
     }
-    totalToolCalls += toolCalls.length;
+    totalToolCalls += visibleCalls.length;
     if (totalToolCalls > MAX_TOOL_CALLS) {
       throw directError(`input contains more than ${MAX_TOOL_CALLS} function calls.`);
     }
-    claimCallIds(toolCalls, seenCallIds, `input[${index}]`);
+    claimCallIds(visibleCalls, seenCallIds, `input[${index}]`);
+    if (
+      pendingToolReplay === undefined &&
+      visibleCalls.some((call) => call.kind === "function" && declaredCustomToolNames.has(call.name))
+    ) {
+      throw directError(
+        "Nous Direct rejected a custom tool history downgraded to function_call without its authenticated replay sidecar.",
+      );
+    }
+    let replay;
+    if (visibleCalls.length) {
+      replay = replayCallGroup(visibleCalls, pendingToolReplay, {
+        visibleContent: text,
+        contentPresent: true,
+        contentAlreadyValidated: pendingToolReplayContentValidated,
+      });
+    } else if (pendingToolReplay !== undefined) {
+      const replayedContent = replayAssistantContent(pendingToolReplay, text);
+      pendingToolReplayContentValidated = true;
+      replay = { toolCalls: [], content: replayedContent };
+    } else {
+      replay = { toolCalls: [], content: undefined };
+    }
     messages.push({
       role: "assistant",
-      content: text || null,
+      content: replay.content === undefined ? (text || null) : replay.content,
       ...(pendingReasoning === undefined ? {} : { reasoning_content: pendingReasoning }),
       ...(pendingReasoningDetails === undefined ? {} : { reasoning_details: pendingReasoningDetails }),
-      ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+      ...(replay.toolCalls.length ? { tool_calls: replay.toolCalls } : {}),
     });
     pendingReasoning = undefined;
     pendingReasoningDetails = undefined;
-    if (toolCalls.length) outstandingCallIds = toolCalls.map((call) => call.id);
+    if (replay.toolCalls.length) {
+      pendingToolReplay = undefined;
+      pendingToolReplayContentValidated = false;
+      outstandingCalls = visibleCalls;
+    }
     index = callIndex;
   }
 
+  if (pendingToolReplay !== undefined) {
+    throw directError("Nous Direct tool replay sidecar is orphaned without a visible call group.");
+  }
   if (pendingReasoning !== undefined) {
     throw directError("Responses input ends with unattached reasoning.");
   }
-  if (outstandingCallIds.length) {
+  if (outstandingCalls.length) {
     throw directError("Responses input ends before every tool call has an exact result.");
   }
   if (!messages.length) throw directError("Responses input is empty.");
@@ -512,11 +826,56 @@ function chatTools(tools) {
   if (!Array.isArray(tools)) throw directError("Responses tools must be an array.");
   const names = new Set();
   return tools.map((tool, index) => {
-    if (!tool || tool.type !== "function" || typeof tool.name !== "string" || !tool.name) {
-      throw directError(`tools[${index}] is not a flattened function tool.`);
+    if (!tool || typeof tool !== "object" || Array.isArray(tool) || typeof tool.name !== "string" || !tool.name) {
+      throw directError(`tools[${index}] is not a supported function or custom tool.`);
     }
     if (names.has(tool.name)) throw directError(`tools[${index}] repeats a function name.`);
     names.add(tool.name);
+    if (tool.type === "custom") {
+      if (tool.description !== undefined && typeof tool.description !== "string") {
+        throw directError(`tools[${index}] custom description must be text.`);
+      }
+      if (!tool.format || typeof tool.format !== "object" || Array.isArray(tool.format)) {
+        throw directError(`tools[${index}] custom format is required.`);
+      }
+      const formatFields = Object.keys(tool.format);
+      if (tool.format.type === "text") {
+        if (formatFields.some((field) => field !== "type")) {
+          throw directError(`tools[${index}] custom text format has unsupported fields.`);
+        }
+      } else if (tool.format.type === "grammar") {
+        if (
+          formatFields.some((field) => !["type", "syntax", "definition"].includes(field)) ||
+          !["lark", "regex"].includes(tool.format.syntax) ||
+          typeof tool.format.definition !== "string" ||
+          !tool.format.definition
+        ) {
+          throw directError(`tools[${index}] custom grammar format is invalid.`);
+        }
+      } else {
+        throw directError(`tools[${index}] custom format type is unsupported.`);
+      }
+      const formatDescription = `Custom input format: ${JSON.stringify(tool.format)}`;
+      const description = tool.description
+        ? `${tool.description}\n\n${formatDescription}`
+        : formatDescription;
+      return {
+        type: "function",
+        function: {
+          name: tool.name,
+          description,
+          parameters: {
+            type: "object",
+            properties: { input: { type: "string" } },
+            required: ["input"],
+            additionalProperties: false,
+          },
+        },
+      };
+    }
+    if (tool.type !== "function") {
+      throw directError(`tools[${index}] is not a supported function or custom tool.`);
+    }
     if (!tool.parameters || typeof tool.parameters !== "object" || Array.isArray(tool.parameters)) {
       throw directError(`tools[${index}] parameters must be an object schema.`);
     }
@@ -538,9 +897,14 @@ function chatTools(tools) {
 function chatToolChoice(choice, toolNames) {
   if (choice === undefined) return undefined;
   if (["auto", "none", "required"].includes(choice)) return choice;
-  if (choice && choice.type === "function" && typeof choice.name === "string" && choice.name) {
+  if (
+    choice &&
+    (choice.type === "function" || choice.type === "custom") &&
+    typeof choice.name === "string" &&
+    choice.name
+  ) {
     if (!toolNames?.has(choice.name)) {
-      throw directError("Nous Direct received a tool_choice for an undeclared function.");
+      throw directError("Nous Direct received a tool_choice for an undeclared function or custom tool.");
     }
     return { type: "function", function: { name: choice.name } };
   }
@@ -614,6 +978,11 @@ export function toNousChatRequest(payload, upstreamModel, { internalKey } = {}) 
   }
   const tools = chatTools(payload.tools);
   const toolNames = new Set(tools?.map((tool) => tool.function.name) || []);
+  const customToolNames = new Set(
+    Array.isArray(payload.tools)
+      ? payload.tools.filter((tool) => tool?.type === "custom").map((tool) => tool.name)
+      : [],
+  );
   const toolChoice = chatToolChoice(payload.tool_choice, toolNames);
   if (toolChoice === "required" && !toolNames.size) {
     throw directError("Nous Direct requires a declared tool for tool_choice required.");
@@ -627,6 +996,7 @@ export function toNousChatRequest(payload, upstreamModel, { internalKey } = {}) 
     messages: responsesInputToNousMessages(payload.input, payload.instructions, {
       upstreamModel,
       internalKey,
+      customToolNames,
     }),
     stream: false,
     reasoning_effort: "max",
@@ -671,13 +1041,13 @@ function providerReasoningTexts(message) {
       if (detailText) text = detailText;
     }
   }
-  if (details !== undefined && !text) {
+  if (details !== undefined && details.length > 0 && !text) {
     throw responseError("Nous Direct returned reasoning_details without replayable text.");
   }
   return { texts: text ? [text] : [], details };
 }
 
-function parseCompletion(payload, model, { internalKey, toolNames } = {}) {
+function parseCompletion(payload, model, { internalKey, toolNames, customToolNames } = {}) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw responseError("Nous Direct returned a non-object completion.");
   }
@@ -698,14 +1068,17 @@ function parseCompletion(payload, model, { internalKey, toolNames } = {}) {
   if (message.content !== null && message.content !== undefined && typeof message.content !== "string") {
     throw responseError("Nous Direct returned non-text assistant content.");
   }
-  const content = message.content || "";
+  const originalAssistantContent = message.content === undefined ? null : message.content;
+  const content = originalAssistantContent ?? "";
   const { texts: reasoningTexts, details: reasoningDetails } = providerReasoningTexts(message);
   const sourceCalls = message.tool_calls ?? [];
   if (!Array.isArray(sourceCalls) || sourceCalls.length > MAX_TOOL_CALLS) {
     throw responseError(`Nous Direct returned more than ${MAX_TOOL_CALLS} tool calls.`);
   }
   const allowedToolNames = toolNames === undefined ? undefined : new Set(toolNames);
+  const declaredCustomToolNames = customToolNames === undefined ? new Set() : new Set(customToolNames);
   const seen = new Set();
+  const replayCalls = [];
   const toolCalls = sourceCalls.map((call, index) => {
     if (
       !call ||
@@ -723,6 +1096,41 @@ function parseCompletion(payload, model, { internalKey, toolNames } = {}) {
       throw responseError("Nous Direct returned a tool name that was not requested.");
     }
     seen.add(call.id);
+    const isCustom = declaredCustomToolNames.has(call.function.name);
+    if (isCustom) {
+      let input;
+      try {
+        input = customArgumentsInput(call.function.arguments, `tool_calls[${index}]`);
+      } catch (error) {
+        throw responseError(error?.message || "Nous Direct returned malformed custom tool arguments.");
+      }
+      replayCalls.push({
+        kind: "custom",
+        id: call.id,
+        type: call.type,
+        function: {
+          name: call.function.name,
+          arguments: call.function.arguments,
+        },
+      });
+      return {
+        id: `ctc_${randomUUID().replaceAll("-", "")}`,
+        type: "custom_tool_call",
+        status: "completed",
+        call_id: call.id,
+        name: call.function.name,
+        input,
+      };
+    }
+    replayCalls.push({
+      kind: "function",
+      id: call.id,
+      type: call.type,
+      function: {
+        name: call.function.name,
+        arguments: call.function.arguments,
+      },
+    });
     return {
       id: `fc_${randomUUID().replaceAll("-", "")}`,
       type: "function_call",
@@ -740,8 +1148,26 @@ function parseCompletion(payload, model, { internalKey, toolNames } = {}) {
     throw responseError("Nous Direct returned an empty completion.", "nous_direct_empty_completion");
   }
 
+  const hasCustomCalls = toolCalls.some((item) => item.type === "custom_tool_call");
+  let toolReplay;
+  if (hasCustomCalls) {
+    if (internalKey === undefined) {
+      throw responseError(
+        "Nous Direct requires the host-local key to preserve custom tool arguments.",
+        "nous_direct_reasoning_envelope",
+      );
+    }
+    try {
+      toolReplay = normalizeToolReplay({ content: originalAssistantContent, calls: replayCalls }, "Nous Direct response");
+    } catch (error) {
+      throw responseError(error?.message || "Nous Direct could not preserve custom tool arguments.");
+    }
+  }
+
   const output = [];
-  for (const reasoning of reasoningTexts) {
+  const needsReasoningItem = hasCustomCalls || reasoningTexts.length > 0;
+  if (needsReasoningItem) {
+    const reasoning = reasoningTexts[0] || "";
     let encryptedContent;
     if (internalKey !== undefined) {
       try {
@@ -750,6 +1176,7 @@ function parseCompletion(payload, model, { internalKey, toolNames } = {}) {
           model,
           text: reasoning,
           details: reasoningDetails,
+          ...(toolReplay === undefined ? {} : { toolReplay }),
         });
       } catch (error) {
         throw responseError(
@@ -767,11 +1194,11 @@ function parseCompletion(payload, model, { internalKey, toolNames } = {}) {
       id: `rs_${randomUUID().replaceAll("-", "")}`,
       type: "reasoning",
       status: "completed",
-      summary: [{ type: "summary_text", text: reasoning }],
+      summary: reasoning ? [{ type: "summary_text", text: reasoning }] : [],
       ...(encryptedContent === undefined ? {} : { encrypted_content: encryptedContent }),
     });
   }
-  if (content) {
+  if (content || (hasCustomCalls && originalAssistantContent === "")) {
     output.push({
       id: `msg_${randomUUID().replaceAll("-", "")}`,
       type: "message",
@@ -811,9 +1238,9 @@ export function completionToResponsesBody(
   payload,
   model,
   stream = false,
-  { internalKey, toolNames } = {},
+  { internalKey, toolNames, customToolNames } = {},
 ) {
-  const completed = parseCompletion(payload, model, { internalKey, toolNames });
+  const completed = parseCompletion(payload, model, { internalKey, toolNames, customToolNames });
   if (!stream) return { contentType: "application/json; charset=utf-8", body: JSON.stringify(completed) };
 
   let sequence = 0;
@@ -823,6 +1250,8 @@ export function completionToResponsesBody(
   for (const [outputIndex, item] of completed.output.entries()) {
     const addedItem = item.type === "function_call"
       ? { ...item, status: "in_progress", arguments: "" }
+      : item.type === "custom_tool_call"
+        ? { ...item, status: "in_progress", input: "" }
       : item.type === "message"
         ? { ...item, status: "in_progress", content: [] }
         : { ...item, status: "in_progress", summary: [] };
@@ -853,6 +1282,17 @@ export function completionToResponsesBody(
         item_id: item.id,
         output_index: outputIndex,
         arguments: item.arguments,
+      });
+    } else if (item.type === "custom_tool_call") {
+      body += sseBlock("response.custom_tool_call_input.delta", sequence++, {
+        item_id: item.id,
+        output_index: outputIndex,
+        delta: item.input,
+      });
+      body += sseBlock("response.custom_tool_call_input.done", sequence++, {
+        item_id: item.id,
+        output_index: outputIndex,
+        input: item.input,
       });
     }
     body += sseBlock("response.output_item.done", sequence++, { output_index: outputIndex, item });
@@ -938,31 +1378,42 @@ export async function dispatchNousDirect({
     });
   }
   const chat = toNousChatRequest(payload, model.upstreamModel, { internalKey });
-  const upstream = await fetchImpl(`${resolvedBaseUrl}/chat/completions`, {
-    method: "POST",
-    redirect: "error",
-    headers: {
-      Authorization: `Bearer ${credential}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(chat),
-    signal: requestSignal(signal),
-  });
-  if (!upstream.ok) return upstream;
-  const bytes = await boundedResponseBytes(upstream);
-  let completion;
-  try {
-    completion = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw responseError("Nous Direct returned invalid JSON.");
-  }
-  const adapted = completionToResponsesBody(completion, model.upstreamModel, payload.stream === true, {
-    internalKey,
-    toolNames: chat.tools?.map((tool) => tool.function.name) || [],
-  });
-  return new Response(adapted.body, {
-    status: 200,
-    headers: adaptedHeaders(upstream.headers, adapted.contentType),
-  });
+  return withNousProviderAttemptLock(async () => {
+    const upstream = await fetchImpl(`${resolvedBaseUrl}/chat/completions`, {
+      method: "POST",
+      redirect: "error",
+      headers: {
+        Authorization: `Bearer ${credential}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(chat),
+      signal: requestSignal(signal),
+    });
+    // Error responses are part of the same physical attempt. Consume their
+    // bounded body before releasing the shared lock, just as for success.
+    const bytes = await boundedResponseBytes(upstream);
+    if (!upstream.ok) return new Response(bytes.length ? bytes : null, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: upstream.headers,
+    });
+    let completion;
+    try {
+      completion = JSON.parse(bytes.toString("utf8"));
+    } catch {
+      throw responseError("Nous Direct returned invalid JSON.");
+    }
+    const adapted = completionToResponsesBody(completion, model.upstreamModel, payload.stream === true, {
+      internalKey,
+      toolNames: chat.tools?.map((tool) => tool.function.name) || [],
+      customToolNames: Array.isArray(payload.tools)
+        ? payload.tools.filter((tool) => tool?.type === "custom").map((tool) => tool.name)
+        : [],
+    });
+    return new Response(adapted.body, {
+      status: 200,
+      headers: adaptedHeaders(upstream.headers, adapted.contentType),
+    });
+  }, { signal });
 }

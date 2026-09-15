@@ -199,9 +199,14 @@ with the normal provider command after its environment is available.
 
 The adapter sends one request to Nous Chat Completions, preserves reasoning and
 ordered tool replay, and reports provider errors without automatic retries. It
-supports native function tools; native built-in web search is unsupported, so the
-dedicated Nous roles disable it. Use separately approved compatible function/MCP
-tools when research is needed.
+supports native function and Code Mode custom tools, with authenticated replay
+of original arguments and custom input. Provider attempts share the MCP bridge
+lock at `${XDG_CACHE_HOME:-~/.cache}/codex-nous/provider-attempt.lock`; Python 3
+is required (override its executable with `CODEX_ROUTER_NOUS_LOCK_PYTHON`).
+Native hosted web search is unavailable: incidental declarations are removed with
+an explicit model-facing notice; a forced hosted search fails locally before
+relay or provider contact. Use separately approved client function/MCP research
+tools when needed. Direct never substitutes another provider.
 
 Direct does not require Threadspan. The `integrated/nous/...` and
 `consult/nous/...` entries are separate Threadspan routes with their own runtime

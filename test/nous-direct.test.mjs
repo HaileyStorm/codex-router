@@ -41,6 +41,18 @@ const INTERNAL_ROUTER_KEY = "test-internal-service-key-with-sufficient-length";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const INTERNAL_KEY = "test-internal-service-key-with-sufficient-length";
 const CALLER_KEY = "test-router-caller-capability-with-sufficient-length";
+const TEST_LOCK_CACHE_HOME = mkdtempSync(path.join(os.tmpdir(), "codex-router-nous-lock-direct-"));
+const ORIGINAL_XDG_CACHE_HOME = process.env.XDG_CACHE_HOME;
+
+test.before(() => {
+  process.env.XDG_CACHE_HOME = TEST_LOCK_CACHE_HOME;
+});
+
+test.after(() => {
+  if (ORIGINAL_XDG_CACHE_HOME === undefined) delete process.env.XDG_CACHE_HOME;
+  else process.env.XDG_CACHE_HOME = ORIGINAL_XDG_CACHE_HOME;
+  rmSync(TEST_LOCK_CACHE_HOME, { recursive: true, force: true });
+});
 
 async function openPort() {
   const server = net.createServer();
@@ -282,7 +294,7 @@ test("Nous Direct safe diagnostics are marker-bound and retain their original sn
   try {
     toNousChatRequest({
       input: "hello",
-      tools: [{ type: "custom", name: "raw-secret-tool" }],
+      tools: [{ type: "web_search_preview", name: "raw-secret-tool" }],
     }, MODEL.upstreamModel);
   } catch (caught) {
     error = caught;
@@ -291,7 +303,7 @@ test("Nous Direct safe diagnostics are marker-bound and retain their original sn
   const expected = {
     status: 400,
     type: "local_nous_direct_error",
-    message: "tools[0] is not a flattened function tool.",
+    message: "tools[0] is not a supported function or custom tool.",
   };
   assert.deepEqual(safeNousDirectError(error), expected);
 
@@ -535,14 +547,14 @@ test("Nous Direct dispatches once to Chat Completions and never invents a Respon
   assert.equal(body.output.find((item) => item.type === "message").content[0].text, "done");
 });
 
-test("Nous Direct rejects invalid custom tools before any upstream fetch", async () => {
+test("Nous Direct rejects unsupported built-in tools before any upstream fetch", async () => {
   let attempts = 0;
   let error;
   await assert.rejects(
     dispatchNousDirect({
       payload: {
         input: "hello",
-        tools: [{ type: "custom", name: "raw-secret-tool" }],
+        tools: [{ type: "web_search_preview", name: "raw-secret-tool" }],
       },
       model: MODEL,
       provider: PROVIDER,
@@ -563,7 +575,7 @@ test("Nous Direct rejects invalid custom tools before any upstream fetch", async
   assert.deepEqual(safeNousDirectError(error), {
     status: 400,
     type: "local_nous_direct_error",
-    message: "tools[0] is not a flattened function tool.",
+    message: "tools[0] is not a supported function or custom tool.",
   });
 });
 
@@ -656,6 +668,36 @@ test("Nous Direct terminal failures, redirects, transport errors, and empties ne
     });
     assert.equal(attempts, 1);
     assert.equal(response.status, 402);
+  });
+
+  await t.test("error body finishes before the next attempt enters fetch", async () => {
+    let enteredFirst;
+    const firstEntered = new Promise(resolve => { enteredFirst = resolve; });
+    let finishBody;
+    let secondEntered = false;
+    const common = { payload: { input: "hello" }, model: MODEL, provider: PROVIDER,
+      credential: "TEST_NOUS_KEY", baseUrl: NOUS_BASE_URL, internalKey: INTERNAL_ROUTER_KEY };
+    const first = dispatchNousDirect({ ...common, fetchImpl: async () => {
+      const body = new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"error":"quota"}'));
+        finishBody = () => controller.close();
+      } });
+      enteredFirst();
+      return new Response(body, { status: 402 });
+    } });
+    await firstEntered;
+    const second = dispatchNousDirect({ ...common, fetchImpl: async () => {
+      secondEntered = true;
+      return new Response('{"error":"quota"}', { status: 402 });
+    } });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(secondEntered, false);
+    } finally { finishBody(); }
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(await a.text(), '{"error":"quota"}');
+    assert.equal(b.status, 402);
+    assert.equal(secondEntered, true);
   });
 
   await t.test("redirect", async () => {
@@ -932,13 +974,13 @@ test("API forwarder surfaces actionable local Nous validation errors", async () 
       body: JSON.stringify({
         model: "responses/nous-deepseek-v4-1-flash",
         input: "hello",
-        tools: [{ type: "custom", name: "raw-secret-tool" }],
+        tools: [{ type: "web_search_preview", name: "raw-secret-tool" }],
       }),
     });
     const body = await response.json();
     assert.equal(response.status, 400, forwarder.testErrors());
     assert.equal(body.error.type, "local_nous_direct_error");
-    assert.equal(body.error.message, "tools[0] is not a flattened function tool.");
+    assert.equal(body.error.message, "tools[0] is not a supported function or custom tool.");
     assert.doesNotMatch(JSON.stringify(body), /raw-secret-tool/);
   } finally {
     await stopChild(forwarder);

@@ -754,3 +754,45 @@ test("repairToolSchemaRoots returns the original array when nothing needs repair
   const tools = [{ type: "function", name: "fine", parameters: { type: "object", properties: { a: {} } } }];
   assert.equal(repairToolSchemaRoots(tools), tools);
 });
+
+
+test("custom tool namespaces roundtrip without rewriting raw input or adding arguments", () => {
+  const raw = "// @exec: {\"yield_time_ms\": 1000}\nconst value = '$`\\\"';\ntext(value);\n";
+  const format = { type: "grammar", syntax: "lark", definition: "start: /[\\s\\S]+/" };
+  const originalTools = [{ type: "namespace", name: "functions", tools: [
+    { type: "custom", name: "exec", description: "Run raw code", format },
+  ] }];
+  const flattened = flattenNamespaceTools(originalTools);
+  assert.deepEqual(flattened.tools[0], { type: "custom", name: "functions__exec", description: "Run raw code", format });
+  const item = { type: "custom_tool_call", id: "ctc_1", call_id: "call_1", name: "exec", namespace: "functions", input: raw };
+  const [history] = flattenNamespacedHistory([item], flattened.namespaces);
+  assert.equal(history.name, "functions__exec");
+  assert.equal(history.input, raw);
+  assert.equal("namespace" in history, false);
+  const restored = rewriteNamespaceResponsePayload({ output: [history] }, buildNamespaceLookups(flattened.namespaces));
+  assert.deepEqual(restored.output[0], item);
+  assert.equal("arguments" in restored.output[0], false);
+  assert.equal(originalTools[0].tools[0].name, "exec");
+});
+
+test("custom tool SSE restoration preserves delta bytes and final namespace", async () => {
+  const namespaces = new Map([["functions", new Set(["exec"])]]);
+  const input = "await tools.exec_command({cmd: 'pwd'});\n";
+  const events = [
+    { type: "response.output_item.added", item: { type: "custom_tool_call", id: "ctc_1", call_id: "call_1", name: "functions__exec", input: "" } },
+    { type: "response.custom_tool_call_input.delta", item_id: "ctc_1", delta: input },
+    { type: "response.custom_tool_call_input.done", item_id: "ctc_1", input },
+    { type: "response.output_item.done", item: { type: "custom_tool_call", id: "ctc_1", call_id: "call_1", name: "functions__exec", input } },
+    { type: "response.completed", response: { output: [{ type: "custom_tool_call", id: "ctc_1", call_id: "call_1", name: "functions__exec", input }] } },
+  ];
+  const source = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n";
+  const transform = new NamespaceToolCallTransform(namespaces);
+  const out = await collect(Readable.from([source.slice(0, 31), source.slice(31)]).pipe(transform));
+  const parsed = out.split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)));
+  assert.deepEqual(parsed.find((event) => event.type === "response.custom_tool_call_input.delta"), events[1]);
+  const item = parsed.find((event) => event.type === "response.output_item.done").item;
+  assert.equal(item.name, "exec");
+  assert.equal(item.namespace, "functions");
+  assert.equal(item.input, input);
+  assert.equal("arguments" in item, false);
+});

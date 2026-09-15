@@ -208,6 +208,23 @@ an explicit model-facing notice; a forced hosted search fails locally before
 relay or provider contact. Use separately approved client function/MCP research
 tools when needed. Direct never substitutes another provider.
 
+Native Desktop task messages retain their text and sender/recipient as user-level
+Chat data after the existing native relay resolves encrypted content. Unresolved
+or ambiguous encrypted input fails locally.
+
+Nous response/transport failures and upstream 429/5xx produce a non-retryable
+HTTP 400 with safe original status/class metadata. A private SQLite admission
+ledger under the router state records an HMAC digest before network work, so an
+automatic client retry cannot buy the same operation again after a lost response
+or process restart. It stores no prompt, credentials, or raw task identity and
+never returns a cached tool response. Keep this host-local ledger and internal
+key across restarts. Do not clear them to replay an uncertain attempt.
+
+Native thread/turn metadata distinguishes independent work. A stateless client
+sending an independent identical operation must supply a fresh UUID in
+`x-codex-nous-request-id`; a repeated identity and operation is rejected. New
+turns require no balance, certification, or owner-confirmation preflight.
+
 Direct does not require Threadspan. The `integrated/nous/...` and
 `consult/nous/...` entries are separate Threadspan routes with their own runtime
 acceptance. Existing V4 Flash/Pro entries remain explicit choices, not V4.1 aliases.

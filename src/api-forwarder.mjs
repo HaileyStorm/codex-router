@@ -49,6 +49,38 @@ import {
 
 installStableFetchTransport();
 
+const NOUS_TERMINAL_ERROR_TYPE = "local_nous_direct_terminal";
+const NOUS_TERMINAL_STATUS = 400;
+const nousTerminalErrors = new WeakMap();
+
+function nousTerminalError(
+  error,
+  { source = "transport", originalStatus, originalClass } = {},
+) {
+  const local = safeNousDirectError(error);
+  const status = Number.isInteger(originalStatus)
+    ? originalStatus
+    : Number.isInteger(local?.status)
+      ? local.status
+      : httpErrorStatus(error);
+  const details = {
+    type: NOUS_TERMINAL_ERROR_TYPE,
+    message: source === "response"
+      ? "Nous Direct returned an invalid response; automatic retry is disabled."
+      : source === "upstream"
+        ? "Nous Direct upstream failure is terminal; automatic retry is disabled."
+        : "Nous Direct transport failed before a safe response; automatic retry is disabled.",
+    retryable: false,
+    original_status: status,
+    original_class: originalClass || local?.type || `nous_direct_${source}_error`,
+  };
+  const wrapped = new Error(details.message);
+  wrapped.status = NOUS_TERMINAL_STATUS;
+  wrapped.code = "nous_direct_terminal";
+  nousTerminalErrors.set(wrapped, Object.freeze(details));
+  return wrapped;
+}
+
 const LISTEN_HOST =
   process.env.MODEL_ROUTER_API_HOST ||
   (TARGET === "codex"
@@ -721,8 +753,10 @@ async function handleRequest(request, response) {
       : normalized.body;
     let session = await upstreamSession(normalized.provider, credential, normalized.payload);
     let target = `${session.baseUrl}${route}${requestUrl.search}`;
-    let upstream = normalized.provider.responseAdapter === NOUS_CHAT_ADAPTER
-      ? await dispatchNousDirect({
+    let upstream;
+    if (normalized.provider.responseAdapter === NOUS_CHAT_ADAPTER) {
+      try {
+        upstream = await dispatchNousDirect({
           payload: normalized.payload,
           model: normalized.model,
           provider: normalized.provider,
@@ -730,19 +764,37 @@ async function handleRequest(request, response) {
           baseUrl: session.baseUrl,
           internalKey: INTERNAL_KEY,
           signal: controller.signal,
-        })
-      : await fetch(target, {
-          method: request.method,
-          headers: upstreamHeaders(
-            request.headers,
-            upstreamBody,
-            session.apiKey,
-            normalized.provider,
-            session.headers,
-          ),
-          body: upstreamBody,
-          signal: controller.signal,
         });
+      } catch (error) {
+        const local = safeNousDirectError(error);
+        if (local && local.status !== 502) throw error;
+        throw nousTerminalError(error, {
+          source: local ? "response" : "transport",
+        });
+      }
+      if (!upstream.ok && (upstream.status === 429 || upstream.status >= 500)) {
+        const originalStatus = upstream.status;
+        await upstream.body?.cancel().catch(() => undefined);
+        throw nousTerminalError(undefined, {
+          source: "upstream",
+          originalStatus,
+          originalClass: "nous_upstream_http_error",
+        });
+      }
+    } else {
+      upstream = await fetch(target, {
+        method: request.method,
+        headers: upstreamHeaders(
+          request.headers,
+          upstreamBody,
+          session.apiKey,
+          normalized.provider,
+          session.headers,
+        ),
+        body: upstreamBody,
+        signal: controller.signal,
+      });
+    }
     // Account routing can change with plan or policy. Re-resolve and replay once
     // before any response byte reaches the caller; every other status is relayed.
     if (normalized.provider.authProfile === "github-copilot" && upstream.status === 401) {
@@ -795,6 +847,18 @@ async function handleRequest(request, response) {
 
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
+    const terminalNousError = nousTerminalErrors.get(error);
+    if (terminalNousError) {
+      console.error(
+        "[api-forwarder] request failed: nous_direct_terminal",
+      );
+      if (!response.headersSent) {
+        writeJson(response, NOUS_TERMINAL_STATUS, { error: terminalNousError });
+      } else if (!response.writableEnded) {
+        response.destroy();
+      }
+      return;
+    }
     const localNousError = safeNousDirectError(error);
     const status = localNousError?.status ?? httpErrorStatus(error);
     // Names and codes only: a forwarder failure can wrap upstream response

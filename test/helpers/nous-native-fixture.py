@@ -53,18 +53,23 @@ def safe_json(value):
 
 
 def source_hashes():
-    return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in [ROOT / "src/nous-direct.mjs", ROOT / "src/router.mjs", ROOT / "src/namespace-relay.mjs", ROOT / "src/nous-tool-availability.mjs", ROOT / "src/nous-provider-lock.mjs", ROOT / "src/nous-provider-lock.py", Path(__file__).resolve()]}
+    return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in [ROOT / "src/nous-direct.mjs", ROOT / "src/router.mjs", ROOT / "src/namespace-relay.mjs", ROOT / "src/nous-tool-availability.mjs", ROOT / "src/nous-provider-lock.mjs", ROOT / "src/nous-provider-lock.py", ROOT / "src/api-forwarder.mjs", ROOT / "src/nous-native-attempts.mjs", Path(__file__).resolve()]}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="explicitly call Nous with synthetic data")
+    parser.add_argument("--fake-terminal-fault", action="store_true", help="fake invalid provider tool with native retries enabled; must terminate after one contact")
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--codex", default="codex")
     parser.add_argument("--model-catalog", type=Path, default=Path.home() / ".codex/codex-router/merged-models.json")
     parser.add_argument("--workspace-parent", type=Path)
     args = parser.parse_args()
+    if args.live and args.fake_terminal_fault:
+        parser.error("--fake-terminal-fault cannot contact a live provider")
     receipt = {"started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "run_id": str(uuid.uuid4()), "evidence_class": "native_code_mode_live_nous_isolated_router" if args.live else "native_code_mode_fake_provider_isolated_router", "model": MODEL, "effort": "max", "provider_live": args.live, "installed_services_changed": False}
+    if args.fake_terminal_fault:
+        receipt["evidence_class"] = "native_fake_provider_terminal_failure_with_client_retries_enabled"
     receipt["source_sha256"] = source_hashes()
     processes = []
     logs = []
@@ -106,6 +111,10 @@ if ({str(not args.live).lower()}) {{
     assert.equal(String(url), 'https://inference-api.nousresearch.com/v1/chat/completions');
     const p = JSON.parse(options.body); assert.equal(p.model, {json.dumps(UPSTREAM)});
     assert.equal(p.reasoning_effort, 'max'); calls += 1; assert.ok(calls <= 3);
+    if ({str(args.fake_terminal_fault).lower()}) {{
+      writeFileSync({json.dumps(str(proof_path))}, JSON.stringify({{calls, terminal_fault:true}}));
+      return new Response(JSON.stringify({{id:'synthetic_fault',model:{json.dumps(UPSTREAM)},choices:[{{index:0,message:{{role:'assistant',content:null,tool_calls:[{{id:'invalid_call',type:'function',function:{{name:'undeclared_fixture_tool',arguments:'{{}}'}}}}]}},finish_reason:'tool_calls'}}]}}),{{status:200,headers:{{'Content-Type':'application/json'}}}});
+    }}
     const prior = p.messages.filter(m => m.role === 'assistant' && m.tool_calls).flatMap(m => m.tool_calls);
     assert.deepEqual(prior.map(c => c.function.arguments), expected);
     let message, finish;
@@ -186,7 +195,7 @@ process.stdout.write('FIXTURE_READY\\n');
             call(1, "initialize", {"clientInfo": {"name": "nous_code_mode_fixture", "version": "1"}, "capabilities": {"experimentalApi": True}})
             native.stdin.write('{"method":"initialized","params":{}}\n')
             native.stdin.flush()
-            config = {"model_providers.fixture": {"name": "Isolated native fixture", "base_url": caller_url, "wire_api": "responses", "requires_openai_auth": False, "supports_standalone_web_search": True, "request_max_retries": 0, "stream_max_retries": 0}, "model_catalog_json": str(model_catalog), "model_reasoning_effort": "max", "features.code_mode": True, "features.code_mode_only": True, "features.memories": False, "features.goals": False, "features.unified_exec": True, "agents.enabled": False, "project_doc_max_bytes": 0, "web_search": "live", "shell_environment_policy.include_only": ["PATH", "LANG", "TMPDIR"]}
+            config = {"model_providers.fixture": {"name": "Isolated native fixture", "base_url": caller_url, "wire_api": "responses", "requires_openai_auth": False, "supports_standalone_web_search": True, "request_max_retries": 2 if args.fake_terminal_fault else 0, "stream_max_retries": 2 if args.fake_terminal_fault else 0}, "model_catalog_json": str(model_catalog), "model_reasoning_effort": "max", "features.code_mode": True, "features.code_mode_only": True, "features.memories": False, "features.goals": False, "features.unified_exec": True, "agents.enabled": False, "project_doc_max_bytes": 0, "web_search": "live", "shell_environment_policy.include_only": ["PATH", "LANG", "TMPDIR"]}
             start = call(2, "thread/start", {"cwd": str(workspace), "model": MODEL, "modelProvider": "fixture", "config": config, "ephemeral": True, "approvalPolicy": "never", "sandbox": "workspace-write", "baseInstructions": "Perform only the bounded synthetic file task using native Code Mode and tools. Preserve exact tool results.", "developerInstructions": "Only native-custom-proof.txt in the supplied workspace may be read or written. No network, other files, extra agents, or permission questions. Use exactly two separate exec calls, each containing one tools.exec_command call, then finish."})
             receipt["native_start_model"] = start.get("model")
             receipt["native_start_provider"] = start.get("modelProvider")
@@ -217,6 +226,10 @@ process.stdout.write('FIXTURE_READY\\n');
             if proof_path.exists():
                 receipt["mock_provider"] = json.loads(proof_path.read_text())
             receipt["accepted"] = bool(terminal and terminal.get("status") == "completed" and receipt["file_matches"] and receipt["final_marker_matches"] and receipt["commands_succeeded"])
+            if args.fake_terminal_fault:
+                receipt["expected_terminal_failure"] = True
+                receipt["native_client_retries_configured"] = 2
+                receipt["accepted"] = bool(terminal and terminal.get("status") == "failed" and "400" in json.dumps(terminal.get("error")) and not commands and data == b"pending\n" and receipt.get("mock_provider", {}).get("calls") == 1)
         except Exception as exc:
             receipt.update(accepted=False, error=str(exc).replace(CALLER, "[synthetic caller]").replace(INTERNAL, "[synthetic internal]"))
         finally:

@@ -119,6 +119,7 @@ import { nativeSessionHeaders } from "./codex-native-session.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
 import { isNousReasoningEnvelope } from "./nous-direct.mjs";
 import { prepareNousToolAvailability } from "./nous-tool-availability.mjs";
+import { claimNousNativeAttempt } from "./nous-native-attempts.mjs";
 
 // A profile slug is native authority. Refuse to start if a future external
 // registry entry claims the same identity; request-order precedence must never
@@ -2090,6 +2091,15 @@ async function handleResponses(request, response, requestUrl) {
           type: "local_nous_agent_input_unsupported",
           message: "Nous Direct cannot resolve multiple encrypted content parts in one input item. Send a fresh bounded task packet; nothing was sent to Nous.",
         } });
+        return;
+      }
+      const admission = claimNousNativeAttempt({
+        headers: request.headers, payload,
+        lane: compactV1 || compactV2 ? "compact" : "response",
+        internalKey: INTERNAL_KEY,
+      });
+      if (!admission.ok) {
+        writeJson(response, admission.status, { error: admission.error });
         return;
       }
     }

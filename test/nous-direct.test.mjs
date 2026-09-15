@@ -171,6 +171,28 @@ function isolatedRegistry(directory, baseUrl, credentialOverrides = {}) {
   return target;
 }
 
+function nousFetchRewritePreload(directory, targetOrigin) {
+  const target = path.join(directory, "nous-fetch-rewrite-preload.mjs");
+  writeFileSync(
+    target,
+    [
+      `const sourceOrigin = ${JSON.stringify(new URL(NOUS_BASE_URL).origin)};`,
+      `const targetOrigin = ${JSON.stringify(targetOrigin)};`,
+      "const nativeFetch = globalThis.fetch;",
+      "globalThis.fetch = function testOnlyNousFetch(input, init) {",
+      "  const raw = input instanceof Request ? input.url : String(input);",
+      "  const url = new URL(raw);",
+      "  if (url.origin !== sourceOrigin) return nativeFetch(input, init);",
+      "  const rewritten = `${targetOrigin}${url.pathname}${url.search}${url.hash}`;",
+      "  if (input instanceof Request) return nativeFetch(new Request(rewritten, input), init);",
+      "  return nativeFetch(rewritten, init);",
+      "};",
+      "",
+    ].join("\n"),
+  );
+  return target;
+}
+
 function completion(message, overrides = {}) {
   return {
     id: "chatcmpl_nous_test",
@@ -1046,6 +1068,108 @@ test("API forwarder surfaces actionable local Nous validation errors", async () 
     assert.doesNotMatch(JSON.stringify(body), /raw-secret-tool/);
   } finally {
     await stopChild(forwarder);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("API forwarder turns Nous retry-shaped failures into one-contact terminal 400s", async () => {
+  const requests = [];
+  let upstreamStatus = 200;
+  const upstream = await mockServer(async (request, response) => {
+    requests.push({ url: request.url, body: await requestJson(request) });
+    if (upstreamStatus !== 200) {
+      const body = '{"error":"provider body"}';
+      response.writeHead(upstreamStatus, {
+        "Content-Type": "application/json",
+        "Content-Length": String(Buffer.byteLength(body)),
+      });
+      response.end(body);
+      return;
+    }
+    const body = JSON.stringify(completion({
+      role: "assistant",
+      content: null,
+      tool_calls: [{
+        id: "unexpected-call",
+        type: "function",
+        function: { name: "not_requested", arguments: "{}" },
+      }],
+    }));
+    response.writeHead(200, {
+      "Content-Type": "application/json",
+      "Content-Length": String(Buffer.byteLength(body)),
+    });
+    response.end(body);
+  });
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "nous-forwarder-terminal-"));
+  const port = await openPort();
+  const preload = nousFetchRewritePreload(testRoot, `http://127.0.0.1:${upstream.port}`);
+  const forwarder = child("api-forwarder.mjs", {
+    MODEL_ROUTER_REGISTRY: isolatedRegistry(testRoot, NOUS_BASE_URL),
+    MODEL_ROUTER_STATE_DIR: path.join(testRoot, "state"),
+    CODEX_ROUTER_API_PORT: String(port),
+    CODEX_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
+    NOUS_API_KEY: "TEST_NOUS_ENVIRONMENT_ONLY_KEY",
+    CODEX_ROUTER_QUIET: "1",
+    NODE_OPTIONS: `--import=${preload}`,
+  });
+  const bodyFor = (toolName = "requested") => ({
+    model: "responses/nous-deepseek-v4-1-flash",
+    input: "hello",
+    reasoning: { effort: "max" },
+    tools: [{
+      type: "function",
+      name: toolName,
+      description: "Synthetic test tool",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    }],
+  });
+  try {
+    await waitFor(`http://127.0.0.1:${port}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const validationResponse = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(bodyFor()),
+    });
+    const validationBody = await validationResponse.json();
+    assert.equal(validationResponse.status, 400, forwarder.testErrors());
+    assert.deepEqual(validationBody.error, {
+      type: "local_nous_direct_terminal",
+      message: "Nous Direct returned an invalid response; automatic retry is disabled.",
+      retryable: false,
+      original_status: 502,
+      original_class: "local_nous_direct_error",
+    });
+    assert.equal(requests.length, 1, "response validation failure must contact Nous once");
+    assert.doesNotMatch(JSON.stringify(validationBody), /provider body|not_requested/);
+
+    for (const status of [429, 503]) {
+      upstreamStatus = status;
+      const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(bodyFor(`requested_${status}`)),
+      });
+      const terminal = await response.json();
+      assert.equal(response.status, 400, forwarder.testErrors());
+      assert.equal(terminal.error.type, "local_nous_direct_terminal");
+      assert.equal(terminal.error.original_status, status, JSON.stringify(terminal));
+      assert.equal(terminal.error.original_class, "nous_upstream_http_error");
+      assert.equal(terminal.error.retryable, false);
+      assert.doesNotMatch(JSON.stringify(terminal), /provider body/);
+      assert.equal(requests.length, status === 429 ? 2 : 3, "upstream retry-shaped failure must contact Nous once");
+    }
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
     rmSync(testRoot, { recursive: true, force: true });
   }
 });

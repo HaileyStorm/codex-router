@@ -52,17 +52,24 @@ export function nativeVisionEngines({ models, hidden, authorized } = {}) {
 // available on disk -- but it is still on disk, so the request path pairs it
 // with the caller's live session before nominating anything.
 export function installedNativeVisionEngines({ hidden } = {}) {
-  const shipped = new Set(
-    catalogModelsAt(MERGED_CATALOG_PATH).map((model) => String(model.slug)),
-  );
-  const captured = catalogModelsAt(NATIVE_CATALOG_PATH).filter((model) =>
-    shipped.has(String(model.slug)),
-  );
+  const merged = catalogModelsAt(MERGED_CATALOG_PATH);
+  const shipped = new Set(merged.map((model) => String(model.slug)));
+  const captured = catalogModelsAt(NATIVE_CATALOG_PATH);
+  const capturedBySlug = new Map(captured.map((model) => [String(model.slug), model]));
+  const syntheticNativeSlugs = new Set(["gpt-6-sol", "gpt-6-luna"]);
+  const effective = merged.flatMap((model) => {
+    const slug = String(model.slug);
+    const capturedModel = capturedBySlug.get(slug);
+    if (capturedModel) return [capturedModel];
+    return syntheticNativeSlugs.has(slug) ? [model] : [];
+  });
+  const nativeAuthMarker = captured.some((model) => shipped.has(String(model.slug)));
   return nativeVisionEngines({
-    models: captured,
+    models: effective,
     hidden: hidden ?? new Set(modelPickerSnapshot().hidden),
-    // The filter above is the gate. Nothing shipped means nothing survived,
-    // which is what a signed-out or login-free install looks like from here.
-    authorized: captured.length > 0,
+    // At least one captured native row must also survive in the merged catalog.
+    // That prevents a login-free alias from manufacturing native authorization
+    // while still allowing verified synthetic GPT-6 successor rows.
+    authorized: nativeAuthMarker,
   });
 }

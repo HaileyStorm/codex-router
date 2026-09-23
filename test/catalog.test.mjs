@@ -20,6 +20,7 @@ import {
   codexEffortVocabulary,
   nativeCatalogIsReusable,
   deriveBaseInstructions,
+  ensureGpt6Successors,
   mergeNativeCatalogs,
   mergeNativeModel,
   promoteNativeMultiAgent,
@@ -50,6 +51,37 @@ const template = {
   apply_patch_tool_type: "freeform",
   default_service_tier: "priority",
 };
+
+test("missing GPT-6 Sol and Luna rows are synthesized without overriding upstream rows", () => {
+  const nativeSol = {
+    ...template,
+    slug: "gpt-5.6-sol",
+    display_name: "GPT-5.6-Sol",
+    multi_agent_version: "v2",
+  };
+  const nativeLuna = {
+    ...template,
+    slug: "gpt-5.6-luna",
+    display_name: "GPT-5.6-Luna",
+    multi_agent_version: "v1",
+  };
+  const synthesized = ensureGpt6Successors([nativeSol, nativeLuna]);
+  const bySlug = new Map(synthesized.map((model) => [model.slug, model]));
+  assert.equal(bySlug.get("gpt-6-sol").default_reasoning_level, "xhigh");
+  assert.equal(bySlug.get("gpt-6-luna").default_reasoning_level, "max");
+  assert.equal(bySlug.get("gpt-6-luna").multi_agent_version, "v2");
+  assert.equal(bySlug.get("gpt-6-sol").context_window, 602_000);
+  assert.equal(bySlug.get("gpt-6-sol").max_context_window, 1_050_000);
+  assert.deepEqual(
+    bySlug.get("gpt-6-sol").supported_reasoning_levels.map(({ effort }) => effort),
+    ["none", "low", "medium", "high", "xhigh", "max"],
+  );
+
+  const upstreamSol = { ...nativeSol, slug: "gpt-6-sol", description: "upstream" };
+  const withUpstream = ensureGpt6Successors([nativeSol, nativeLuna, upstreamSol]);
+  assert.equal(withUpstream.filter(({ slug }) => slug === "gpt-6-sol").length, 1);
+  assert.equal(withUpstream.find(({ slug }) => slug === "gpt-6-sol").description, "upstream");
+});
 
 test("Flash-Next is absent by default and explicit selection publishes exact picker metadata", () => {
   const state = mkdtempSync(path.join(os.tmpdir(), "catalog-freetoken-"));
@@ -207,8 +239,8 @@ test("routed models rewrite GPT identity text to the external model name", () =>
 
 test("Threadspan routes render as visible conservative native-picker entries", () => {
   const slugs = [
-    "delegate/grok-build/grok-4.6",
-    "consult/grok-build/grok-4.6",
+    "delegate/grok-build/grok-4.7",
+    "consult/grok-build/grok-4.7",
     "integrated/nous/deepseek/deepseek-v4-flash-0731",
     "consult/nous/deepseek/deepseek-v4-flash-0731",
     "integrated/nous/deepseek/deepseek-v4-pro-0813",

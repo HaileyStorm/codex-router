@@ -103,7 +103,7 @@ test("every Codex app tool reaches xAI with an object root", () => {
   );
 
   const request = toResponsesRequest({
-    model: "grok-4.6",
+    model: "grok-4.7",
     messages: [{ role: "user", content: "hi" }],
     tools: appTools.map((tool) => ({
       type: "function",

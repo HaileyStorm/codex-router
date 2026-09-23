@@ -2,13 +2,13 @@
   "version": 1,
   "models": [
     {
-      "slug": "delegate/grok-build/grok-4.6",
-      "gatewayModel": "threadspan-delegate-grok-build-grok-4-6",
-      "upstreamModel": "delegate/grok-build/grok-4.6",
+      "slug": "delegate/grok-build/grok-4.7",
+      "gatewayModel": "threadspan-delegate-grok-build-grok-4-7",
+      "upstreamModel": "delegate/grok-build/grok-4.7",
       "provider": "delegate",
       "listed": true,
       "displayName": "Grok Agent",
-      "description": "Uses the selected Threadspan owner session for one Grok 4.6 Fast agent turn with workspace tools.",
+      "description": "Uses the selected Threadspan owner session for one Grok 4.7 Fast agent turn with workspace tools.",
       "priority": 0,
       "defaultEffort": "high",
       "reasoningLevels": [

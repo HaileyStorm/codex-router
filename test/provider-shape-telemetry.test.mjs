@@ -34,7 +34,7 @@ test("provider tool shape is deterministic without persisting tool names", () =>
 test("provider shape telemetry records bounded item types and terminal state", () => {
   const telemetry = new ProviderShapeTelemetry({
     provider: "grok-oauth",
-    model: "grok-4.6",
+    model: "grok-4.7",
     tools: [{ type: "function", name: "view_image" }],
     key: KEY,
     requestId: "00000000-0000-4000-8000-000000000001",
@@ -74,7 +74,7 @@ test("provider shape telemetry records bounded item types and terminal state", (
 test("provider shape telemetry deduplicates disjoint item ids by output index", () => {
   const telemetry = new ProviderShapeTelemetry({
     provider: "grok-oauth",
-    model: "grok-4.6",
+    model: "grok-4.7",
     tools: [],
     key: KEY,
     at: 0,
@@ -100,7 +100,7 @@ test("provider shape diagnostic appends a private sanitized record", () => {
   try {
     const telemetry = new ProviderShapeTelemetry({
       provider: "grok-oauth",
-      model: "grok-4.6",
+      model: "grok-4.7",
       tools: [{ type: "function", name: "view_image" }],
       key: KEY,
     });
@@ -130,7 +130,7 @@ test("telemetry construction does not clear an append-capacity failure", () => {
     assert.ok(
       createProviderShapeTelemetry({
         provider: "grok-oauth",
-        model: "grok-4.6",
+        model: "grok-4.7",
         tools: [],
         key: KEY,
       }),
@@ -152,7 +152,7 @@ test("provider shape telemetry can be disabled without creating a key", () => {
     assert.equal(
       createProviderShapeTelemetry({
         provider: "grok-oauth",
-        model: "grok-4.6",
+        model: "grok-4.7",
         tools: [],
         keyPath,
         enabled: false,

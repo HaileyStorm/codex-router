@@ -945,7 +945,7 @@ test("global Fast state governs native request boundaries and never leaks to rou
           additional_speed_tiers: ["fast"],
         },
         {
-          slug: "grok-oauth/grok-4.6",
+          slug: "grok-oauth/grok-4.7",
           service_tiers: [],
           additional_speed_tiers: [],
         },
@@ -1014,7 +1014,7 @@ test("global Fast state governs native request boundaries and never leaks to rou
       method: "POST",
       headers,
       body: JSON.stringify({
-        model: "grok-oauth/grok-4.6",
+        model: "grok-oauth/grok-4.7",
         input: "external",
         service_tier: "priority",
       }),
@@ -1033,7 +1033,7 @@ test("global Fast state governs native request boundaries and never leaks to rou
       method: "POST",
       headers,
       body: JSON.stringify({
-        model: "grok-oauth/grok-4.6",
+        model: "grok-oauth/grok-4.7",
         input: compactInput,
         service_tier: "priority",
       }),
@@ -1045,7 +1045,7 @@ test("global Fast state governs native request boundaries and never leaks to rou
       method: "POST",
       headers,
       body: JSON.stringify({
-        model: "grok-oauth/grok-4.6",
+        model: "grok-oauth/grok-4.7",
         stream: false,
         input: [...compactInput, { type: "compaction_trigger" }],
         service_tier: "priority",
@@ -1274,7 +1274,7 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
     CODEX_ROUTER_QUIET: "1",
   };
   const router = run("router.mjs", routerEnv);
-  const route = "consult/grok-build/grok-4.6";
+  const route = "consult/grok-build/grok-4.7";
   const headersFor = (root = rootTurnId) => ({
     "Content-Type": "application/json",
     "X-Codex-Turn-Metadata": JSON.stringify({
@@ -1340,7 +1340,7 @@ test("Threadspan picker selection creates an exact lease with no fallback", asyn
     });
     assert.equal(external.status, 200, router.testErrors());
     assert.equal(gatewayRequests.length, 2);
-    assert.equal(gatewayRequests[1].model, "threadspan-consult-grok-build-grok-4-6");
+    assert.equal(gatewayRequests[1].model, "threadspan-consult-grok-build-grok-4-7");
     assert.equal(gatewayRequests[1].client_metadata, undefined);
     assert.equal(gatewayRequests[1].metadata.keep, "yes");
     assert.equal(gatewayRequests[1].metadata.cwd, workspace);
@@ -1770,7 +1770,7 @@ test("router relays encrypted Codex subagent payloads before external routing", 
     assert.equal(nativeRequests.length, 1);
     assert.equal(nativeRequests[0].headers.authorization, "Bearer CHATGPT_SESSION_TOKEN");
     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-id");
-    assert.equal(nativeRequests[0].body.model, "gpt-5.6-sol");
+    assert.equal(nativeRequests[0].body.model, "gpt-6-sol");
     assert.equal(nativeRequests[0].body.stream, true);
     assert.equal(nativeRequests[0].body.tool_choice.name, "relay_external_agent_payload");
     assert.equal(gatewayRequests.length, 1);

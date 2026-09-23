@@ -20,7 +20,7 @@ import {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const modelIndex = args.indexOf("--model");
-const model = modelIndex === -1 ? "grok-oauth/grok-4.6" : args[modelIndex + 1];
+const model = modelIndex === -1 ? "grok-oauth/grok-4.7" : args[modelIndex + 1];
 
 if (!args.includes("--yes")) {
   console.error(

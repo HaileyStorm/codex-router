@@ -2,13 +2,13 @@
   "version": 1,
   "models": [
     {
-      "slug": "consult/grok-build/grok-4.6",
-      "gatewayModel": "threadspan-consult-grok-build-grok-4-6",
-      "upstreamModel": "consult/grok-build/grok-4.6",
+      "slug": "consult/grok-build/grok-4.7",
+      "gatewayModel": "threadspan-consult-grok-build-grok-4-7",
+      "upstreamModel": "consult/grok-build/grok-4.7",
       "provider": "consult",
       "listed": true,
       "displayName": "Grok Consult",
-      "description": "Uses the selected Threadspan owner session for one text-only Grok 4.6 Fast consultation.",
+      "description": "Uses the selected Threadspan owner session for one text-only Grok 4.7 Fast consultation.",
       "priority": 1,
       "defaultEffort": "high",
       "reasoningLevels": [

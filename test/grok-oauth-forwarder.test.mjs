@@ -214,7 +214,7 @@ test("translates Chat Completions to Grok Responses and back (text + tools)", as
       method: "POST",
       headers: auth,
       body: JSON.stringify({
-        model: "grok-4.6",
+        model: "grok-4.7",
         messages: [{ role: "user", content: "ping" }],
         reasoning_effort: "xhigh",
       }),
@@ -317,7 +317,7 @@ test("Grok provider-facing telemetry proves view_image exposure without naming i
       method: "POST",
       headers: auth,
       body: JSON.stringify({
-        model: "grok-4.6",
+        model: "grok-4.7",
         messages: [{ role: "user", content: "Inspect the image." }],
         tools: [
           {
@@ -386,7 +386,7 @@ test("Grok exact-tool canary sends one function, no hosted search, and preserves
       method: "POST",
       headers: exactToolCanaryAuth,
       body: JSON.stringify({
-        model: "grok-4.6",
+        model: "grok-4.7",
         messages: [{ role: "user", content: "Inspect the image." }],
         tools: [
           {
@@ -431,7 +431,7 @@ test("Grok exact-tool canary rejects malformed or mismatched requests before ups
   const child = startForwarder(port, backend.port, writeSession(dir));
   const base = `http://127.0.0.1:${port}`;
   const baseBody = {
-    model: "grok-4.6",
+    model: "grok-4.7",
     messages: [{ role: "user", content: "Inspect the image." }],
     tools: [{ type: "function", function: { name: "view_image" } }],
   };
@@ -512,7 +512,7 @@ test("Grok function-output canary forwards one ordered call/output pair without 
       method: "POST",
       headers: functionOutputCanaryAuth,
       body: JSON.stringify({
-        model: "grok-4.6",
+        model: "grok-4.7",
         messages: [
           { role: "user", content: "Inspect the image." },
           {
@@ -557,7 +557,7 @@ test("Grok function-output canary forwards one ordered call/output pair without 
       method: "POST",
       headers: auth,
       body: JSON.stringify({
-        model: "grok-4.6",
+        model: "grok-4.7",
         messages: [{ role: "user", content: "Inspect another image." }],
         tools: [{ type: "function", function: { name: "view_image" } }],
         tool_choice: "required",
@@ -600,7 +600,7 @@ test("Grok function-output canary rejects malformed history before upstream", as
   };
   const output = { role: "tool", tool_call_id: "call_image", content: "pixels" };
   const body = (messages, extra = {}) => ({
-    model: "grok-4.6",
+    model: "grok-4.7",
     messages,
     ...extra,
   });
@@ -681,7 +681,7 @@ test("Grok telemetry accepts CRLF and a terminal SSE frame without trailing deli
       method: "POST",
       headers: auth,
       body: JSON.stringify({
-        model: "grok-4.6",
+        model: "grok-4.7",
         messages: [{ role: "user", content: "ping" }],
       }),
     });
@@ -827,7 +827,7 @@ test("toResponsesRequest omits hosted search tools when disabled", () => {
 test("toResponsesRequest leaves default, required, auto, and none tool choice unchanged", () => {
   for (const toolChoice of [undefined, "required", "auto", "none"]) {
     const chat = {
-      model: "grok-4.6",
+      model: "grok-4.7",
       messages: [{ role: "user", content: "Inspect the image." }],
       tools: [{ type: "function", function: { name: "view_image" } }],
     };
@@ -852,14 +852,14 @@ test("hostedSearchEnabledFor follows the registry searchTool declaration", () =>
     },
     {
       provider: "grok-oauth",
-      upstreamModel: "grok-4.6",
+      upstreamModel: "grok-4.7",
       searchTool: { mode: "hosted" },
     },
     { provider: "grok-oauth", upstreamModel: "grok-4.5-mini" },
     { provider: "kimi-oauth", upstreamModel: "kimi-k3", searchTool: { mode: "hosted" } },
   ];
   assert.equal(hostedSearchEnabledFor("grok-4.5", models), true);
-  assert.equal(hostedSearchEnabledFor("grok-4.6", models), true);
+  assert.equal(hostedSearchEnabledFor("grok-4.7", models), true);
   // No declaration means conservative plain function calling.
   assert.equal(hostedSearchEnabledFor("grok-4.5-mini", models), false);
   // Another provider's declaration must not leak into this forwarder.
@@ -868,7 +868,7 @@ test("hostedSearchEnabledFor follows the registry searchTool declaration", () =>
 
 test("hostedSearchEnabledFor covers the checked-in Grok OAuth model", () => {
   assert.equal(hostedSearchEnabledFor("grok-4.5"), true);
-  assert.equal(hostedSearchEnabledFor("grok-4.6"), true);
+  assert.equal(hostedSearchEnabledFor("grok-4.7"), true);
 });
 
 test("toResponsesRequest preserves the client's image detail level", () => {

@@ -32,7 +32,7 @@ const PRICE_TABLE = {
   "gpt-5.6-luna": { input: 1.25, output: 10 },
   "gpt-5.6-terra": { input: 1.25, output: 10 },
   "grok-oauth/grok-4.5": { input: 3, output: 15 },
-  "grok-oauth/grok-4.6": { input: 3, output: 15 },
+  "grok-oauth/grok-4.7": { input: 3, output: 15 },
   default: { input: 1, output: 5 },
 };
 

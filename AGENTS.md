@@ -10,7 +10,7 @@ These instructions apply when a user asks an agent to install this repository.
   project, provider, and named-role selections always win.
 - Astra owns design, planning, organization, synthesis and complex diagnosis.
   Eligible bounded implementation, fact gathering, verification and monitoring
-  prefer exact Nous DeepSeek V4.1 Flash Max, with GPT-5.6 Luna Max fallback.
+  prefer exact Nous DeepSeek V4.1 Flash Max, with GPT-6 Luna Max fallback.
   Keep private parent context out of external delegation without approval.
 - Delegate only bounded independent work where parallelism saves time or
   improves quality. Start with the smallest useful set, keep one writer per

@@ -112,7 +112,7 @@ map, which restores native GPT routing.
 | Qwen3.8 Flash Next Local | `freetoken/qwen3.8-flash-next` | `freetoken-qwen3-8-flash-next` | `Qwen3.8-Flash-Next-NVFP4-FP8-344f3a68` |
 | DeepSeek V4 Flash | `deepseek/deepseek-v4-flash` | `deepseek-v4-flash` | `deepseek-v4-flash` |
 | DeepSeek V4 Pro | `deepseek/deepseek-v4-pro` | `deepseek-v4-pro` | `deepseek-v4-pro` |
-| Grok Direct | `grok-oauth/grok-4.6` | `grok-oauth-grok-4-6` | `grok-4.6` |
+| Grok Direct | `grok-oauth/grok-4.7` | `grok-oauth-grok-4-7` | `grok-4.7` |
 | Grok Direct 4.5 | `grok-oauth/grok-4.5` | `grok-oauth-grok-4-5` | `grok-4.5` |
 | Grok 4.5 | `grok-api/grok-4.5` | `grok-api-grok-4-5` | `grok-4.5` |
 | Claude Opus 4.8 | `anthropic-api/claude-opus-4.8` | `anthropic-api-claude-opus-4-8` | `claude-opus-4-8` |

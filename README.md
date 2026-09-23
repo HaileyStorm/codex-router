@@ -123,14 +123,14 @@ Linux installations support the Codex CLI.
 | Qwen3.8 Flash Next (Local) | `freetoken/qwen3.8-flash-next` | No key; explicit on-demand loopback server |
 | DeepSeek V4 Flash (API) | `deepseek/deepseek-v4-flash` | DeepSeek API key |
 | DeepSeek V4 Pro (API) | `deepseek/deepseek-v4-pro` | DeepSeek API key |
-| Grok Agent | `delegate/grok-build/grok-4.6` | Existing local Threadspan owner session |
-| Grok Consult | `consult/grok-build/grok-4.6` | Existing local Threadspan owner session |
+| Grok Agent | `delegate/grok-build/grok-4.7` | Existing local Threadspan owner session |
+| Grok Consult | `consult/grok-build/grok-4.7` | Existing local Threadspan owner session |
 | Nous Direct · DeepSeek V4.1 Flash | `nous/deepseek/deepseek-v4.1-flash` | `NOUS_API_KEY` in the router process environment |
 | Nous Tools · DeepSeek V4.1 Flash | `integrated/nous/deepseek/deepseek-v4.1-flash` | Existing local Threadspan owner session |
 | Nous Consult · DeepSeek V4.1 Flash | `consult/nous/deepseek/deepseek-v4.1-flash` | Existing local Threadspan owner session |
 | Nous Tools · DeepSeek V4 Flash/Pro | `integrated/nous/deepseek/deepseek-v4-{flash-0731,pro-0813}` | Existing local Threadspan owner session |
 | Nous Consult · DeepSeek V4 Flash/Pro | `consult/nous/deepseek/deepseek-v4-{flash-0731,pro-0813}` | Existing local Threadspan owner session |
-| Grok Direct | `grok-oauth/grok-4.6` | Official Grok CLI OAuth session |
+| Grok Direct | `grok-oauth/grok-4.7` | Official Grok CLI OAuth session |
 | Grok Direct 4.5 | `grok-oauth/grok-4.5` | Official Grok CLI OAuth session |
 | Grok 4.5 (API) | `grok-api/grok-4.5` | Separately billed xAI API key |
 | Claude Opus 4.8 (API) | `anthropic-api/claude-opus-4.8` | Separately billed Anthropic API key |

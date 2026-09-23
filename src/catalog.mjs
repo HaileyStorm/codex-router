@@ -489,15 +489,88 @@ function rewriteModelMessages(messages, model) {
   return next;
 }
 
-const GPT_5_6_POLICY_SLUGS = new Set([
+const GPT_6_SUCCESSOR_POLICY = Object.freeze([
+  Object.freeze({
+    slug: "gpt-6-sol",
+    predecessor: "gpt-5.6-sol",
+    displayName: "GPT-6-Sol",
+    description: "Built to power complex coding and agentic workflows.",
+    priority: 2,
+    defaultReasoningLevel: "xhigh",
+  }),
+  Object.freeze({
+    slug: "gpt-6-luna",
+    predecessor: "gpt-5.6-luna",
+    displayName: "GPT-6-Luna",
+    description: "Our most efficient model for focused, high-volume tasks.",
+    priority: 3,
+    defaultReasoningLevel: "max",
+  }),
+]);
+const GPT_6_SUCCESSOR_CONTEXT_WINDOW = 602_000;
+const GPT_6_SUCCESSOR_MAX_CONTEXT_WINDOW = 1_050_000;
+const GPT_6_SUCCESSOR_AUTO_COMPACT_TOKEN_LIMIT = 512_000;
+// Retained for parsing and routing older saved tasks. The picker policy hides
+// these predecessors; compatibility metadata remains until those tasks age out.
+const GPT_5_6_COMPATIBILITY_SLUGS = new Set([
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
 ]);
-const GPT_5_6_CONTEXT_WINDOW = 320_000;
-const GPT_5_6_AUTO_COMPACT_TOKEN_LIMIT = 272_000;
+const GPT_5_6_COMPATIBILITY_CONTEXT_WINDOW = 320_000;
+const GPT_5_6_COMPATIBILITY_AUTO_COMPACT_TOKEN_LIMIT = 272_000;
 const GPT_6_ASTRA_CONTEXT_WINDOW = 602_000;
 const GPT_6_ASTRA_AUTO_COMPACT_TOKEN_LIMIT = 512_000;
+
+const GPT_6_SUCCESSOR_REASONING_LEVELS = Object.freeze([
+  Object.freeze({ effort: "none", description: "No reasoning" }),
+  Object.freeze({ effort: "low", description: "Fast responses with lighter reasoning" }),
+  Object.freeze({
+    effort: "medium",
+    description: "Balances speed and reasoning depth for everyday tasks",
+  }),
+  Object.freeze({ effort: "high", description: "Greater reasoning depth for complex problems" }),
+  Object.freeze({
+    effort: "xhigh",
+    description: "Extra high reasoning depth for complex problems",
+  }),
+  Object.freeze({ effort: "max", description: "Maximum reasoning depth for the hardest problems" }),
+]);
+
+// The account-aware Codex catalog can lag a newly enabled native model even
+// after the backend already accepts it. Publish the two documented GPT-6
+// successors from their shape-compatible predecessors until upstream adds the
+// native rows; an upstream row always wins unchanged once it appears.
+export function ensureGpt6Successors(models) {
+  const next = [...models];
+  const bySlug = new Map(next.map((model) => [String(model.slug), model]));
+  for (const policy of GPT_6_SUCCESSOR_POLICY) {
+    if (bySlug.has(policy.slug)) continue;
+    const base = bySlug.get(policy.predecessor) || bySlug.get("gpt-6-astra");
+    if (!base) continue;
+    const successor = {
+      ...base,
+      slug: policy.slug,
+      display_name: policy.displayName,
+      description: policy.description,
+      priority: policy.priority,
+      default_reasoning_level: policy.defaultReasoningLevel,
+      supported_reasoning_levels: GPT_6_SUCCESSOR_REASONING_LEVELS.map((level) => ({
+        ...level,
+      })),
+      context_window: GPT_6_SUCCESSOR_CONTEXT_WINDOW,
+      max_context_window: GPT_6_SUCCESSOR_MAX_CONTEXT_WINDOW,
+      auto_compact_token_limit: GPT_6_SUCCESSOR_AUTO_COMPACT_TOKEN_LIMIT,
+      visibility: "list",
+      multi_agent_version: "v2",
+      availability_nux: null,
+      upgrade: null,
+    };
+    next.push(successor);
+    bySlug.set(policy.slug, successor);
+  }
+  return next;
+}
 
 function normalizeNativeModel(model) {
   const next = {
@@ -514,9 +587,14 @@ function normalizeNativeModel(model) {
         ? model.supports_reasoning_summaries
         : false,
   };
-  if (GPT_5_6_POLICY_SLUGS.has(String(model.slug))) {
-    next.context_window = GPT_5_6_CONTEXT_WINDOW;
-    next.auto_compact_token_limit = GPT_5_6_AUTO_COMPACT_TOKEN_LIMIT;
+  if (GPT_6_SUCCESSOR_POLICY.some(({ slug }) => slug === String(model.slug))) {
+    next.context_window = GPT_6_SUCCESSOR_CONTEXT_WINDOW;
+    next.max_context_window = GPT_6_SUCCESSOR_MAX_CONTEXT_WINDOW;
+    next.auto_compact_token_limit = GPT_6_SUCCESSOR_AUTO_COMPACT_TOKEN_LIMIT;
+  }
+  if (GPT_5_6_COMPATIBILITY_SLUGS.has(String(model.slug))) {
+    next.context_window = GPT_5_6_COMPATIBILITY_CONTEXT_WINDOW;
+    next.auto_compact_token_limit = GPT_5_6_COMPATIBILITY_AUTO_COMPACT_TOKEN_LIMIT;
   }
   if (String(model.slug) === "gpt-6-astra") {
     next.context_window = GPT_6_ASTRA_CONTEXT_WINDOW;
@@ -756,17 +834,10 @@ function sortCatalogModels(models) {
   });
 }
 
-// Native entries carry upstream's static multi_agent_version, and upstream
-// still ships gpt-5.6-luna as "v1" even though it runs correctly on the v2
-// backend (openai/codex#35097, #36294). spawn_agent filters candidate child
-// models on that static value, so a v1 entry can never be delegated to by a v2
-// parent.
-//
-// These upstream-verified slugs run fine on the v2 backend, so they are
-// promoted unconditionally — no mode switch, no Settings dance. The subagent
-// opt-in below only reaches the *remaining* native models, which stay
-// conservative because their v2 relay paths have not been verified.
-const NATIVE_V2_BACKEND_SLUGS = new Set(["gpt-5.6-luna"]);
+// GPT-6 Luna is the default bounded-work child and uses the v2 collaboration
+// backend. spawn_agent filters candidate child models on this field, so keep
+// the synthesized and eventual upstream row eligible.
+const NATIVE_V2_BACKEND_SLUGS = new Set(["gpt-6-luna", "gpt-5.6-luna"]);
 
 export function promoteNativeMultiAgent(models, settings, hidden = new Set()) {
   const enabled = new Set(settings.enabled || []);
@@ -793,10 +864,11 @@ export function buildMergedCatalog(native, routedModelsList, { includeNative = t
   if (!template) {
     throw new Error("Native model catalog is empty.");
   }
+  const nativeModels = ensureGpt6Successors(native.models);
   const normalizedNative = includeNative
-    ? native.models.map((model) => normalizeNativeModel(model))
+    ? nativeModels.map((model) => normalizeNativeModel(model))
     : [];
-  for (const model of native.models) {
+  for (const model of nativeModels) {
     if (isNativeProfileNamespace(model.slug)) {
       throw new Error(`Raw native catalog uses the reserved profile namespace: ${model.slug}`);
     }
@@ -892,7 +964,11 @@ function main() {
     userSlugs,
     Date.now(),
   );
-  const captured = nativeCatalog();
+  const rawCaptured = nativeCatalog();
+  const captured = {
+    ...rawCaptured,
+    models: ensureGpt6Successors(rawCaptured.models),
+  };
   const native = {
     ...captured,
     models: promoteNativeMultiAgent(captured.models, multiAgentSettings, hiddenModels),

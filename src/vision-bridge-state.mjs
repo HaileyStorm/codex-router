@@ -30,7 +30,7 @@ export const VISION_BRIDGE_STATE_PATH =
 //
 // This is deliberately *not* the fallback for a state file that exists and
 // cannot be read -- see `disabledSettings()`.
-export const DEFAULT_VISION_ENGINE = "gpt-5.6-luna";
+export const DEFAULT_VISION_ENGINE = "gpt-6-luna";
 export const DEFAULT_VISION_EFFORT = "low";
 
 function defaultSettings() {

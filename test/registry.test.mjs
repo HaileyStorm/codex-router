@@ -56,7 +56,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "commandcode/gpt-5.6-sol",
       "commandcode/gpt-5.6-terra",
       "commandcode/grok-4.5",
-      "commandcode/grok-4.6",
+      "commandcode/grok-4.7",
       "commandcode/hy3-paid",
       "commandcode/inkling-small",
       "commandcode/inkling",
@@ -84,7 +84,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "freetoken/qwen3.8-flash-next",
       "grok-api/grok-4.5",
       "grok-oauth/grok-4.5",
-      "grok-oauth/grok-4.6",
+      "grok-oauth/grok-4.7",
       "kimi-api/kimi-k3",
       "kimi-api-cn/kimi-k3",
       "kimi-oauth/k3",
@@ -131,8 +131,8 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "consult/nous/deepseek/deepseek-v4.1-flash",
       "consult/nous/deepseek/deepseek-v4-flash-0731",
       "consult/nous/deepseek/deepseek-v4-pro-0813",
-      "consult/grok-build/grok-4.6",
-      "delegate/grok-build/grok-4.6",
+      "consult/grok-build/grok-4.7",
+      "delegate/grok-build/grok-4.7",
       "integrated/nous/deepseek/deepseek-v4.1-flash",
       "integrated/nous/deepseek/deepseek-v4-flash-0731",
       "integrated/nous/deepseek/deepseek-v4-pro-0813",
@@ -389,7 +389,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
   // probe AGENTS.md requires, and a v2 claim is not inherited from a sibling
   // route: kimi-api-cn is the same model on a different platform, which is
   // exactly the kind of "surely it also works" assumption the probe exists for.
-  const unprovenForV2 = new Set(["grok-oauth/grok-4.6", "kimi-api-cn/kimi-k3"]);
+  const unprovenForV2 = new Set(["grok-oauth/grok-4.7", "kimi-api-cn/kimi-k3"]);
   for (const model of LISTED_MODELS.filter(({ provider, slug }) =>
     /^(?:kimi|grok)-/.test(provider) && !unprovenForV2.has(slug),
   )) {
@@ -424,7 +424,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
   }
   // Hosted search is an xAI-backend behavior. Standalone search is limited to
   // provider/model pairs verified against Codex's client-side replay path.
-  for (const slug of ["grok-oauth/grok-4.5", "grok-oauth/grok-4.6"]) {
+  for (const slug of ["grok-oauth/grok-4.5", "grok-oauth/grok-4.7"]) {
     assert.deepEqual(MODEL_BY_SLUG.get(slug).searchTool, { mode: "hosted" });
   }
   const standaloneSearchSlugs = new Set([
@@ -433,7 +433,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "xiaomi-mimo/mimo-v2.5",
   ]);
   for (const model of MODELS) {
-    if (["grok-oauth/grok-4.5", "grok-oauth/grok-4.6"].includes(model.slug) || standaloneSearchSlugs.has(model.slug)) continue;
+    if (["grok-oauth/grok-4.5", "grok-oauth/grok-4.7"].includes(model.slug) || standaloneSearchSlugs.has(model.slug)) continue;
     assert.equal(model.searchTool, undefined, model.slug);
   }
   // Original-detail images are declared per slug on canonical vision
@@ -446,7 +446,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "anthropic-api/claude-opus-4.8",
     "grok-api/grok-4.5",
     "grok-oauth/grok-4.5",
-    "grok-oauth/grok-4.6",
+    "grok-oauth/grok-4.7",
     "kimi-api-cn/kimi-k3",
     "kimi-api/kimi-k3",
     "kimi-oauth/k3",
@@ -504,18 +504,18 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(grok.contextWindow, 500_000);
   assert.deepEqual(grok.reasoningLevels.map((level) => level.effort), ["low", "medium", "high"]);
   assert.deepEqual(grok.inputModalities, ["text", "image"]);
-  const grok46 = MODEL_BY_SLUG.get("grok-oauth/grok-4.6");
+  const grok46 = MODEL_BY_SLUG.get("grok-oauth/grok-4.7");
   assert.equal(grok46.displayName, "Grok Direct");
   assert.equal(
     grok46.description,
-    "Uses the official Grok CLI OAuth session for direct Grok 4.6 coding, tools, and hosted web/X search.",
+    "Uses the official Grok CLI OAuth session for direct Grok 4.7 coding, tools, and hosted web/X search.",
   );
   assert.equal(grok46.contextWindow, 500_000);
   assert.equal(grok46.autoCompact, 440_000);
-  assert.equal(grok46.gatewayModel, "grok-oauth-grok-4-6");
-  assert.equal(grok46.upstreamModel, "grok-4.6");
+  assert.equal(grok46.gatewayModel, "grok-oauth-grok-4-7");
+  assert.equal(grok46.upstreamModel, "grok-4.7");
   assert.equal(grok46.provider, "grok-oauth");
-  assert.equal(grok46.compHash, "grok-oauth-grok-4-6-v1");
+  assert.equal(grok46.compHash, "grok-oauth-grok-4-7-v1");
   assert.deepEqual(
     grok46.reasoningLevels.map((level) => level.effort),
     ["low", "medium", "high", "xhigh"],
@@ -536,18 +536,18 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(grok45.compHash, "grok-oauth-grok-4-5-v2");
   const threadspanRows = [
     {
-      slug: "delegate/grok-build/grok-4.6",
+      slug: "delegate/grok-build/grok-4.7",
       displayName: "Grok Agent",
-      gatewayModel: "threadspan-delegate-grok-build-grok-4-6",
+      gatewayModel: "threadspan-delegate-grok-build-grok-4-7",
       description:
-        "Uses the selected Threadspan owner session for one Grok 4.6 Fast agent turn with workspace tools.",
+        "Uses the selected Threadspan owner session for one Grok 4.7 Fast agent turn with workspace tools.",
     },
     {
-      slug: "consult/grok-build/grok-4.6",
+      slug: "consult/grok-build/grok-4.7",
       displayName: "Grok Consult",
-      gatewayModel: "threadspan-consult-grok-build-grok-4-6",
+      gatewayModel: "threadspan-consult-grok-build-grok-4-7",
       description:
-        "Uses the selected Threadspan owner session for one text-only Grok 4.6 Fast consultation.",
+        "Uses the selected Threadspan owner session for one text-only Grok 4.7 Fast consultation.",
     },
   ];
   for (const { slug, displayName, gatewayModel, description } of threadspanRows) {

@@ -37,7 +37,7 @@ const SECOND_THREAD = "02a035a2-f151-77c1-8c62-28e2b719599b";
 const ROOT_TURN = "11a035a2-f151-77c1-8c62-28e2b719599b";
 const SECOND_ROOT = "12a035a2-f151-77c1-8c62-28e2b719599b";
 const ATTEMPT = "21a035a2-f151-77c1-8c62-28e2b719599b";
-const CONSULT = "consult/grok-build/grok-4.6";
+const CONSULT = "consult/grok-build/grok-4.7";
 const INTEGRATED = "integrated/nous/deepseek/deepseek-v4-flash-0731";
 
 function indexedUuid(index) {
@@ -295,7 +295,7 @@ test("an expired Integrated follow-up receipt is not mislabeled as dispatched", 
 test("Threadspan metadata is owner-private and Delegate alone enables subagents", () => {
   const routes = [
     [CONSULT, false],
-    ["delegate/grok-build/grok-4.6", true],
+    ["delegate/grok-build/grok-4.7", true],
     [INTEGRATED, false],
   ];
   for (const [slug, allowSubagents] of routes) {

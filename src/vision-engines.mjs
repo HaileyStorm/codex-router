@@ -56,8 +56,9 @@ export function installedNativeVisionEngines({ hidden } = {}) {
   const shipped = new Set(merged.map((model) => String(model.slug)));
   const captured = catalogModelsAt(NATIVE_CATALOG_PATH);
   const capturedBySlug = new Map(captured.map((model) => [String(model.slug), model]));
-  const syntheticNativeSlugs = new Set(["gpt-6-sol", "gpt-6-luna"]);
+  const syntheticNativeSlugs = new Set(["gpt-6.1-sol", "gpt-6-luna"]);
   const effective = merged.flatMap((model) => {
+    if (model.visibility !== "list") return [];
     const slug = String(model.slug);
     const capturedModel = capturedBySlug.get(slug);
     if (capturedModel) return [capturedModel];

@@ -52,7 +52,7 @@ const template = {
   default_service_tier: "priority",
 };
 
-test("missing GPT-6 Sol and Luna rows are synthesized without overriding upstream rows", () => {
+test("GPT-6.1 Sol replaces GPT-6 Sol in the picker while retaining old-task compatibility", () => {
   const nativeSol = {
     ...template,
     slug: "gpt-5.6-sol",
@@ -67,11 +67,20 @@ test("missing GPT-6 Sol and Luna rows are synthesized without overriding upstrea
   };
   const synthesized = ensureGpt6Successors([nativeSol, nativeLuna]);
   const bySlug = new Map(synthesized.map((model) => [model.slug, model]));
+  assert.equal(bySlug.get("gpt-6.1-sol").default_reasoning_level, "high");
+  assert.equal(bySlug.get("gpt-6.1-sol").visibility, "list");
+  assert.equal(bySlug.get("gpt-6-sol").visibility, "hide");
   assert.equal(bySlug.get("gpt-6-sol").default_reasoning_level, "xhigh");
   assert.equal(bySlug.get("gpt-6-luna").default_reasoning_level, "max");
   assert.equal(bySlug.get("gpt-6-luna").multi_agent_version, "v2");
-  assert.equal(bySlug.get("gpt-6-sol").context_window, 602_000);
+  assert.equal(bySlug.get("gpt-6.1-sol").context_window, 291_000);
+  assert.equal(bySlug.get("gpt-6.1-sol").auto_compact_token_limit, 208_000);
+  assert.equal(bySlug.get("gpt-6-sol").context_window, 291_000);
   assert.equal(bySlug.get("gpt-6-sol").max_context_window, 1_050_000);
+  assert.deepEqual(
+    bySlug.get("gpt-6.1-sol").supported_reasoning_levels.map(({ effort }) => effort),
+    ["low", "medium", "high", "xhigh", "max"],
+  );
   assert.deepEqual(
     bySlug.get("gpt-6-sol").supported_reasoning_levels.map(({ effort }) => effort),
     ["none", "low", "medium", "high", "xhigh", "max"],
@@ -81,6 +90,13 @@ test("missing GPT-6 Sol and Luna rows are synthesized without overriding upstrea
   const withUpstream = ensureGpt6Successors([nativeSol, nativeLuna, upstreamSol]);
   assert.equal(withUpstream.filter(({ slug }) => slug === "gpt-6-sol").length, 1);
   assert.equal(withUpstream.find(({ slug }) => slug === "gpt-6-sol").description, "upstream");
+  assert.equal(withUpstream.filter(({ slug }) => slug === "gpt-6.1-sol").length, 1);
+
+  const accountSol = { ...nativeSol, slug: "gpt-6.1-sol", max_context_window: 872_000 };
+  const normalizedAccountSol = buildMergedCatalog({ models: [nativeSol, nativeLuna, accountSol] }, [])
+    .find(({ slug }) => slug === "gpt-6.1-sol");
+  assert.equal(normalizedAccountSol.context_window, 291_000);
+  assert.equal(normalizedAccountSol.max_context_window, 872_000);
 });
 
 test("Flash-Next is absent by default and explicit selection publishes exact picker metadata", () => {
@@ -573,10 +589,10 @@ test("merged catalog normalizes Astra and clones exactly one explicit long-conte
   const normalizedAstra = bySlug.get(nativeAstra.slug);
   assert.equal(normalizedSol.context_window, 320_000);
   assert.equal(normalizedSol.auto_compact_token_limit, 272_000);
-  assert.equal(normalizedAstra.context_window, 602_000);
+  assert.equal(normalizedAstra.context_window, 291_000);
   assert.equal(normalizedAstra.max_context_window, 872_000);
-  assert.equal(normalizedAstra.auto_compact_token_limit, 512_000);
-  assert.equal(normalizedAstra.default_reasoning_level, "medium");
+  assert.equal(normalizedAstra.auto_compact_token_limit, 208_000);
+  assert.equal(normalizedAstra.default_reasoning_level, "high");
   assert.equal(normalizedAstra.visibility, "list");
   assert.match(normalizedAstra.model_messages.instructions_template, /# Using skills/);
   assert.match(normalizedAstra.model_messages.instructions_template, /# Apps/);
@@ -614,7 +630,7 @@ test("merged catalog normalizes Astra and clones exactly one explicit long-conte
     assert.equal(profile.visibility, "list", spec.slug);
     assert.equal(profile.comp_hash, "3000", spec.slug);
     assert.equal(profile.multi_agent_version, "v2", spec.slug);
-    assert.equal(profile.default_reasoning_level, "medium", spec.slug);
+    assert.equal(profile.default_reasoning_level, "high", spec.slug);
     assert.deepEqual(capabilities(profile), capabilities(normalizedAstra), spec.slug);
     assert.equal(
       profile.model_messages.instructions_template,

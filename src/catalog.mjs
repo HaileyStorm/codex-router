@@ -495,8 +495,19 @@ const GPT_6_SUCCESSOR_POLICY = Object.freeze([
     predecessor: "gpt-5.6-sol",
     displayName: "GPT-6-Sol",
     description: "Built to power complex coding and agentic workflows.",
-    priority: 2,
+    priority: 9,
     defaultReasoningLevel: "xhigh",
+    visibility: "hide",
+  }),
+  Object.freeze({
+    slug: "gpt-6.1-sol",
+    predecessor: "gpt-6-sol",
+    displayName: "GPT-6.1 Sol",
+    description: "Near-Astra performance for complex work at a lower cost.",
+    priority: 2,
+    defaultReasoningLevel: "high",
+    reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+    visibility: "list",
   }),
   Object.freeze({
     slug: "gpt-6-luna",
@@ -505,11 +516,12 @@ const GPT_6_SUCCESSOR_POLICY = Object.freeze([
     description: "Our most efficient model for focused, high-volume tasks.",
     priority: 3,
     defaultReasoningLevel: "max",
+    visibility: "list",
   }),
 ]);
-const GPT_6_SUCCESSOR_CONTEXT_WINDOW = 602_000;
+const GPT_6_SUCCESSOR_CONTEXT_WINDOW = 291_000;
 const GPT_6_SUCCESSOR_MAX_CONTEXT_WINDOW = 1_050_000;
-const GPT_6_SUCCESSOR_AUTO_COMPACT_TOKEN_LIMIT = 512_000;
+const GPT_6_SUCCESSOR_AUTO_COMPACT_TOKEN_LIMIT = 208_000;
 // Retained for parsing and routing older saved tasks. The picker policy hides
 // these predecessors; compatibility metadata remains until those tasks age out.
 const GPT_5_6_COMPATIBILITY_SLUGS = new Set([
@@ -519,8 +531,8 @@ const GPT_5_6_COMPATIBILITY_SLUGS = new Set([
 ]);
 const GPT_5_6_COMPATIBILITY_CONTEXT_WINDOW = 320_000;
 const GPT_5_6_COMPATIBILITY_AUTO_COMPACT_TOKEN_LIMIT = 272_000;
-const GPT_6_ASTRA_CONTEXT_WINDOW = 602_000;
-const GPT_6_ASTRA_AUTO_COMPACT_TOKEN_LIMIT = 512_000;
+const GPT_6_ASTRA_CONTEXT_WINDOW = 291_000;
+const GPT_6_ASTRA_AUTO_COMPACT_TOKEN_LIMIT = 208_000;
 
 const GPT_6_SUCCESSOR_REASONING_LEVELS = Object.freeze([
   Object.freeze({ effort: "none", description: "No reasoning" }),
@@ -538,7 +550,7 @@ const GPT_6_SUCCESSOR_REASONING_LEVELS = Object.freeze([
 ]);
 
 // The account-aware Codex catalog can lag a newly enabled native model even
-// after the backend already accepts it. Publish the two documented GPT-6
+// after the backend already accepts it. Publish the documented GPT-6
 // successors from their shape-compatible predecessors until upstream adds the
 // native rows; an upstream row always wins unchanged once it appears.
 export function ensureGpt6Successors(models) {
@@ -555,13 +567,13 @@ export function ensureGpt6Successors(models) {
       description: policy.description,
       priority: policy.priority,
       default_reasoning_level: policy.defaultReasoningLevel,
-      supported_reasoning_levels: GPT_6_SUCCESSOR_REASONING_LEVELS.map((level) => ({
-        ...level,
-      })),
+      supported_reasoning_levels: GPT_6_SUCCESSOR_REASONING_LEVELS
+        .filter(({ effort }) => !policy.reasoningLevels || policy.reasoningLevels.includes(effort))
+        .map((level) => ({ ...level })),
       context_window: GPT_6_SUCCESSOR_CONTEXT_WINDOW,
       max_context_window: GPT_6_SUCCESSOR_MAX_CONTEXT_WINDOW,
       auto_compact_token_limit: GPT_6_SUCCESSOR_AUTO_COMPACT_TOKEN_LIMIT,
-      visibility: "list",
+      visibility: policy.visibility,
       multi_agent_version: "v2",
       availability_nux: null,
       upgrade: null,
@@ -587,10 +599,20 @@ function normalizeNativeModel(model) {
         ? model.supports_reasoning_summaries
         : false,
   };
-  if (GPT_6_SUCCESSOR_POLICY.some(({ slug }) => slug === String(model.slug))) {
+  const successorPolicy = GPT_6_SUCCESSOR_POLICY.find(({ slug }) => slug === String(model.slug));
+  if (successorPolicy) {
     next.context_window = GPT_6_SUCCESSOR_CONTEXT_WINDOW;
-    next.max_context_window = GPT_6_SUCCESSOR_MAX_CONTEXT_WINDOW;
+    // Keep an account-aware native cap when it is present. The API model's
+    // larger published maximum is not proof of this Codex host's limit.
+    next.max_context_window = model.max_context_window ?? GPT_6_SUCCESSOR_MAX_CONTEXT_WINDOW;
     next.auto_compact_token_limit = GPT_6_SUCCESSOR_AUTO_COMPACT_TOKEN_LIMIT;
+    next.default_reasoning_level = successorPolicy.defaultReasoningLevel;
+    next.visibility = successorPolicy.visibility;
+    if (successorPolicy.reasoningLevels) {
+      next.supported_reasoning_levels = GPT_6_SUCCESSOR_REASONING_LEVELS
+        .filter(({ effort }) => successorPolicy.reasoningLevels.includes(effort))
+        .map((level) => ({ ...level }));
+    }
   }
   if (GPT_5_6_COMPATIBILITY_SLUGS.has(String(model.slug))) {
     next.context_window = GPT_5_6_COMPATIBILITY_CONTEXT_WINDOW;
@@ -599,7 +621,7 @@ function normalizeNativeModel(model) {
   if (String(model.slug) === "gpt-6-astra") {
     next.context_window = GPT_6_ASTRA_CONTEXT_WINDOW;
     next.auto_compact_token_limit = GPT_6_ASTRA_AUTO_COMPACT_TOKEN_LIMIT;
-    next.default_reasoning_level = "medium";
+    next.default_reasoning_level = "high";
     next.visibility = "list";
   }
   return next;
@@ -834,10 +856,9 @@ function sortCatalogModels(models) {
   });
 }
 
-// GPT-6 Luna is the default bounded-work child and uses the v2 collaboration
-// backend. spawn_agent filters candidate child models on this field, so keep
-// the synthesized and eventual upstream row eligible.
-const NATIVE_V2_BACKEND_SLUGS = new Set(["gpt-6-luna", "gpt-5.6-luna"]);
+// GPT-6.1 Sol is the default child; Luna remains the monitor/classifier fallback.
+// spawn_agent filters candidate child models on this v2 backend field.
+const NATIVE_V2_BACKEND_SLUGS = new Set(["gpt-6.1-sol", "gpt-6-luna", "gpt-5.6-luna"]);
 
 export function promoteNativeMultiAgent(models, settings, hidden = new Set()) {
   const enabled = new Set(settings.enabled || []);

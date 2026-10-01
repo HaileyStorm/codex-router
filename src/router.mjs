@@ -1072,14 +1072,14 @@ function nativeAgentRelayModel() {
   try {
     const parsed = JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8"));
     const models = Array.isArray(parsed?.models) ? parsed.models : [];
-    const preferred = models.find((model) => model?.slug === "gpt-6-sol");
+    const preferred = models.find((model) => model?.slug === "gpt-6.1-sol");
     const listed = models.find(
       (model) => typeof model?.slug === "string" && model.visibility === "list",
     );
     const available = models.find((model) => typeof model?.slug === "string");
-    return preferred?.slug || listed?.slug || available?.slug || "gpt-6-sol";
+    return preferred?.slug || listed?.slug || available?.slug || "gpt-6.1-sol";
   } catch {
-    return "gpt-6-sol";
+    return "gpt-6.1-sol";
   }
 }
 

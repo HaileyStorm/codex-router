@@ -1157,11 +1157,21 @@ export const CODEX_APP_TOOLS =
 // an omitted model still inherits the existing thread/default configuration.
 const NATIVE_PROFILE_MODEL_DESCRIPTION =
   " native-profile/gpt-6-astra-1m (Experimental native Astra 1M context profile; current native capture advertises an 872K maximum; supported reasoning efforts: low, medium, high, xhigh, max, ultra).";
+const STALE_SOL_MODEL_DESCRIPTION =
+  "gpt-6-sol (Built to power complex coding and agentic workflows.; supported reasoning efforts: none, low, medium, high, xhigh, max), ";
+const CURRENT_SOL_MODEL_DESCRIPTION =
+  "gpt-6.1-sol (Near-Astra performance for complex work at a lower cost.; supported reasoning efforts: low, medium, high, xhigh, max), ";
 for (const namespace of CODEX_APP_TOOLS) {
   if (namespace?.name !== CODEX_APP_NAMESPACE) continue;
   for (const fn of namespace.tools || []) {
     if (!new Set(["create_thread", "send_message_to_thread"]).has(fn?.name)) continue;
     const modelSchema = fn.inputSchema?.properties?.model;
+    if (typeof modelSchema?.description === "string") {
+      modelSchema.description = modelSchema.description.replace(
+        STALE_SOL_MODEL_DESCRIPTION,
+        CURRENT_SOL_MODEL_DESCRIPTION,
+      );
+    }
     if (
       typeof modelSchema?.description === "string" &&
       !modelSchema.description.includes("native-profile/gpt-6-astra-1m")

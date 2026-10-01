@@ -1770,7 +1770,7 @@ test("router relays encrypted Codex subagent payloads before external routing", 
     assert.equal(nativeRequests.length, 1);
     assert.equal(nativeRequests[0].headers.authorization, "Bearer CHATGPT_SESSION_TOKEN");
     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-id");
-    assert.equal(nativeRequests[0].body.model, "gpt-6-sol");
+    assert.equal(nativeRequests[0].body.model, "gpt-6.1-sol");
     assert.equal(nativeRequests[0].body.stream, true);
     assert.equal(nativeRequests[0].body.tool_choice.name, "relay_external_agent_payload");
     assert.equal(gatewayRequests.length, 1);

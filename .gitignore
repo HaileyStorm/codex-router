@@ -16,3 +16,5 @@ apps/desktop/src-tauri/icons/icon.icns
 .electron-shots/
 release/
 generated/
+.working
+.working.*

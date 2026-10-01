@@ -209,11 +209,12 @@ acceptance. Existing V4 Flash/Pro entries remain explicit choices, not V4.1 alia
 
 ### Native Astra context profiles
 
-Signed-in Codex catalogs normalize the standard `gpt-6-astra` choice to a
-602,000-token context window with auto-compaction at 512,000 tokens. Its
-default reasoning effort is Medium (`medium`). They also add one explicit
-long-context choice without changing the standard `gpt-5.6-sol` 320K/272K
-policy:
+Signed-in Codex catalogs normalize standard `gpt-6-astra`, `gpt-6.1-sol`,
+and `gpt-6-luna` choices to 291,000-token context windows with auto-compaction
+at 208,000 tokens. Astra and GPT-6.1 Sol default to High (`high`); Luna defaults
+to Max (`max`). GPT-6 Sol remains hidden for older saved tasks. The catalog also
+adds one explicit long-context choice without changing historical GPT-5.6
+compatibility metadata:
 
 | Picker label | Model ID | Context | Auto-compact |
 | --- | --- | ---: | ---: |
@@ -239,23 +240,20 @@ end-to-end latency, total tokens, cache effects, applicable price or allowance
 cost, context fit, native tool and subagent reliability, quota availability,
 and privacy. No single model dominates those axes for every workload:
 
-- Astra defaults to Medium (`medium`). Prefer Light (`low`) for routine primary
-  controlling and user-interface work when it is sufficient; raise effort only
-  when task difficulty or consequence warrants it.
+- GPT-6.1 Sol at High (`high`) is the default controller and implementation/
+  review route for existing projects; GPT-6 Sol is hidden compatibility only.
+- Use Astra only at High (`high`) or Extra High (`xhigh`) for detailed planning,
+  intricate code, stubborn problems, and other exceptional work.
 - Select Astra 1M explicitly when the retained working set needs it. It is not
-  an automatic upgrade from the 602K default.
-- Use Sol at `high` for bounded implementation, review, and verification where
-  its quality/cost/latency point is the better fit.
-- Use Luna at `high` or `xhigh` for read-heavy scouting, documentation, and
-  concise synthesis.
-- Keep Terra at `xhigh` or `max` as a task-specific challenger until matched
-  evidence shows that it improves the relevant frontier.
-- Use Spark only as a bounded quota fallback for work already known to fit it.
-  Explicit external-provider routes keep their own provider, privacy, context,
-  and reliability gates; they are never silent fallbacks.
+  an automatic upgrade from the 291K default.
+- For monitor/classify-only child tasks, prefer qualified native Direct
+  DeepSeek v4.1 Flash at Max (`max`), then GPT-6 Luna at Max (`max`). Native
+  DeepSeek may use the same task-scoped tools and files as other qualified
+  children, subject to its explicit privacy, provider, and capability gates;
+  the separate MCP bridge stays read-only.
 
-An explicit user, project, task, or per-call model and effort selection always
-wins over this default envelope.
+Preserve an explicit compatible user or task choice; do not silently widen its
+effort, context, provider, privacy, or permissions.
 
 ### Global Fast mode
 

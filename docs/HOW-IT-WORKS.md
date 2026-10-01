@@ -66,8 +66,10 @@ each enabled external provider. Native GPT entries are included only when
 `codex login status` confirms an OpenAI login, so signed-out login-free users see
 only their authenticated external models.
 
-Signed-in catalogs normalize the native `gpt-6-astra` row to 602K context,
-512K auto-compaction, and Medium (`medium`) default reasoning. They also derive one
+Signed-in catalogs normalize native `gpt-6-astra`, `gpt-6.1-sol`, and `gpt-6-luna`
+rows to 291K context and 208K auto-compaction. Astra and GPT-6.1 Sol default
+to High (`high`); Luna defaults to Max (`max`). GPT-6 Sol is hidden for saved-task
+compatibility. They also derive one
 experimental 1M/850K profile from that complete normalized row. The current
 native capture advertises an 872K maximum, so native acceptance above that
 boundary remains unverified. The profile keeps Astra's

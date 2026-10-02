@@ -5,6 +5,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { CODEX_HOME } from "./paths.mjs";
+import { nativeProfile, isNativeProfileNamespace } from "./native-profiles.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{64}$/;
@@ -29,7 +30,7 @@ function exactUuid(values) {
   return distinct.size === 1 ? [...distinct][0] : undefined;
 }
 
-export function nativeObservation(request, payload, receivedAt, requestId = randomUUID()) {
+export function nativeObservation(request, payload, receivedAt, requestId = randomUUID(), requestedModel) {
   if (Array.isArray(request?.rawHeaders)) {
     const names = request.rawHeaders.filter((_, index) => index % 2 === 0).map((name) => String(name).toLowerCase());
     if (["x-codex-turn-metadata", "thread-id", "session-id", "session_id"].some((name) =>
@@ -48,12 +49,19 @@ export function nativeObservation(request, payload, receivedAt, requestId = rand
     oneHeader(request, "thread-id"), oneHeader(request, "session-id"), oneHeader(request, "session_id")]);
   // root_turn_id is deliberately excluded, even when no actual turn ID exists.
   const turnId = exactUuid([header?.turn?.turn_id, client?.turn_id, client?.turn?.turn_id]);
-  const model = payload?.model;
+  const wireModel = payload?.model;
+  const model = requestedModel === undefined ? wireModel : requestedModel;
   const effort = payload?.reasoning?.effort;
   if (!threadId || !turnId || typeof model !== "string" || model.length > 128 ||
+      typeof wireModel !== "string" || wireModel.length > 128 ||
       typeof effort !== "string" || !/^[a-z][a-z0-9_-]{0,31}$/.test(effort) ||
       !/^\d{1,22}$/.test(String(receivedAt))) return undefined;
-  return { thread_id: threadId, turn_id: turnId, model, effort, request_id: requestId,
+  // The relay binds the exact model selected by the app. A router-owned profile
+  // is eligible only when its forward mapping matches the actual wire model;
+  // never infer a profile from a canonical model shared by several selections.
+  const profile = nativeProfile(model);
+  if (profile ? wireModel !== profile.nativeModel : isNativeProfileNamespace(model) || model !== wireModel) return undefined;
+  return { thread_id: threadId, turn_id: turnId, model, wire_model: wireModel, effort, request_id: requestId,
     observed_at_monotonic_ns: String(receivedAt) };
 }
 
@@ -111,7 +119,7 @@ export function invokeObserver(config, operation, packet, launch = spawn) {
 export async function captureNativeRequest(request, payload, receivedAt, options = {}) {
   const config = options.config ?? readObserverConfig();
   if (!config) return undefined;
-  const packet = nativeObservation(request, payload, receivedAt);
+  const packet = nativeObservation(request, payload, receivedAt, undefined, options.requestedModel);
   if (!packet) return undefined;
   const invoke = options.invoke ?? invokeObserver;
   const result = await invoke(config, "capture-auto", packet);

@@ -2472,7 +2472,7 @@ async function handleResponses(request, response, requestUrl) {
       target = nativeTarget(requestUrl.pathname);
       headers = nativeHeaders(request);
       if (!compactV1) {
-        harnessObservation = await captureNativeRequest(request, native, harnessReceivedAt);
+        harnessObservation = await captureNativeRequest(request, native, harnessReceivedAt, { requestedModel });
       }
       routedBody = await compressedNativeBody(
         Buffer.from(JSON.stringify(native), "utf8"),

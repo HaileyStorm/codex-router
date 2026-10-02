@@ -8,6 +8,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { nativeObservation, readObserverConfig, invokeObserver,
   captureNativeRequest, completeNativeRequest } from "../src/native-harness-observer.mjs";
+import { nativeProfile } from "../src/native-profiles.mjs";
 
 const thread = "11111111-1111-4111-8111-111111111111";
 const turn = "22222222-2222-4222-8222-222222222222";
@@ -35,8 +36,50 @@ test("native observation preserves request bytes and sends metadata only", async
   assert.equal(JSON.stringify(payload), before);
   assert.equal(observation.packet.observed_at_monotonic_ns, "987654321");
   assert.equal(sent[0][1], "capture-auto");
-  assert.deepEqual(Object.keys(sent[0][2]).sort(), ["effort", "model", "observed_at_monotonic_ns", "request_id", "thread_id", "turn_id"]);
+  assert.deepEqual(Object.keys(sent[0][2]).sort(), ["effort", "model", "observed_at_monotonic_ns", "request_id", "thread_id", "turn_id", "wire_model"]);
   assert.doesNotMatch(JSON.stringify(sent), /PRIVATE/);
+});
+
+test("selected profile binds capture and completion while canonical wire bytes stay unchanged", async () => {
+  const selected = "native-profile/gpt-6-astra-1m";
+  const profile = nativeProfile(selected);
+  const native = { ...payload, model: profile.nativeModel, reasoning: { effort: "xhigh" } };
+  const before = JSON.stringify(native), profileBefore = JSON.stringify(profile);
+  const sent = [];
+  const invoke = async (config, operation, packet) => {
+    // The running relay's strict target check stays unchanged.
+    assert.equal(packet.model, selected);
+    assert.equal(packet.wire_model, "gpt-6-astra");
+    sent.push({ operation, packet });
+    return { status: operation === "capture-auto" ? "baselineCaptured" : "usageCaptured" };
+  };
+  const observation = await captureNativeRequest(request(), native, "987654321", {
+    config: {}, requestedModel: selected, invoke,
+  });
+  assert.equal(observation.status, "baselineCaptured");
+  await completeNativeRequest(observation, { inputTokens: 42, cachedInputTokens: 0 }, { invoke });
+  assert.deepEqual(sent.map((x) => x.operation), ["capture-auto", "completion-auto"]);
+  assert.equal(sent[0].packet.request_id, sent[1].packet.request_id);
+  assert.equal(JSON.stringify(native), before);
+  assert.equal(JSON.stringify(profile), profileBefore);
+  assert.equal(profile.contextWindow, 1_000_000);
+  assert.equal(profile.autoCompact, 850_000);
+});
+
+test("base Astra stays base and only exact forward profile mappings qualify", () => {
+  const native = { ...payload, model: "gpt-6-astra" };
+  for (const selected of [undefined, "gpt-6-astra"]) {
+    const packet = nativeObservation(request(), native, "1", "request-1", selected);
+    assert.equal(packet.model, "gpt-6-astra");
+    assert.equal(packet.wire_model, "gpt-6-astra");
+  }
+  for (const [selected, wire] of [
+    ["native-profile/unknown", "gpt-6-astra"],
+    ["native-profile/gpt-6-astra-1m", "gpt-6.1-sol"],
+    ["native-profile/gpt-6-astra-1m", "native-profile/gpt-6-astra-1m"],
+    ["gpt-6.1-sol", "gpt-6-astra"],
+    [null, "gpt-6-astra"],
+  ]) assert.equal(nativeObservation(request(), { ...native, model: wire }, "1", "request-1", selected), undefined);
 });
 
 test("completion counters keep missing distinct from explicit zero", async () => {

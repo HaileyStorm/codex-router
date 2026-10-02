@@ -33,22 +33,23 @@ test("routed agent definitions select the router provider and exact model slug",
   assert.match(definition.contents, /Do not stop after merely announcing a next action/);
 });
 
-test("Nous DeepSeek V4.1 generated roles pin Max effort and bounded task scope", () => {
+test("Nous DeepSeek V4.1 generated roles pin Max, monitor scope and GPT permission parity", () => {
   const definition = routedAgentDefinition(nousDeepSeekV41Flash);
   assert.match(definition.contents, /model_reasoning_effort = "max"/);
   assert.match(
     definition.contents,
-    /routine assigned implementation, facts, and invariants within a fresh bounded task packet/,
+    /monitor\/classify-only tasks/,
   );
-  assert.match(definition.contents, /Do not rely on inherited private history/);
+  assert.match(definition.contents, /Do not implement fixes/);
   assert.match(
     definition.contents,
-    /only explicitly approved files and data plus commands needed for the task/,
+    /same necessary task-scoped data, files, and tool permissions as GPT/,
   );
   assert.match(
     definition.contents,
-    /Own ordinary minor bugs in the assigned scope; escalate architectural decisions or disputed safety matters to Astra/,
+    /Return implementation and consequential review to GPT-6\.1 Sol at high/,
   );
+  assert.doesNotMatch(definition.contents, /only explicitly approved|Do not rely on inherited private history|Own ordinary minor bugs/);
 
   const other = routedAgentDefinition(kimi);
   assert.doesNotMatch(other.contents, /model_reasoning_effort/);

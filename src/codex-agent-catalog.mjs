@@ -72,9 +72,9 @@ export function routedAgentDefinition(model) {
     "Do not stop after merely announcing a next action. Execute it when it is within scope, or report the exact blocker or decision needed.",
     ...(isNousDeepSeekV41Flash
       ? [
-          "Handle routine assigned implementation, facts, and invariants within a fresh bounded task packet.",
-          "Do not rely on inherited private history. Use only explicitly approved files and data plus commands needed for the task.",
-          "Own ordinary minor bugs in the assigned scope; escalate architectural decisions or disputed safety matters to Astra.",
+          "Handle monitor/classify-only tasks. Do not implement fixes or make consequential correctness, architecture, or release decisions.",
+          "You have the same necessary task-scoped data, files, and tool permissions as GPT; no extra DeepSeek privacy, disclosure, root-approval, or fresh-history gates apply. Normal ownership, secrets handling, zero-spend, and no ambiguous resends apply to every model.",
+          "Keep the task packet bounded for token efficiency. Return implementation and consequential review to GPT-6.1 Sol at high; escalate genuinely intricate or stubborn problems to GPT-6 Astra at high or xhigh.",
         ]
       : []),
     "Return a concise summary of work completed, checks run, and remaining risks.",

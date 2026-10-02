@@ -480,9 +480,13 @@ test("merged catalog preserves native GPT identity while rewriting routed models
   assert.doesNotMatch(bySlug.get("grok-oauth/grok-4.5").base_instructions, /GPT-5/);
 });
 
-test("merged catalog applies owner limits only to exact native GPT-5.6 tiers", () => {
-  const targetSlugs = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
-  const controls = [
+test("merged catalog applies owner client budgets to every native GPT row", () => {
+  const targetSlugs = [
+    "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra",
+    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
+    "gpt-reserve", "gpt-daybreak", "codex-auto-review",
+  ];
+  const additionalGptRows = [
     {
       slug: "gpt-5.6-cyber",
       context_window: 400_000,
@@ -511,10 +515,23 @@ test("merged catalog applies owner limits only to exact native GPT-5.6 tiers", (
     context_window: 272_000,
     max_context_window: 872_000,
     comp_hash: "3000",
+    visibility: slug === "gpt-5.5" ? "list" : "hide",
+    input_modalities: ["text", "image"],
+    supports_parallel_tool_calls: false,
+    supports_reasoning_summaries: true,
+    experimental_supported_tools: ["apply_patch"],
   }));
+  const controls = [{
+    ...template,
+    slug: "example-native-model",
+    context_window: 128_000,
+    max_context_window: 128_000,
+    auto_compact_token_limit: 80_000,
+    comp_hash: "non-gpt",
+  }];
   const merged = buildMergedCatalog(
     {
-      models: [...targets, ...controls.map((model) => ({ ...template, ...model }))],
+      models: [...targets, ...additionalGptRows.map((model) => ({ ...template, ...model })), ...controls],
     },
     [],
   );
@@ -522,10 +539,21 @@ test("merged catalog applies owner limits only to exact native GPT-5.6 tiers", (
 
   for (const slug of targetSlugs) {
     const model = bySlug.get(slug);
-    assert.equal(model.context_window, 320_000, slug);
+    assert.equal(model.context_window, 291_000, slug);
     assert.equal(model.max_context_window, 872_000, slug);
-    assert.equal(model.auto_compact_token_limit, 272_000, slug);
+    assert.equal(model.auto_compact_token_limit, 208_000, slug);
     assert.equal(model.comp_hash, "3000", slug);
+    assert.deepEqual(model.input_modalities, ["text", "image"], slug);
+    assert.equal(model.supports_parallel_tool_calls, false, slug);
+    assert.equal(model.supports_reasoning_summaries, true, slug);
+    assert.deepEqual(model.experimental_supported_tools, ["apply_patch"], slug);
+  }
+  for (const expected of additionalGptRows) {
+    const model = bySlug.get(expected.slug);
+    assert.equal(model.context_window, 291_000, expected.slug);
+    assert.equal(model.auto_compact_token_limit, 208_000, expected.slug);
+    assert.equal(model.max_context_window, expected.max_context_window, expected.slug);
+    assert.equal(model.comp_hash, expected.comp_hash, expected.slug);
   }
   for (const expected of controls) {
     const model = bySlug.get(expected.slug);
@@ -587,8 +615,8 @@ test("merged catalog normalizes Astra and clones exactly one explicit long-conte
   const bySlug = new Map(merged.map((model) => [model.slug, model]));
   const normalizedSol = bySlug.get(nativeSol.slug);
   const normalizedAstra = bySlug.get(nativeAstra.slug);
-  assert.equal(normalizedSol.context_window, 320_000);
-  assert.equal(normalizedSol.auto_compact_token_limit, 272_000);
+  assert.equal(normalizedSol.context_window, 291_000);
+  assert.equal(normalizedSol.auto_compact_token_limit, 208_000);
   assert.equal(normalizedAstra.context_window, 291_000);
   assert.equal(normalizedAstra.max_context_window, 872_000);
   assert.equal(normalizedAstra.auto_compact_token_limit, 208_000);
@@ -649,6 +677,8 @@ test("merged catalog normalizes Astra and clones exactly one explicit long-conte
     bySlug.get("native-profile/gpt-6-astra-1m").display_name,
     /Astra 1M \(Experimental\)/,
   );
+  assert.equal(bySlug.get("native-profile/gpt-6-astra-1m").context_window, 1_000_000);
+  assert.equal(bySlug.get("native-profile/gpt-6-astra-1m").auto_compact_token_limit, 850_000);
   assert.deepEqual(
     merged
       .filter((model) => String(model.slug).startsWith("native-profile/"))
@@ -691,7 +721,7 @@ test("native profile namespace collisions fail before catalog publication", () =
   );
 });
 
-test("routed GPT-5.6 wrappers publish the owner limits without changing Grok", () => {
+test("routed GPT wrappers publish owner client budgets while retaining registry maxima", () => {
   for (const slug of [
     "commandcode/gpt-5.6-sol",
     "commandcode/gpt-5.6-terra",
@@ -700,9 +730,9 @@ test("routed GPT-5.6 wrappers publish the owner limits without changing Grok", (
   ]) {
     const registry = MODEL_BY_SLUG.get(slug);
     const picker = routedModel(template, registry);
-    assert.equal(picker.context_window, 320_000, slug);
-    assert.equal(picker.max_context_window, 320_000, slug);
-    assert.equal(picker.auto_compact_token_limit, 272_000, slug);
+    assert.equal(picker.context_window, 291_000, slug);
+    assert.equal(picker.max_context_window, registry.contextWindow, slug);
+    assert.equal(picker.auto_compact_token_limit, 208_000, slug);
     assert.equal(picker.comp_hash, registry.compHash, slug);
   }
 
@@ -712,6 +742,36 @@ test("routed GPT-5.6 wrappers publish the owner limits without changing Grok", (
   assert.equal(grokPicker.max_context_window, 500_000);
   assert.equal(grokPicker.auto_compact_token_limit, 440_000);
   assert.equal(grokPicker.comp_hash, grokRegistry.compHash);
+});
+
+test("routed GPT budgets recognize upstream and bare slugs without changing other models", () => {
+  for (const identity of [
+    { slug: "example/custom-alias", upstreamModel: "openai/gpt-6.1-sol" },
+    { slug: "example/custom-alias", upstreamModel: "gpt-5.5" },
+    { slug: "example/gpt-daybreak", upstreamModel: "custom-alias" },
+    { slug: "gpt-reserve", upstreamModel: undefined },
+    { slug: "example/review", upstreamModel: "codex-auto-review" },
+  ]) {
+    const registry = { ...grok, ...identity, contextWindow: 872_000, autoCompact: 750_000 };
+    const picker = routedModel(template, registry);
+    assert.equal(picker.context_window, 291_000, identity.slug);
+    assert.equal(picker.auto_compact_token_limit, 208_000, identity.slug);
+    assert.equal(picker.max_context_window, 872_000, identity.slug);
+    assert.equal(picker.comp_hash, registry.compHash, identity.slug);
+    assert.equal(picker.multi_agent_version, registry.multiAgentVersion || "v1", identity.slug);
+  }
+  for (const identity of [
+    { slug: "example/claude-opus", upstreamModel: "anthropic/claude-opus" },
+    { slug: "example/deepseek-v4.1-flash", upstreamModel: "deepseek/deepseek-v4.1-flash" },
+    { slug: "example/grok-4.5", upstreamModel: "xai/grok-4.5" },
+    { slug: "example/not-gpt-6", upstreamModel: "gptish-model" },
+  ]) {
+    const registry = { ...grok, ...identity, contextWindow: 500_000, autoCompact: 440_000 };
+    const picker = routedModel(template, registry);
+    assert.equal(picker.context_window, registry.contextWindow, identity.slug);
+    assert.equal(picker.auto_compact_token_limit, registry.autoCompact, identity.slug);
+    assert.equal(picker.max_context_window, registry.contextWindow, identity.slug);
+  }
 });
 
 test("merged catalog preserves an explicit native reasoning summary capability", () => {

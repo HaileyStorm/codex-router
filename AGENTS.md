@@ -4,14 +4,28 @@ These instructions apply when a user asks an agent to install this repository.
 
 ## Codex controller and delegation
 
-- Inherit the global Astra-first Pareto routing envelope. Astra defaults to
-  Medium (`medium`); prefer Light (`low`) for routine unpinned controlling and
-  user-facing Codex tasks when it is sufficient. Explicit user, picker, task,
-  project, provider, and named-role selections always win.
-- Astra owns design, planning, organization, synthesis and complex diagnosis.
-  Eligible bounded implementation, fact gathering, verification and monitoring
-  prefer exact Nous DeepSeek V4.1 Flash Max, with GPT-6 Luna Max fallback.
-  Keep private parent context out of external delegation without approval.
+- Use GPT-6.1 Sol (`gpt-6.1-sol`) at `high` as the controller and project
+  default for implementation, integration, ordinary planning, mapping and
+  consequential review; never use lower or higher effort for this route.
+- Use GPT-6 Astra only at `high` or `xhigh` for detailed planning, intricate
+  or very complex code, stubborn problems and exceptional synthesis.
+- Monitor/classify-only child tasks prefer qualified native Direct Nous
+  DeepSeek V4.1 Flash at `max`, otherwise GPT-6 Luna at `max`. Read-only
+  investigation or correctness review is not automatically monitor-only.
+  Preserve explicit user/task choices within the governing routing envelope.
+  DeepSeek has the same task-scoped data, files and permissions as GPT; do not
+  add DeepSeek-only privacy, disclosure, root-approval or fresh-history gates.
+  Normal ownership, secrets handling, zero-spend and no ambiguous resends
+  apply to every model. The distinct MCP bridge remains read-only.
+- Set all GPT client context budgets to 291000 and automatic compaction to
+  208000, including children and compatibility rows. The explicitly named
+  native-profile/gpt-6-astra-1m entry alone retains its validated long-context
+  policy. Client budgets do not establish upstream capability or acceptance.
+- Keep prompts and evidence packets bounded. Checkpoint objective, acceptance,
+  owner/host, checkout/ref, claims, changed files, tests, unresolved risks and
+  next action in durable project artifacts. After unexpected compaction or
+  task rollover, reconstruct from those artifacts and live read-only state;
+  never infer completion, ownership or permission from inherited chat history.
 - Delegate only bounded independent work where parallelism saves time or
   improves quality. Start with the smallest useful set, keep one writer per
   file or symbol cluster, and keep synthesis and acceptance in the parent.

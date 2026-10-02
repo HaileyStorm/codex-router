@@ -519,20 +519,14 @@ const GPT_6_SUCCESSOR_POLICY = Object.freeze([
     visibility: "list",
   }),
 ]);
-const GPT_6_SUCCESSOR_CONTEXT_WINDOW = 291_000;
+const GPT_CLIENT_CONTEXT_WINDOW = 291_000;
+const GPT_CLIENT_AUTO_COMPACT_TOKEN_LIMIT = 208_000;
 const GPT_6_SUCCESSOR_MAX_CONTEXT_WINDOW = 1_050_000;
-const GPT_6_SUCCESSOR_AUTO_COMPACT_TOKEN_LIMIT = 208_000;
-// Retained for parsing and routing older saved tasks. The picker policy hides
-// these predecessors; compatibility metadata remains until those tasks age out.
-const GPT_5_6_COMPATIBILITY_SLUGS = new Set([
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-]);
-const GPT_5_6_COMPATIBILITY_CONTEXT_WINDOW = 320_000;
-const GPT_5_6_COMPATIBILITY_AUTO_COMPACT_TOKEN_LIMIT = 272_000;
-const GPT_6_ASTRA_CONTEXT_WINDOW = 291_000;
-const GPT_6_ASTRA_AUTO_COMPACT_TOKEN_LIMIT = 208_000;
+
+function isGptModelSlug(slug) {
+  const bare = String(slug || "").split("/").at(-1);
+  return /^gpt(?:-|$)/i.test(bare) || bare === "codex-auto-review";
+}
 
 const GPT_6_SUCCESSOR_REASONING_LEVELS = Object.freeze([
   Object.freeze({ effort: "none", description: "No reasoning" }),
@@ -570,9 +564,9 @@ export function ensureGpt6Successors(models) {
       supported_reasoning_levels: GPT_6_SUCCESSOR_REASONING_LEVELS
         .filter(({ effort }) => !policy.reasoningLevels || policy.reasoningLevels.includes(effort))
         .map((level) => ({ ...level })),
-      context_window: GPT_6_SUCCESSOR_CONTEXT_WINDOW,
+      context_window: GPT_CLIENT_CONTEXT_WINDOW,
       max_context_window: GPT_6_SUCCESSOR_MAX_CONTEXT_WINDOW,
-      auto_compact_token_limit: GPT_6_SUCCESSOR_AUTO_COMPACT_TOKEN_LIMIT,
+      auto_compact_token_limit: GPT_CLIENT_AUTO_COMPACT_TOKEN_LIMIT,
       visibility: policy.visibility,
       multi_agent_version: "v2",
       availability_nux: null,
@@ -599,13 +593,17 @@ function normalizeNativeModel(model) {
         ? model.supports_reasoning_summaries
         : false,
   };
+  // Owner-selected client budgets are independent of upstream maximum and
+  // capability metadata. Explicit long-context profiles are derived separately.
+  if (isGptModelSlug(model.slug)) {
+    next.context_window = GPT_CLIENT_CONTEXT_WINDOW;
+    next.auto_compact_token_limit = GPT_CLIENT_AUTO_COMPACT_TOKEN_LIMIT;
+  }
   const successorPolicy = GPT_6_SUCCESSOR_POLICY.find(({ slug }) => slug === String(model.slug));
   if (successorPolicy) {
-    next.context_window = GPT_6_SUCCESSOR_CONTEXT_WINDOW;
     // Keep an account-aware native cap when it is present. The API model's
     // larger published maximum is not proof of this Codex host's limit.
     next.max_context_window = model.max_context_window ?? GPT_6_SUCCESSOR_MAX_CONTEXT_WINDOW;
-    next.auto_compact_token_limit = GPT_6_SUCCESSOR_AUTO_COMPACT_TOKEN_LIMIT;
     next.default_reasoning_level = successorPolicy.defaultReasoningLevel;
     next.visibility = successorPolicy.visibility;
     if (successorPolicy.reasoningLevels) {
@@ -614,13 +612,7 @@ function normalizeNativeModel(model) {
         .map((level) => ({ ...level }));
     }
   }
-  if (GPT_5_6_COMPATIBILITY_SLUGS.has(String(model.slug))) {
-    next.context_window = GPT_5_6_COMPATIBILITY_CONTEXT_WINDOW;
-    next.auto_compact_token_limit = GPT_5_6_COMPATIBILITY_AUTO_COMPACT_TOKEN_LIMIT;
-  }
   if (String(model.slug) === "gpt-6-astra") {
-    next.context_window = GPT_6_ASTRA_CONTEXT_WINDOW;
-    next.auto_compact_token_limit = GPT_6_ASTRA_AUTO_COMPACT_TOKEN_LIMIT;
     next.default_reasoning_level = "high";
     next.visibility = "list";
   }
@@ -763,6 +755,10 @@ export function routedModel(template, model) {
   }
   if (next.model_messages) {
     next.model_messages = rewriteModelMessages(next.model_messages, model);
+  }
+  if (isGptModelSlug(model.upstreamModel) || isGptModelSlug(model.slug)) {
+    next.context_window = GPT_CLIENT_CONTEXT_WINDOW;
+    next.auto_compact_token_limit = GPT_CLIENT_AUTO_COMPACT_TOKEN_LIMIT;
   }
   return next;
 }

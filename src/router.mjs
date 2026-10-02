@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { captureNativeRequest, completeNativeRequest } from "./native-harness-observer.mjs";
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -2092,6 +2093,10 @@ function writeIdleNoProviderError(response) {
 }
 
 async function handleResponses(request, response, requestUrl) {
+  // Freeze router receive ordering before reading the body or scheduling work.
+  // This is not an assertion about the native client's earlier assembly time.
+  const harnessReceivedAt = process.hrtime.bigint().toString();
+  let harnessObservation;
   const startedAt = Date.now();
   const activity = beginRequestActivity();
   let clientGone = false;
@@ -2466,6 +2471,9 @@ async function handleResponses(request, response, requestUrl) {
       if (selectedNativeProfile) native.model = selectedNativeProfile.nativeModel;
       target = nativeTarget(requestUrl.pathname);
       headers = nativeHeaders(request);
+      if (!compactV1) {
+        harnessObservation = await captureNativeRequest(request, native, harnessReceivedAt);
+      }
       routedBody = await compressedNativeBody(
         Buffer.from(JSON.stringify(native), "utf8"),
         headers,
@@ -2895,6 +2903,7 @@ async function handleResponses(request, response, requestUrl) {
     }
     throw error;
   } finally {
+    await completeNativeRequest(harnessObservation, usage).catch(() => {});
     if (threadspanReservation && !threadspanCommitted) {
       try {
         rollbackNativeRouteReservation(threadspanReservation);

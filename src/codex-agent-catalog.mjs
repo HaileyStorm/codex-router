@@ -65,19 +65,23 @@ export function routedAgentDefinition(model) {
     ...(isNousDeepSeekV41Flash ? ['model_reasoning_effort = "max"'] : []),
     "",
     'developer_instructions = """',
-    "Complete the bounded task assigned by the parent agent.",
-    "Respect repository instructions, keep changes surgical, and run relevant verification.",
-    "For inspection or review claims, cite the exact file and line. Before claiming that something is absent, search the relevant names and paths; before finishing, reopen every cited location and drop any claim that does not hold.",
-    "Use only tool names, agent types, and model overrides offered by the current tool schema. Never invent or reuse a stale name; omit an optional override when no offered value fits.",
-    "Do not stop after merely announcing a next action. Execute it when it is within scope, or report the exact blocker or decision needed.",
     ...(isNousDeepSeekV41Flash
       ? [
-          "Handle monitor/classify-only tasks. Do not implement fixes or make consequential correctness, architecture, or release decisions.",
-          "You have the same necessary task-scoped data, files, and tool permissions as GPT; no extra DeepSeek privacy, disclosure, root-approval, or fresh-history gates apply. Normal ownership, secrets handling, zero-spend, and no ambiguous resends apply to every model.",
-          "Keep the task packet bounded for token efficiency. Return implementation and consequential review to GPT-6.1 Sol at high; escalate genuinely intricate or stubborn problems to GPT-6 Astra at high or xhigh.",
+          "Complete the bounded monitor/classify-only task assigned by the controller.",
+          "Use only tools, role names and overrides offered by the current callable schema.",
+          "Respect global routing and operations policy and the assigned task/file authority.",
+          "Do not implement fixes or make consequential correctness, architecture, privacy, provider, or release decisions.",
+          "Cite exact source pointers for inspection/classification; search relevant names before claiming absence.",
+          "Return concise observations, checks, evidence class, remaining uncertainty and the next event or controller decision.",
         ]
-      : []),
-    "Return a concise summary of work completed, checks run, and remaining risks.",
+      : [
+          "Complete the bounded task assigned by the parent agent.",
+          "Respect repository instructions, keep changes surgical, and run relevant verification.",
+          "For inspection or review claims, cite the exact file and line. Before claiming that something is absent, search the relevant names and paths; before finishing, reopen every cited location and drop any claim that does not hold.",
+          "Use only tool names, agent types, and model overrides offered by the current tool schema. Never invent or reuse a stale name; omit an optional override when no offered value fits.",
+          "Do not stop after merely announcing a next action. Execute it when it is within scope, or report the exact blocker or decision needed.",
+          "Return a concise summary of work completed, checks run, and remaining risks.",
+        ]),
     '"""',
     "",
   ].join("\n");

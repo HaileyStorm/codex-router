@@ -25,7 +25,7 @@ export const OLLAMA_LOG_PATH =
 
 function commandWorks(command, args = ["--version"], spawn = spawnSync) {
   try {
-    return spawn(command, args, { stdio: "ignore" }).status === 0;
+    return spawn(command, args, { stdio: "ignore", windowsHide: true }).status === 0;
   } catch {
     return false;
   }
@@ -65,7 +65,7 @@ export function parseOllamaVersion(output) {
 export function ollamaVersion({ command = ollamaCommand(), spawn = spawnSync } = {}) {
   if (!command) return undefined;
   try {
-    const result = spawn(command, ["--version"], { encoding: "utf8" });
+    const result = spawn(command, ["--version"], { encoding: "utf8", windowsHide: true });
     if (result.status !== 0) return undefined;
     return parseOllamaVersion(`${result.stdout || ""}\n${result.stderr || ""}`);
   } catch {

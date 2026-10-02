@@ -4,34 +4,13 @@ These instructions apply when a user asks an agent to install this repository.
 
 ## Codex controller and delegation
 
-- Use GPT-6.1 Sol (`gpt-6.1-sol`) at `high` as the controller and project
-  default for implementation, integration, ordinary planning, mapping and
-  consequential review; never use lower or higher effort for this route.
-- Use GPT-6 Astra only at `high` or `xhigh` for detailed planning, intricate
-  or very complex code, stubborn problems and exceptional synthesis.
-- Monitor/classify-only child tasks prefer qualified native Direct Nous
-  DeepSeek V4.1 Flash at `max`, otherwise GPT-6 Luna at `max`. Read-only
-  investigation or correctness review is not automatically monitor-only.
-  Preserve explicit user/task choices within the governing routing envelope.
-  DeepSeek has the same task-scoped data, files and permissions as GPT; do not
-  add DeepSeek-only privacy, disclosure, root-approval or fresh-history gates.
-  Normal ownership, secrets handling, zero-spend and no ambiguous resends
-  apply to every model. The distinct MCP bridge remains read-only.
-- Set all GPT client context budgets to 291000 and automatic compaction to
-  208000, including children and compatibility rows. The explicitly named
-  native-profile/gpt-6-astra-1m entry alone retains its validated long-context
-  policy. Client budgets do not establish upstream capability or acceptance.
-- Keep prompts and evidence packets bounded. Checkpoint objective, acceptance,
-  owner/host, checkout/ref, claims, changed files, tests, unresolved risks and
-  next action in durable project artifacts. After unexpected compaction or
-  task rollover, reconstruct from those artifacts and live read-only state;
-  never infer completion, ownership or permission from inherited chat history.
-- Delegate only bounded independent work where parallelism saves time or
-  improves quality. Start with the smallest useful set, keep one writer per
-  file or symbol cluster, and keep synthesis and acceptance in the parent.
-- Apply the router's existing catalog, native-profile, tool-transport,
-  capability-proof, provider-privacy, and configuration-ownership invariants
-  to every route and delegated task.
+- Inherit global model routing, adaptive effort, cache-aware switching, context
+  defaults, and the multi-agent workflow. Role effort values are strong startup
+  preferences. Preserve explicit user/task choices and the named Astra 1M profile.
+- Keep task packets bounded and checkpoint substantial work. Reconstruct ownership,
+  current changes and evidence after compaction or rollover.
+- Apply this router's catalog, native-profile, tool-transport, capability-proof,
+  provider/privacy and configuration-ownership invariants to every route.
 - Native Astra's embedded `# Using skills`, `# Apps`, and `# Plugins` sections
   are canonical. Preserve their `model_messages` text and the false
   `include_*_usage_instructions` flags that prevent duplicate injection.

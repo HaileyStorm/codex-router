@@ -365,7 +365,7 @@ export function localModelCapabilities(tag, id, { spawn = spawnSync, cache } = {
   const key = id || tag;
   if (store[key]) return store[key];
   try {
-    const result = spawn(localOllamaBinary(spawn), ["show", tag], { encoding: "utf8" });
+    const result = spawn(localOllamaBinary(spawn), ["show", tag], { encoding: "utf8", windowsHide: true });
     if (result.status !== 0 || typeof result.stdout !== "string") return [];
     const capabilities = parseOllamaCapabilities(result.stdout);
     store[key] = capabilities;
@@ -401,7 +401,7 @@ export function parseOllamaList(stdout) {
 
 export function localModelInventory({ spawn = spawnSync } = {}) {
   try {
-    const result = spawn(localOllamaBinary(spawn), ["list"], { encoding: "utf8" });
+    const result = spawn(localOllamaBinary(spawn), ["list"], { encoding: "utf8", windowsHide: true });
     if (result.status !== 0 || typeof result.stdout !== "string") return [];
     return parseOllamaList(result.stdout);
   } catch {
@@ -414,7 +414,7 @@ export function localModelInventory({ spawn = spawnSync } = {}) {
 // request pays a load penalty the operator should be able to see coming.
 export function runningLocalModels({ spawn = spawnSync } = {}) {
   try {
-    const result = spawn(localOllamaBinary(spawn), ["ps"], { encoding: "utf8" });
+    const result = spawn(localOllamaBinary(spawn), ["ps"], { encoding: "utf8", windowsHide: true });
     if (result.status !== 0 || typeof result.stdout !== "string") return [];
     return parseOllamaList(result.stdout).map((entry) => entry.tag);
   } catch {
@@ -437,7 +437,7 @@ export function removeLocalModel(tag, { spawn = spawnSync, confirmed = false, ca
   if (!confirmed) {
     throw new Error(`Removing ${value} deletes it from disk. Pass --yes to confirm.`);
   }
-  const result = spawn(localOllamaBinary(spawn), ["rm", value], { encoding: "utf8" });
+  const result = spawn(localOllamaBinary(spawn), ["rm", value], { encoding: "utf8", windowsHide: true });
   if (result.status !== 0) {
     const detail = String(result.stderr || "").trim();
     throw new Error(`\`ollama rm ${value}\` failed${detail ? `: ${detail}` : "."}`);

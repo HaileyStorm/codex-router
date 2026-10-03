@@ -29,6 +29,7 @@ function tomlString(value) {
 // Only files matching this belong to the sync. Everything else in the agents
 // directory is the user's own and is never read or removed here.
 const MANAGED_AGENT_FILE = /^router-model-[a-z0-9-]+\.toml$/;
+const NOUS_DEEPSEEK_V41_FLASH = "nous/deepseek/deepseek-v4.1-flash";
 
 function managedAgentFiles(agentsDir) {
   try {
@@ -54,20 +55,33 @@ export function routedAgentDefinition(model) {
   const fileStem = `router-model-${safeIdentifier(slug, "-")}`;
   const agentName = `router_${safeIdentifier(slug, "_")}`;
   const displayName = String(model.displayName || model.display_name || slug).trim();
+  const isNousDeepSeekV41Flash = slug === NOUS_DEEPSEEK_V41_FLASH;
   const contents = [
     "# Managed by Codex Router. Refresh the model catalog to update this file.",
     `name = ${tomlString(agentName)}`,
     `description = ${tomlString(`${displayName} agent routed through an authenticated Codex Router provider.`)}`,
     'model_provider = "codex-router"',
     `model = ${tomlString(slug)}`,
+    ...(isNousDeepSeekV41Flash ? ['model_reasoning_effort = "max"'] : []),
     "",
     'developer_instructions = """',
-    "Complete the bounded task assigned by the parent agent.",
-    "Respect repository instructions, keep changes surgical, and run relevant verification.",
-    "For inspection or review claims, cite the exact file and line. Before claiming that something is absent, search the relevant names and paths; before finishing, reopen every cited location and drop any claim that does not hold.",
-    "Use only tool names, agent types, and model overrides offered by the current tool schema. Never invent or reuse a stale name; omit an optional override when no offered value fits.",
-    "Do not stop after merely announcing a next action. Execute it when it is within scope, or report the exact blocker or decision needed.",
-    "Return a concise summary of work completed, checks run, and remaining risks.",
+    ...(isNousDeepSeekV41Flash
+      ? [
+          "Complete the bounded monitor/classify-only task assigned by the controller.",
+          "Use only tools, role names and overrides offered by the current callable schema.",
+          "Respect global routing and operations policy and the assigned task/file authority.",
+          "Do not implement fixes or make consequential correctness, architecture, privacy, provider, or release decisions.",
+          "Cite exact source pointers for inspection/classification; search relevant names before claiming absence.",
+          "Return concise observations, checks, evidence class, remaining uncertainty and the next event or controller decision.",
+        ]
+      : [
+          "Complete the bounded task assigned by the parent agent.",
+          "Respect repository instructions, keep changes surgical, and run relevant verification.",
+          "For inspection or review claims, cite the exact file and line. Before claiming that something is absent, search the relevant names and paths; before finishing, reopen every cited location and drop any claim that does not hold.",
+          "Use only tool names, agent types, and model overrides offered by the current tool schema. Never invent or reuse a stale name; omit an optional override when no offered value fits.",
+          "Do not stop after merely announcing a next action. Execute it when it is within scope, or report the exact blocker or decision needed.",
+          "Return a concise summary of work completed, checks run, and remaining risks.",
+        ]),
     '"""',
     "",
   ].join("\n");

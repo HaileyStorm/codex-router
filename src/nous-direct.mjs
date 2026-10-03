@@ -6,7 +6,7 @@ import {
   randomUUID,
 } from "node:crypto";
 
-import { withNousProviderAttemptLock } from "./nous-provider-lock.mjs";
+import { createNousHostGateFetch, NousHostGateError } from "./nous-host-gate.mjs";
 
 export const NOUS_CHAT_ADAPTER = "nous-chat";
 export const NOUS_MAX_OUTPUT_TOKENS = 131072;
@@ -50,6 +50,19 @@ function directError(message, { status = 400, code = "nous_direct_invalid_reques
 export function safeNousDirectError(error) {
   const details = DIRECT_ERROR_DETAILS.get(error);
   return details ? { ...details } : undefined;
+}
+
+function terminalDirectError(message, { contacted = true, originalStatus } = {}) {
+  const error = directError(message, { status: 400, code: contacted
+    ? "nous_direct_reconcile_required" : "nous_direct_host_gate_failed" });
+  DIRECT_ERROR_DETAILS.set(error, Object.freeze({
+    status: 400, type: error.code, message, provider: NOUS_PROVIDER_ID,
+    provider_contacted: contacted, outcome_unknown: contacted,
+    provider_execution_may_have_completed: contacted, tools_not_exposed: true,
+    reconcile_required: true, retryable: false, no_resend: true,
+    ...(Number.isInteger(originalStatus) ? { original_http_status: originalStatus } : {}),
+  }));
+  return error;
 }
 
 function internalKeyBytes(internalKey) {
@@ -1404,7 +1417,8 @@ export async function dispatchNousDirect({
   baseUrl,
   internalKey,
   signal,
-  fetchImpl = fetch,
+  // Injected fetches are a provider-free testing seam; production always leases.
+  fetchImpl,
 }) {
   const resolvedBaseUrl = assertNousDirectBinding({ provider, model, baseUrl });
   internalKeyBytes(internalKey);
@@ -1415,42 +1429,55 @@ export async function dispatchNousDirect({
     });
   }
   const chat = toNousChatRequest(payload, model.upstreamModel, { internalKey });
-  return withNousProviderAttemptLock(async () => {
-    const upstream = await fetchImpl(`${resolvedBaseUrl}/chat/completions`, {
-      method: "POST",
-      redirect: "error",
-      headers: {
-        Authorization: `Bearer ${credential}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(chat),
-      signal: requestSignal(signal),
+  let contacted = fetchImpl !== undefined;
+  const requestFetch = fetchImpl ?? createNousHostGateFetch({
+    fetchImpl: async (...args) => { contacted = true; return fetch(...args); },
+  });
+  let upstream;
+  try {
+    upstream = await requestFetch(`${resolvedBaseUrl}/chat/completions`, {
+      method: "POST", redirect: "error",
+      headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(chat), signal: requestSignal(signal),
     });
-    // Error responses are part of the same physical attempt. Consume their
-    // bounded body before releasing the shared lock, just as for success.
+  } catch (error) {
+    const precontact = error instanceof NousHostGateError && !contacted;
+    throw terminalDirectError(precontact
+      ? "Nous Direct host provider lease failed before provider contact."
+      : "Nous Direct provider contact has an unknown outcome; reconcile before resending.",
+      { contacted: !precontact });
+  }
+  if (!upstream || typeof upstream.ok !== "boolean") {
+    throw terminalDirectError("Nous Direct returned no valid provider response.");
+  }
+  if (!upstream.ok) {
+    await upstream.body?.cancel().catch(() => undefined);
+    const stop = upstream.status === 402;
+    return new Response(JSON.stringify({ error: {
+      type: stop ? "nous_direct_provider_stop" : "nous_direct_reconcile_required",
+      provider: NOUS_PROVIDER_ID, provider_contacted: true, retryable: false, no_resend: true,
+      ...(stop ? { provider_stop: true } : { outcome_unknown: true, provider_execution_may_have_completed: true, tools_not_exposed: true }),
+      original_http_status: upstream.status,
+      message: stop ? "Nous Direct reported HTTP 402; provider contact is stopped until the owner reconciles access."
+        : "Nous Direct provider contact completed without a recoverable result; reconcile before resending.",
+    } }), { status: stop ? 402 : 400, headers: { "Content-Type": "application/json; charset=utf-8" } });
+  }
+  try {
     const bytes = await boundedResponseBytes(upstream);
-    if (!upstream.ok) return new Response(bytes.length ? bytes : null, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers: upstream.headers,
-    });
     let completion;
-    try {
-      completion = JSON.parse(bytes.toString("utf8"));
-    } catch {
-      throw responseError("Nous Direct returned invalid JSON.");
-    }
+    try { completion = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+    catch { throw responseError("Nous Direct returned invalid JSON."); }
     const adapted = completionToResponsesBody(completion, model.upstreamModel, payload.stream === true, {
       internalKey,
       toolNames: chat.tools?.map((tool) => tool.function.name) || [],
       customToolNames: Array.isArray(payload.tools)
-        ? payload.tools.filter((tool) => tool?.type === "custom").map((tool) => tool.name)
-        : [],
+        ? payload.tools.filter((tool) => tool?.type === "custom").map((tool) => tool.name) : [],
     });
-    return new Response(adapted.body, {
-      status: 200,
-      headers: adaptedHeaders(upstream.headers, adapted.contentType),
-    });
-  }, { signal });
+    return new Response(adapted.body, { status: 200, headers: adaptedHeaders(upstream.headers, adapted.contentType) });
+  } catch (error) {
+    // Preserve proven local diagnostic provenance, never provider error text.
+    const local = safeNousDirectError(error);
+    throw terminalDirectError(local?.message || "Nous Direct returned an invalid response; reconcile before resending.",
+      { originalStatus: upstream.status });
+  }
 }

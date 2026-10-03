@@ -178,6 +178,20 @@ function nousFetchRewritePreload(directory, targetOrigin) {
     [
       `const sourceOrigin = ${JSON.stringify(new URL(NOUS_BASE_URL).origin)};`,
       `const targetOrigin = ${JSON.stringify(targetOrigin)};`,
+      "import childProcess from 'node:child_process';",
+      "import { syncBuiltinESMExports } from 'node:module';",
+      "import { EventEmitter } from 'node:events';",
+      "import { PassThrough, Writable } from 'node:stream';",
+      "const nativeSpawn = childProcess.spawn;",
+      "childProcess.spawn = function testOnlyLease(command, args, options) {",
+      "  if (!command.endsWith('/.codex/tools/nous_codex_bridge.py') || args[0] !== '--provider-lease') return nativeSpawn(command,args,options);",
+      "  if (options.env.NOUS_API_KEY !== undefined) throw new Error('provider credential reached lease fixture');",
+      "  const c = new EventEmitter(); c.stdout = new PassThrough(); c.stderr = new PassThrough(); c.kill=()=>{}; let completion='';",
+      "  c.stdin = new Writable({write(chunk,enc,cb){completion+=chunk.toString();cb();}});",
+      "  c.stdin.on('finish',()=>{const status=JSON.parse(completion).status;c.stdout.write(JSON.stringify({schema:'codex-nous-provider-lease-v1',event:'released',status})+'\\n');c.stdout.end();c.stderr.end();c.emit('exit',0,null);c.emit('close',0,null);});",
+      "  queueMicrotask(()=>c.stdout.write(JSON.stringify({schema:'codex-nous-provider-lease-v1',event:'ready',provider:'nous',model:'deepseek/deepseek-v4.1-flash',timeout_seconds:Number(args[2]),lock:{name:'provider-attempt',path:'/synthetic/provider-attempt.lock',device:1,inode:2}})+'\\n'));",
+      "  return c;",
+      "}; syncBuiltinESMExports();",
       "const nativeFetch = globalThis.fetch;",
       "globalThis.fetch = function testOnlyNousFetch(input, init) {",
       "  const raw = input instanceof Request ? input.url : String(input);",
@@ -754,34 +768,19 @@ test("Nous Direct terminal failures, redirects, transport errors, and empties ne
     assert.equal(response.status, 402);
   });
 
-  await t.test("error body finishes before the next attempt enters fetch", async () => {
-    let enteredFirst;
-    const firstEntered = new Promise(resolve => { enteredFirst = resolve; });
-    let finishBody;
-    let secondEntered = false;
-    const common = { payload: { input: "hello" }, model: MODEL, provider: PROVIDER,
-      credential: "TEST_NOUS_KEY", baseUrl: NOUS_BASE_URL, internalKey: INTERNAL_ROUTER_KEY };
-    const first = dispatchNousDirect({ ...common, fetchImpl: async () => {
-      const body = new ReadableStream({ start(controller) {
-        controller.enqueue(new TextEncoder().encode('{"error":"quota"}'));
-        finishBody = () => controller.close();
-      } });
-      enteredFirst();
-      return new Response(body, { status: 402 });
-    } });
-    await firstEntered;
-    const second = dispatchNousDirect({ ...common, fetchImpl: async () => {
-      secondEntered = true;
-      return new Response('{"error":"quota"}', { status: 402 });
-    } });
-    try {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      assert.equal(secondEntered, false);
-    } finally { finishBody(); }
-    const [a, b] = await Promise.all([first, second]);
-    assert.equal(await a.text(), '{"error":"quota"}');
-    assert.equal(b.status, 402);
-    assert.equal(secondEntered, true);
+  await t.test("HTTP 402 discards a stalled body without leaking it", async () => {
+    let cancelled = 0, attempts = 0;
+    const response = await dispatchNousDirect({ payload: { input: "hello" }, model: MODEL, provider: PROVIDER,
+      credential: "TEST_NOUS_KEY", baseUrl: NOUS_BASE_URL, internalKey: INTERNAL_ROUTER_KEY,
+      fetchImpl: async () => { attempts++; return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode("PRIVATE provider failure")); },
+        cancel() { cancelled++; },
+      }), { status: 402 }); },
+    });
+    const body = await response.json();
+    assert.equal(attempts, 1); assert.equal(cancelled, 1);
+    assert.equal(body.error.provider_stop, true); assert.equal(body.error.no_resend, true);
+    assert.doesNotMatch(JSON.stringify(body), /PRIVATE/);
   });
 
   await t.test("redirect", async () => {
@@ -800,7 +799,8 @@ test("Nous Direct terminal failures, redirects, transport errors, and empties ne
       },
     });
     assert.equal(attempts, 1);
-    assert.equal(response.status, 307);
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.original_http_status, 307);
   });
 
   await t.test("transport error", async () => {
@@ -818,7 +818,7 @@ test("Nous Direct terminal failures, redirects, transport errors, and empties ne
           throw new TypeError("fetch failed");
         },
       }),
-      /fetch failed/,
+      (error) => safeNousDirectError(error)?.outcome_unknown === true,
     );
     assert.equal(attempts, 1);
   });
@@ -841,7 +841,7 @@ test("Nous Direct terminal failures, redirects, transport errors, and empties ne
           });
         },
       }),
-      (error) => error?.status === 502 && error?.code === "nous_direct_empty_completion",
+      (error) => error?.status === 400 && safeNousDirectError(error)?.no_resend === true,
     );
     assert.equal(attempts, 1);
   });
@@ -1138,13 +1138,9 @@ test("API forwarder turns Nous retry-shaped failures into one-contact terminal 4
     });
     const validationBody = await validationResponse.json();
     assert.equal(validationResponse.status, 400, forwarder.testErrors());
-    assert.deepEqual(validationBody.error, {
-      type: "local_nous_direct_terminal",
-      message: "Nous Direct returned an invalid response; automatic retry is disabled.",
-      retryable: false,
-      original_status: 502,
-      original_class: "local_nous_direct_error",
-    });
+    assert.equal(validationBody.error.type, "nous_direct_reconcile_required");
+    assert.equal(validationBody.error.no_resend, true);
+    assert.equal(validationBody.error.original_http_status, 200);
     assert.equal(requests.length, 1, "response validation failure must contact Nous once");
     assert.doesNotMatch(JSON.stringify(validationBody), /provider body|not_requested/);
 
@@ -1160,9 +1156,9 @@ test("API forwarder turns Nous retry-shaped failures into one-contact terminal 4
       });
       const terminal = await response.json();
       assert.equal(response.status, 400, forwarder.testErrors());
-      assert.equal(terminal.error.type, "local_nous_direct_terminal");
-      assert.equal(terminal.error.original_status, status, JSON.stringify(terminal));
-      assert.equal(terminal.error.original_class, "nous_upstream_http_error");
+      assert.equal(terminal.error.type, "nous_direct_reconcile_required");
+      assert.equal(terminal.error.original_http_status, status, JSON.stringify(terminal));
+      assert.equal(terminal.error.no_resend, true);
       assert.equal(terminal.error.retryable, false);
       assert.doesNotMatch(JSON.stringify(terminal), /provider body/);
       assert.equal(requests.length, status === 429 ? 2 : 3, "upstream retry-shaped failure must contact Nous once");

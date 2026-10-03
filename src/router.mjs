@@ -118,6 +118,7 @@ import { VERSION } from "./version.mjs";
 import { nativeSessionHeaders } from "./codex-native-session.mjs";
 import { installStableFetchTransport } from "./fetch-transport.mjs";
 import { isNousReasoningEnvelope } from "./nous-direct.mjs";
+import { captureNativeRequest, completeNativeRequest } from "./native-harness-observer.mjs";
 import { prepareNousToolAvailability } from "./nous-tool-availability.mjs";
 import { claimNousNativeAttempt } from "./nous-native-attempts.mjs";
 import {
@@ -1877,7 +1878,7 @@ function requireCodexTransport(request, response) {
 // takes); transient failures — 429s, 5xx, disconnects — prove nothing either
 // way and leave the window open. Neither line is QUIET-gated: a promotion or
 // demotion that happens silently is how a picker entry becomes unexplainable.
-function observeSubagentOutcome(request, route, status, { emptyCompletion = false } = {}) {
+function observeSubagentOutcome(request, route, status, { emptyCompletion = false, skipStructuralDemotion = false } = {}) {
   if (!route) return;
   try {
     if (!request.headers["x-openai-subagent"]) return;
@@ -1887,7 +1888,7 @@ function observeSubagentOutcome(request, route, status, { emptyCompletion = fals
       console.error(
         `[codex-router] subagent proven: ${route.slug} completed a live child turn`,
       );
-    } else if (status === 400 || status === 422) {
+    } else if (!skipStructuralDemotion && (status === 400 || status === 422)) {
       recordSpawnFailure(route.slug, {
         status,
         reason: `child turn rejected with HTTP ${status}`,
@@ -1919,7 +1920,52 @@ function writeIdleNoProviderError(response) {
   });
 }
 
+async function nousDirectGatewayFailure(upstream) {
+  // No internal/provider body text crosses this hop, including malformed errors.
+  let details, reader, timer;
+  try {
+    reader = upstream.body?.getReader();
+    if (reader) {
+      details = await Promise.race([
+        (async () => {
+          const chunks = []; let size = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            size += value.byteLength;
+            if (size > 16384) throw new Error("bounded error");
+            chunks.push(Buffer.from(value));
+          }
+          return JSON.parse(Buffer.concat(chunks).toString("utf8"))?.error;
+        })(),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("error deadline")), 2500); }),
+      ]);
+    }
+  } catch { /* Unknown gateway outcome remains terminal and unresolved. */ }
+  finally {
+    clearTimeout(timer);
+    try { Promise.resolve(reader?.cancel()).catch(() => {}); } catch {}
+  }
+  const stop = upstream.status === 402;
+  const precontact = !stop && details?.type === "nous_direct_host_gate_failed" && details?.provider_contacted === false;
+  const error = {
+    type: stop ? "nous_direct_provider_stop" : precontact ? "nous_direct_host_gate_failed" : "nous_direct_reconcile_required",
+    provider: "nous", provider_contacted: !precontact, retryable: false, no_resend: true,
+    reconcile_required: true,
+    ...(stop ? { provider_stop: true, original_http_status: 402 } : {
+      outcome_unknown: !precontact, provider_execution_may_have_completed: !precontact, tools_not_exposed: true,
+      ...(Number.isInteger(details?.original_http_status) ? { original_http_status: details.original_http_status } : {}),
+    }),
+    message: stop ? "Nous Direct reported HTTP 402; provider contact is stopped until the owner reconciles access."
+      : precontact ? "Nous Direct host provider lease failed before provider contact."
+      : "Nous Direct provider contact has an unresolved outcome; reconcile before resending.",
+  };
+  return { status: stop ? 402 : 400, body: { error } };
+}
+
 async function handleResponses(request, response, requestUrl) {
+  const harnessReceivedAt = process.hrtime.bigint();
+  let harnessObservation;
   const startedAt = Date.now();
   const activity = beginRequestActivity();
   let clientGone = false;
@@ -2338,6 +2384,7 @@ async function handleResponses(request, response, requestUrl) {
       if (selectedNativeProfile) native.model = selectedNativeProfile.nativeModel;
       target = nativeTarget(requestUrl.pathname);
       headers = nativeHeaders(request);
+      if (!compactV1) harnessObservation = await captureNativeRequest(request, native, harnessReceivedAt, { requestedModel });
       routedBody = await compressedNativeBody(
         Buffer.from(JSON.stringify(native), "utf8"),
         headers,
@@ -2389,34 +2436,38 @@ async function handleResponses(request, response, requestUrl) {
     // Native traffic passes through untouched: OpenAI errors are already clear.
     if (route && !upstream.ok) {
       const provider = providerForModel(route);
-      const retryAfterHeader = upstream.headers.get("retry-after");
-      const retryAfterSeconds = Number(retryAfterHeader);
-      if (retryAfterHeader) response.setHeader("Retry-After", retryAfterHeader);
-      writeJson(
-        response,
-        upstream.status,
-        translateGatewayError({
-          status: upstream.status,
-          bodyText: await upstream.text(),
-          modelName: route.displayName || route.slug,
-          providerName: provider?.ownedBy || provider?.displayName || route.provider,
-          providerKind: provider?.kind,
-          retryAfterSeconds: Number.isFinite(retryAfterSeconds)
-            ? retryAfterSeconds
-            : undefined,
-        }),
-      );
+      const direct = provider?.responseAdapter === "nous-chat";
+      let outwardStatus = upstream.status, outwardBody;
+      if (direct) {
+        const failure = await nousDirectGatewayFailure(upstream);
+        outwardStatus = failure.status; outwardBody = failure.body;
+      } else {
+        const retryAfterHeader = upstream.headers.get("retry-after");
+        const retryAfterSeconds = Number(retryAfterHeader);
+        if (retryAfterHeader) response.setHeader("Retry-After", retryAfterHeader);
+        outwardBody = translateGatewayError({
+            status: upstream.status,
+            bodyText: await upstream.text(),
+            modelName: route.displayName || route.slug,
+            providerName: provider?.ownedBy || provider?.displayName || route.provider,
+            providerKind: provider?.kind,
+            retryAfterSeconds: Number.isFinite(retryAfterSeconds)
+              ? retryAfterSeconds
+              : undefined,
+          });
+      }
+      writeJson(response, outwardStatus, outwardBody);
       recordUsageEvent({
         model: route.slug,
         provider: canonicalProviderId(route.provider),
-        status: upstream.status,
+        status: outwardStatus,
         durationMs: Date.now() - startedAt,
         responseStartMs: upstreamLatencyMs,
         firstTokenMs,
       });
-      observeSubagentOutcome(request, route, upstream.status);
-      finalStatus = upstream.status;
-      activityStatus = upstream.status;
+      observeSubagentOutcome(request, route, outwardStatus, { skipStructuralDemotion: direct });
+      finalStatus = outwardStatus;
+      activityStatus = outwardStatus;
       usageRecorded = true;
       if (!QUIET) {
         console.error(
@@ -2758,6 +2809,7 @@ async function handleResponses(request, response, requestUrl) {
     }
     throw error;
   } finally {
+    await completeNativeRequest(harnessObservation, usage).catch(() => {});
     if (threadspanReservation && !threadspanCommitted) {
       try {
         rollbackNativeRouteReservation(threadspanReservation);

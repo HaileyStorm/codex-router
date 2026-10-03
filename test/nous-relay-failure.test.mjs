@@ -326,3 +326,32 @@ test("non-Nous routed gateway failures remain ordinary502 errors", async () => {
     await fixture.close();
   }
 });
+
+
+test("Nous gateway reconciliation and402 retain exact stop semantics without provider diagnostics", async () => {
+  let status = 400, requests = 0;
+  const fixture = await startFixture({
+    nativeHandler: (_request, response) => writeJson(response, 500, {}),
+    gatewayHandler: (_request, response) => { requests++; writeJson(response, status, { error: {
+      type: status === 402 ? "nous_direct_provider_stop" : "nous_direct_reconcile_required",
+      provider: "nous", provider_contacted: true, original_http_status: status === 402 ? 402 : 503,
+      message: "PRIVATE provider diagnostics", retryable: false, no_resend: true,
+    } }); },
+  });
+  try {
+    const first = await postRouter(fixture.routerPort, { ...nousBody(), input: "hello" });
+    assert.equal(first.response.status, 400);
+    assert.equal(first.body.error.type, "nous_direct_reconcile_required");
+    assert.equal(first.body.error.original_http_status, 503);
+    assert.equal(first.body.error.no_resend, true);
+    assert.doesNotMatch(first.text, /PRIVATE/);
+    status = 402;
+    const second = await postRouter(fixture.routerPort, { ...nousBody(), input: "hello" }, "44444444-4444-4444-8444-444444444444");
+    assert.equal(second.response.status, 402);
+    assert.equal(second.body.error.provider_stop, true);
+    assert.equal(second.body.error.original_http_status, 402);
+    assert.equal(second.body.error.no_resend, true);
+    assert.doesNotMatch(second.text, /PRIVATE/);
+    assert.equal(requests, 2);
+  } finally { await fixture.close(); }
+});

@@ -133,3 +133,12 @@ test("only registry-proven models receive routed agent definitions", () => {
     ["kimi-oauth/k3"],
   );
 });
+
+
+test("exact Nous V4.1 role stays monitor/classify-only at max effort", () => {
+  const definition = routedAgentDefinition({ slug: "nous/deepseek/deepseek-v4.1-flash", displayName: "Nous Direct" });
+  assert.match(definition.contents, /model_reasoning_effort = "max"/);
+  assert.match(definition.contents, /bounded monitor\/classify-only task/);
+  assert.match(definition.contents, /Do not implement fixes/);
+  assert.doesNotMatch(routedAgentDefinition(kimi).contents, /monitor\/classify-only/);
+});

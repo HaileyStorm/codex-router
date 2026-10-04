@@ -14,6 +14,14 @@ import {
   protectPrivateFile,
 } from "./file-security.mjs";
 import { CODEX_AGENTS_DIR } from "./paths.mjs";
+import { assertStateOwnership } from "./state-owner.mjs";
+import { selectedConfiguredListedModels } from "./provider-selection.mjs";
+import { readHiddenModels } from "./model-picker-state.mjs";
+import {
+  applyMultiAgentCapabilities,
+  readMultiAgentSettings,
+  subagentEligibleModels,
+} from "./multi-agent-state.mjs";
 
 export function safeIdentifier(value, separator) {
   return String(value)
@@ -86,6 +94,30 @@ export function routedAgentDefinition(model) {
     "",
   ].join("\n");
   return { agentName, fileName: `${fileStem}.toml`, contents };
+}
+
+// Publish one currently qualified role without reconciling the whole catalog.
+// Retained saved-role files need an explicit disposition before a pruning sync.
+// Resolve capability from the owning registry/state, never a caller's v2 claim.
+export function publishQualifiedRoutedCodexAgent(slug, agentsDir = CODEX_AGENTS_DIR) {
+  assertStateOwnership("publish a qualified routed agent");
+  const settings = readMultiAgentSettings();
+  const models = applyMultiAgentCapabilities(
+    selectedConfiguredListedModels(),
+    settings,
+    { hidden: readHiddenModels() },
+  );
+  const model = subagentEligibleModels(models, settings).find(
+    (entry) => entry.slug === slug,
+  );
+  if (!model) {
+    throw new Error(`Cannot publish an unqualified routed agent: ${String(slug)}`);
+  }
+  const definition = routedAgentDefinition(model);
+  const target = path.join(agentsDir, definition.fileName);
+  mkdirSync(agentsDir, { recursive: true, mode: 0o700 });
+  writeManagedAgent(target, definition.contents);
+  return { model: model.slug, agent: definition.agentName, path: target };
 }
 
 // Writes one definition per model, and removes the definitions of models that
